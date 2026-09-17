@@ -12,6 +12,7 @@
 | `Остатки_*.xlsx`, `Запас с ограниченным использованием*.xlsx`, `Закупка ALL*.xlsx` | репозиторий `for_update`, всегда самая свежая выгрузка |
 | `ktg.json`, `mtr.json` | репозиторий `TOPO` (витрины ТОиР и МТР) |
 | `data/<площадка>_<год>.json` | репозиторий `TOPO`, детализация «заказ → единица → материал» |
+| `rawdata/LinkOme/*.zip[.NNN]` | `rawdata/LinkOme/` в ветке `rawdata` — книги ЗИП WK |
 
 ## Порядок сборки
 
@@ -32,8 +33,12 @@ git ls-tree -r -l origin/rawdata "rawdata/АТ майнинг/" \
 python3 build/build_kb_text.py <repo_dir> data/kb.json                     data/
 git ls-tree -r -l origin/rawdata "rawdata/АТ майнинг/" \
   | python3 build/build_drawings.py data/tree.json data/catalog.json       data/
-python3 build/build_linkome_index.py data/tree.json data/catalog.json \
-  data/fleet_books.json data/ <книга=архив.zip> ...
+
+# состав узлов из LinkOme (формат LinkOne разобран — build/linkone/,
+# портировано из песочницы KOMATSU_PARTS_BOOK)
+python3 build/unpack_linkome.py <rawdata_dir_с_zip_LinkOme> work/linkome
+python3 build/build_linkome_catalog.py work/linkome data/tree.json \
+  data/catalog.json data/fleet_books.json                                  data/
 ```
 
 `build_tree.py` — первый шаг: даёт `tree.json` (дерево узлов) и
@@ -68,10 +73,22 @@ python3 build/build_linkome_index.py data/tree.json data/catalog.json \
 - **Дубли карточек КТГ схлопываются** по паре (площадка, точное имя борта):
   `build_fleet.py` берёт запись с непустым КТГ.
 
+## LinkOme (формат LinkOne)
+
+`build/linkone/` — декодер контейнера LinkOne/ImageLink (LZH-сжатие
+внутри, «-lh5-»), портирован из соседней песочницы `KOMATSU_PARTS_BOOK`,
+где тем же кодом читаются книги Komatsu. Для WK добавлена кодовая
+страница 936 (GBK — китайские иероглифы; кириллица в тех же строках
+декодируется тем же `gbk`). `build_linkome_catalog.py` даёт настоящий
+состав узла (номер детали, наименование, количество), а не проекцию по
+именам файлов — 73,9% узлов дерева и 75,4% позиций каталога. Растровые
+чертежи (.ilg) этим декодером пока не читаются — см. `data/quality.json`.
+
 ## Известные пробелы
 
 См. `data/quality.json` — четыре единицы парка не связаны с книгой
-комплектации, 58% прайса без кода ЕКМТР, формат LinkOne не декодирован,
+комплектации, 58% прайса без кода ЕКМТР, растровые чертежи LinkOme (.ilg)
+не декодируются (текстовая часть — состав узла — декодируется, см. выше),
 104 документа .doc/.ppt не индексируются для полнотекстового поиска
 (LibreOffice headless не работает в этой песочнице). Раздел «Качество
 данных» портала читает этот файл напрямую.

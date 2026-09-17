@@ -17,6 +17,9 @@ const pct = v => v == null ? "—" : num(v * 100, 0) + "%";
 const byId = id => document.getElementById(id);
 const qs = (sel, root = document) => root.querySelector(sel);
 const qsa = (sel, root = document) => [...root.querySelectorAll(sel)];
+// та же нормализация номера, что в build/ekmtr_match.py::norm — по ней
+// ключи в data/linkome_catalog.json.byPart
+const normArt = s => String(s == null ? "" : s).toUpperCase().replace(/[^0-9A-ZА-Я]/g, "");
 
 function fetchJSON(path) {
   return fetch(path).then(r => {
@@ -188,7 +191,7 @@ const FILES = {
   fleetBooks: "data/fleet_books.json", fleet: "data/fleet.json",
   repairs: "data/repairs.json", provision: "data/provision.json",
   stock: "data/stock.json", quality: "data/quality.json", kb: "data/kb.json",
-  drawings: "data/drawings.json", linkome: "data/linkome_sheets.json",
+  drawings: "data/drawings.json", linkome: "data/linkome_catalog.json",
 };
 
 function boot() {
@@ -210,18 +213,15 @@ let STOCK_BY_CODE = new Map();
 let EKMTR_NAME = new Map();
 let CATALOG_BY_ART = new Map();
 let INTER_GROUP_OF = new Map(); // каталожный номер -> группа взаимозаменяемости (массив)
-let LINKOME_BOOKS_OF = new Map(); // каталожный номер -> книги LinkOme, где числится лист
+function linkomeRowsFor(art) {
+  // data/linkome_catalog.json.byPart уже ключуется нормализованным номером
+  return (art && D.linkome.byPart[normArt(art)]) || null;
+}
 function buildIndexes() {
   STOCK_BY_CODE = new Map(D.stock.items.map(i => [i.code, i]));
   EKMTR_NAME = new Map(D.ekmtrWk.items.map(i => [i.code, i.name]));
   CATALOG_BY_ART = new Map(D.catalog.items.map(i => [i.art, i]));
   D.interchange.groups.forEach(g => g.forEach(num => INTER_GROUP_OF.set(num, g)));
-  Object.entries(D.linkome.byBook).forEach(([book, info]) => {
-    info.nums.forEach(n => {
-      if (!LINKOME_BOOKS_OF.has(n)) LINKOME_BOOKS_OF.set(n, []);
-      LINKOME_BOOKS_OF.get(n).push(book);
-    });
-  });
 }
 
 /* ---------- вкладки ---------- */
@@ -485,11 +485,11 @@ function renderCatalog(host) {
             : '<span class="dim">—</span>'
         },
         {
-          key: "art", label: "Чертёж", cls: "",
-          plain: v => D.drawings.byNum[v] ? "есть" : LINKOME_BOOKS_OF.has(v) ? "в LinkOme" : "",
+          key: "art", label: "Чертёж / состав", cls: "",
+          plain: v => D.drawings.byNum[v] ? "чертёж" : linkomeRowsFor(v) ? "состав узла (LinkOme)" : "",
           fmt: (v) => D.drawings.byNum[v]
-            ? '<span class="badge good">есть</span>'
-            : LINKOME_BOOKS_OF.has(v) ? '<span class="badge info">в LinkOme</span>' : ""
+            ? '<span class="badge good">чертёж</span>'
+            : linkomeRowsFor(v) ? '<span class="badge info">состав узла</span>' : ""
         },
       ],
     });
@@ -969,8 +969,8 @@ function openDetail(art) {
     (item.tree[0] ? INTER_GROUP_OF.get(item.tree[0].num) : null);
   const drawings = D.drawings.byNum[item.art] ||
     (item.tree[0] ? D.drawings.byNum[item.tree[0].num] : null);
-  const linkomeBooks = LINKOME_BOOKS_OF.get(item.art) ||
-    (item.tree[0] ? LINKOME_BOOKS_OF.get(item.tree[0].num) : null);
+  const linkomeRows = linkomeRowsFor(item.art) ||
+    (item.tree[0] ? linkomeRowsFor(item.tree[0].num) : null);
 
   const back = byId("modalBack"), card = byId("modalCard");
   back.hidden = false; card.hidden = false;
@@ -1015,12 +1015,15 @@ function openDetail(art) {
     ${drawings ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Чертежи (реестр)</h3>
       <p style="font-size:12px">${drawings.map(d => `<span class="badge good">${esc(d.ext.toUpperCase())}</span> ${esc(d.path.split("/").pop())}`).join("<br>")}</p>
-      <p class="hint">Файлы — в ветке <code>rawdata</code>, порталом пока не раздаются.</p>` :
-        linkomeBooks ? `
-      <h3 style="font-size:12.5px;margin:16px 0 6px">Чертёж в LinkOme</h3>
-      <p style="font-size:12px"><span class="badge info">в реестре</span> книги: ${linkomeBooks.map(esc).join(", ")}</p>
-      <p class="hint">Лист числится в оглавлении книги LinkOme, но сам чертёж пока не извлекается — формат .bli/.ilg не декодирован (см. «Качество данных»). Нужен экспорт через LinkOne Viewer.</p>` :
-        '<p class="hint">Чертежа в реестре нет — ни в предразбитых файлах, ни в оглавлении LinkOme.</p>'}
+      <p class="hint">Файлы — в ветке <code>rawdata</code>, порталом пока не раздаются.</p>` : ""}
+
+    ${linkomeRows ? `
+      <h3 style="font-size:12.5px;margin:16px 0 6px">Состав в LinkOme</h3>
+      <dl class="dl">
+        ${linkomeRows.map(r => `<dt>${esc(r.book)}</dt><dd>${esc(r.pageTitle || r.page)} · кол-во ${num(r.qty ?? 1)}${r.raw !== item.art ? ` <span class="dim mono">(${esc(r.raw)})</span>` : ""}</dd>`).join("")}
+      </dl>
+      <p class="hint">Реальный состав узла из книги LinkOme (формат разобран — см. «Качество данных»); сам растровый чертёж (.ilg) пока не извлекается — эта часть формата у книг WK ещё не поддалась.</p>` :
+      !drawings ? '<p class="hint">Ни чертежа, ни строки в LinkOme для этого номера нет.</p>' : ""}
   `;
   byId("mCloseBtn").onclick = closeModal;
 }
