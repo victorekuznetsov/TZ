@@ -68,6 +68,90 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
 }
 
 function callout(kind, html) { return `<div class="callout ${kind}">${html}</div>`; }
+
+/* ---------- линейный график (SVG, hover-курсор + тултип) ---------- */
+/* series: [{label, values, color}] — values выровнены по months, null = нет данных за месяц */
+function renderLineChart(container, { months, series, height = 220, yFormat = v => pct(v), yDomain = [0, 1] }) {
+  const W = 760, H = height, padL = 34, padR = 8, padT = 10, padB = 22;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const [yMin, yMax] = yDomain;
+  const x = i => padL + (innerW * i) / (months.length - 1);
+  const y = v => padT + innerH - (innerH * (v - yMin)) / (yMax - yMin);
+
+  const gridN = 4;
+  let gridSvg = "";
+  for (let g = 0; g <= gridN; g++) {
+    const gy = padT + (innerH * g) / gridN;
+    const val = yMax - ((yMax - yMin) * g) / gridN;
+    gridSvg += `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="var(--grid)" stroke-width="1"/>`;
+    gridSvg += `<text x="${padL - 6}" y="${gy + 3}" text-anchor="end" font-size="9.5" fill="var(--ink-3)">${yFormat(val)}</text>`;
+  }
+  // подписи по оси X — каждый N-й месяц, чтобы не налезали
+  const step = Math.ceil(months.length / 8);
+  let xLabels = "";
+  months.forEach((m, i) => {
+    if (i % step !== 0 && i !== months.length - 1) return;
+    xLabels += `<text x="${x(i)}" y="${H - 5}" text-anchor="middle" font-size="9.5" fill="var(--ink-3)">${esc(m)}</text>`;
+  });
+
+  let paths = "";
+  series.forEach(s => {
+    let d = "", pen = false;
+    s.values.forEach((v, i) => {
+      if (v == null) { pen = false; return; }
+      d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1) + " ";
+      pen = true;
+    });
+    paths += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  });
+
+  const legend = series.length > 1 ? `<div class="chart-legend">${series.map(s =>
+    `<span><i style="background:${s.color}"></i>${esc(s.label)}</span>`).join("")}</div>` : "";
+
+  const uid = "lc" + Math.random().toString(36).slice(2, 8);
+  container.innerHTML = `
+    ${legend}
+    <div class="chart-wrap" style="position:relative">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;display:block" id="${uid}">
+        ${gridSvg}${xLabels}${paths}
+        <line id="${uid}-cross" x1="0" y1="${padT}" x2="0" y2="${H - padB}" stroke="var(--axis)" stroke-width="1" opacity="0"/>
+        <rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" fill="transparent" id="${uid}-cap" style="cursor:crosshair"/>
+      </svg>
+      <div id="${uid}-tip" class="chart-tip" style="display:none"></div>
+    </div>`;
+
+  const svg = byId(uid), cap = byId(uid + "-cap"), cross = byId(uid + "-cross"), tip = byId(uid + "-tip");
+  cap.addEventListener("mousemove", e => {
+    const rect = svg.getBoundingClientRect();
+    const px = ((e.clientX - rect.left) / rect.width) * W;
+    let i = Math.round(((px - padL) / innerW) * (months.length - 1));
+    i = Math.max(0, Math.min(months.length - 1, i));
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", "1");
+    const rows = series.map(s => `<div class="tr"><i style="background:${s.color}"></i>${esc(s.label)} <b>${s.values[i] == null ? "—" : yFormat(s.values[i])}</b></div>`).join("");
+    tip.innerHTML = `<div class="hd">${esc(months[i])}</div>${rows}`;
+    tip.style.display = "block";
+    const leftPct = (x(i) / W) * 100;
+    tip.style.left = leftPct > 65 ? "auto" : `calc(${leftPct}% + 10px)`;
+    tip.style.right = leftPct > 65 ? `calc(${100 - leftPct}% + 10px)` : "auto";
+  });
+  cap.addEventListener("mouseleave", () => { cross.setAttribute("opacity", "0"); tip.style.display = "none"; });
+}
+
+/* компактный спарклайн в ячейке таблицы — без интерактива */
+function sparkline(values, color) {
+  const w = 90, h = 22, pad = 2;
+  const pts = values.map((v, i) => ({ v, i })).filter(p => p.v != null);
+  if (pts.length < 2) return '<span class="dim">—</span>';
+  const x = i => pad + ((w - 2 * pad) * i) / (values.length - 1);
+  const y = v => h - pad - (h - 2 * pad) * v; // v в [0,1]
+  let d = "", pen = false;
+  values.forEach((v, i) => {
+    if (v == null) { pen = false; return; }
+    d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1) + " ";
+    pen = true;
+  });
+  return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" style="display:block"><path d="${d}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
 function kpi(label, value, kind) {
   return `<div class="kpi ${kind || ""}"><div class="l">${esc(label)}</div><div class="v">${value}</div></div>`;
 }
@@ -248,12 +332,30 @@ function renderCatalog(host) {
 }
 
 /* ===================== ПАРК ===================== */
+const MODEL_COLOR = { "WK-20": "var(--c1)", "WK-35": "var(--c2)", "WK-20C": "var(--c3)" };
+
 function renderFleet(host) {
   host.innerHTML = `
     <h1>Парк WK</h1>
     <p class="sub">${D.fleet.meta.units} единиц (карточки-дубли в КТГ схлопнуты). ${D.fleet.meta.matchedToBook} связаны с книгой комплектации.</p>
+    <div class="card"><h3>КТГ по моделям, среднее по месяцам</h3>
+      <p class="hint">Месяцы, где у модели ещё не было бортов в парке, из среднего исключены — не занижают график нулями.</p>
+      <div id="fleetChart"></div>
+    </div>
     <div id="fleetTable"></div>
   `;
+  const months = D.fleet.meta.months;
+  const models = ["WK-20", "WK-35", "WK-20C"];
+  const series = models.map(model => {
+    const units = D.fleet.units.filter(u => u.model === model && u.ktgByMonth);
+    const values = months.map((_, i) => {
+      const vals = units.map(u => u.ktgByMonth[i]).filter(v => v > 0);
+      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    });
+    return { label: model, values, color: MODEL_COLOR[model] };
+  });
+  renderLineChart(byId("fleetChart"), { months, series, yDomain: [0.5, 1] });
+
   renderTable(byId("fleetTable"), {
     rows: D.fleet.units, sortKey: "ktg", sortDir: 1,
     cols: [
@@ -261,6 +363,9 @@ function renderFleet(host) {
       { key: "site", label: "Площадка" },
       { key: "model", label: "Модель" },
       { key: "book", label: "Книга", cls: "mono", fmt: v => v || '<span class="dim">—</span>' },
+      {
+        key: "ktgByMonth", label: "КТГ, тренд", fmt: (v, r) => v ? sparkline(v.map(x => x > 0 ? x : null), MODEL_COLOR[r.model] || "var(--accent)") : ""
+      },
       { key: "ktg", label: "КТГ", numeric: true, fmt: v => v == null ? "—" : pct(v) },
       { key: "kio", label: "КИО", numeric: true, fmt: v => v == null ? "—" : pct(v) },
     ],
