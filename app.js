@@ -79,7 +79,7 @@ const FILES = {
   fleetBooks: "data/fleet_books.json", fleet: "data/fleet.json",
   repairs: "data/repairs.json", provision: "data/provision.json",
   stock: "data/stock.json", quality: "data/quality.json", kb: "data/kb.json",
-  drawings: "data/drawings.json",
+  drawings: "data/drawings.json", linkome: "data/linkome_sheets.json",
 };
 
 function boot() {
@@ -101,11 +101,18 @@ let STOCK_BY_CODE = new Map();
 let EKMTR_NAME = new Map();
 let CATALOG_BY_ART = new Map();
 let INTER_GROUP_OF = new Map(); // каталожный номер -> группа взаимозаменяемости (массив)
+let LINKOME_BOOKS_OF = new Map(); // каталожный номер -> книги LinkOme, где числится лист
 function buildIndexes() {
   STOCK_BY_CODE = new Map(D.stock.items.map(i => [i.code, i]));
   EKMTR_NAME = new Map(D.ekmtrWk.items.map(i => [i.code, i.name]));
   CATALOG_BY_ART = new Map(D.catalog.items.map(i => [i.art, i]));
   D.interchange.groups.forEach(g => g.forEach(num => INTER_GROUP_OF.set(num, g)));
+  Object.entries(D.linkome.byBook).forEach(([book, info]) => {
+    info.nums.forEach(n => {
+      if (!LINKOME_BOOKS_OF.has(n)) LINKOME_BOOKS_OF.set(n, []);
+      LINKOME_BOOKS_OF.get(n).push(book);
+    });
+  });
 }
 
 /* ---------- вкладки ---------- */
@@ -227,7 +234,8 @@ function renderCatalog(host) {
         },
         {
           key: "art", label: "Чертёж", cls: "", fmt: (v) => D.drawings.byNum[v]
-            ? '<span class="badge good">есть</span>' : ""
+            ? '<span class="badge good">есть</span>'
+            : LINKOME_BOOKS_OF.has(v) ? '<span class="badge info">в LinkOme</span>' : ""
         },
       ],
     });
@@ -540,6 +548,8 @@ function openDetail(art) {
     (item.tree[0] ? INTER_GROUP_OF.get(item.tree[0].num) : null);
   const drawings = D.drawings.byNum[item.art] ||
     (item.tree[0] ? D.drawings.byNum[item.tree[0].num] : null);
+  const linkomeBooks = LINKOME_BOOKS_OF.get(item.art) ||
+    (item.tree[0] ? LINKOME_BOOKS_OF.get(item.tree[0].num) : null);
 
   const back = byId("modalBack"), card = byId("modalCard");
   back.hidden = false; card.hidden = false;
@@ -583,7 +593,11 @@ function openDetail(art) {
       <h3 style="font-size:12.5px;margin:16px 0 6px">Чертежи (реестр)</h3>
       <p style="font-size:12px">${drawings.map(d => `<span class="badge good">${esc(d.ext.toUpperCase())}</span> ${esc(d.path.split("/").pop())}`).join("<br>")}</p>
       <p class="hint">Файлы — в ветке <code>rawdata</code>, порталом пока не раздаются.</p>` :
-        '<p class="hint">Чертежа в реестре нет — по этому номеру нужен экспорт из LinkOne или OCR каталога-скана.</p>'}
+        linkomeBooks ? `
+      <h3 style="font-size:12.5px;margin:16px 0 6px">Чертёж в LinkOme</h3>
+      <p style="font-size:12px"><span class="badge info">в реестре</span> книги: ${linkomeBooks.map(esc).join(", ")}</p>
+      <p class="hint">Лист числится в оглавлении книги LinkOme, но сам чертёж пока не извлекается — формат .bli/.ilg не декодирован (см. «Качество данных»). Нужен экспорт через LinkOne Viewer.</p>` :
+        '<p class="hint">Чертежа в реестре нет — ни в предразбитых файлах, ни в оглавлении LinkOme.</p>'}
   `;
   byId("mCloseBtn").onclick = closeModal;
 }
