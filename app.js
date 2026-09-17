@@ -241,7 +241,114 @@ function renderTab() {
     case "dq": return renderDQ(host);
     case "doc": return renderDoc(host);
     case "upd": return renderUpdate(host);
+    case "cart": return renderCart(host);
   }
+}
+
+/* ===================== ЗАЯВКА (КОРЗИНА) ===================== */
+/* Рабочий список на закупку/кодификацию — собирается из «Обеспеченности»,
+   «Запасов» и «Кодификации» кнопкой «+ в заявку» на строке. Хранится в
+   браузере (localStorage) — черновик одного человека, не общая заявка;
+   выгружается в CSV или печатается, дальше — обычным порядком в закупку. */
+const CART_KEY = "wkcrm_cart_v1";
+function cartGet() {
+  try { return JSON.parse(localStorage.getItem(CART_KEY) || "[]"); } catch (e) { return []; }
+}
+function cartSet(items) {
+  try { localStorage.setItem(CART_KEY, JSON.stringify(items)); } catch (e) { /* приватный режим и т.п. */ }
+  cartUpdateBadge();
+}
+function cartHas(code) { return cartGet().some(i => i.code === code); }
+function cartAdd(item) {
+  const items = cartGet();
+  if (items.some(i => i.code === item.code)) return;
+  items.push({ ...item, addedAt: new Date().toISOString() });
+  cartSet(items);
+}
+function cartRemove(code) { cartSet(cartGet().filter(i => i.code !== code)); }
+function cartClear() { cartSet([]); }
+function cartUpdateBadge() {
+  const el = byId("cartBadge");
+  if (!el) return;
+  const n = cartGet().length;
+  el.textContent = n || "";
+  el.style.display = n ? "" : "none";
+}
+
+function cartAddBtn(item) {
+  const has = cartHas(item.code);
+  return `<button class="minibtn cart-add ${has ? "on" : ""}" data-code="${esc(item.code)}" data-name="${esc(item.name || "")}" data-value="${item.value || ""}" data-source="${esc(item.source)}" title="${has ? "уже в заявке" : "добавить в заявку"}">${has ? "✓" : "+"}</button>`;
+}
+/* Делегирование, а не навешивание на каждую кнопку: renderTable
+   пересоздаёт всю разметку таблицы при клике по заголовку (пересортировка),
+   старые узлы со своими обработчиками при этом уничтожаются — слушатель
+   на самом контейнере переживает такие перерисовки. Идемпотентно —
+   повторный вызов на том же контейнере не даёт второго обработчика. */
+function wireCartButtons(container) {
+  if (container.dataset.cartWired) return;
+  container.dataset.cartWired = "1";
+  container.addEventListener("click", (e) => {
+    const btn = e.target.closest(".cart-add");
+    if (!btn) return;
+    e.stopPropagation();
+    const code = btn.dataset.code;
+    if (cartHas(code)) { cartRemove(code); } else {
+      cartAdd({ code, name: btn.dataset.name, value: btn.dataset.value ? Number(btn.dataset.value) : null, source: btn.dataset.source, qty: 1, note: "" });
+    }
+    btn.classList.toggle("on");
+    btn.textContent = btn.classList.contains("on") ? "✓" : "+";
+    btn.title = btn.classList.contains("on") ? "уже в заявке" : "добавить в заявку";
+    cartUpdateBadge();
+  });
+}
+
+function renderCart(host) {
+  const items = cartGet();
+  host.innerHTML = `
+    <h1>Заявка</h1>
+    <p class="sub">Рабочий список из «Обеспеченности», «Запасов» и «Кодификации» — на закупку или на заведение НСИ. Хранится только в этом браузере.</p>
+    ${!items.length ? callout("info", "Пусто. Добавляйте позиции кнопкой «+» на строках в «Обеспеченности», «Запасах» или «Кодификации».") : ""}
+    ${items.length ? `
+    <div class="toolbar">
+      <span class="count">${num(items.length)} позиций${items.some(i => i.value) ? " · " + rub(items.reduce((s, i) => s + (i.value || 0) * (i.qty || 1), 0)) : ""}</span>
+      <button class="minibtn" id="cartClearBtn" type="button">Очистить</button>
+      <button class="minibtn" id="cartPrintBtn" type="button">Печать</button>
+    </div>
+    <div id="cartTable"></div>` : ""}
+  `;
+  if (!items.length) return;
+  renderTable(byId("cartTable"), {
+    rows: items, sortKey: "addedAt", sortDir: -1,
+    csv: true, csvName: "wk_zayavka.csv",
+    cols: [
+      { key: "code", label: "Код", cls: "mono" },
+      { key: "name", label: "Наименование", cls: "wrap" },
+      { key: "source", label: "Источник" },
+      { key: "value", label: "Стоимость", numeric: true, fmt: v => v ? rub(v) : "" },
+      {
+        key: "qty", label: "Кол-во", numeric: true,
+        fmt: (v, r) => `<input type="number" min="1" value="${v || 1}" class="cart-qty" data-code="${esc(r.code)}" style="width:56px;background:var(--surface-2);border:var(--hair);border-radius:var(--radius);color:var(--ink);padding:3px 6px;font:inherit"/>`
+      },
+      {
+        key: "note", label: "Заметка", cls: "wrap",
+        fmt: (v, r) => `<input type="text" value="${esc(v || "")}" class="cart-note" data-code="${esc(r.code)}" placeholder="…" style="width:100%;background:var(--surface-2);border:var(--hair);border-radius:var(--radius);color:var(--ink);padding:3px 6px;font:inherit"/>`
+      },
+      { key: "code", label: "", plain: () => "", fmt: (v) => `<button class="minibtn" data-rm="${esc(v)}" type="button">✕</button>` },
+    ],
+  });
+  qsa(".cart-qty", host).forEach(el => el.onchange = () => {
+    const items2 = cartGet();
+    const it = items2.find(i => i.code === el.dataset.code);
+    if (it) { it.qty = Math.max(1, parseInt(el.value) || 1); cartSet(items2); }
+  });
+  qsa(".cart-note", host).forEach(el => el.onchange = () => {
+    const items2 = cartGet();
+    const it = items2.find(i => i.code === el.dataset.code);
+    if (it) { it.note = el.value; cartSet(items2); }
+  });
+  qsa("[data-rm]", host).forEach(btn => btn.onclick = () => { cartRemove(btn.dataset.rm); renderTab(); });
+  byId("cartClearBtn").onclick = () => { if (confirm("Очистить заявку?")) { cartClear(); renderTab(); } };
+  byId("cartPrintBtn").onclick = () => window.print();
 }
 
 /* ===================== СВОДКА ===================== */
@@ -524,8 +631,13 @@ function renderProvision(host) {
             return badge + (r.restricted ? ' <span class="badge restricted">огранич.</span>' : "");
           }
         },
+        {
+          key: "code", label: "", plain: () => "",
+          fmt: (v, r) => cartAddBtn({ code: v, name: r.name, value: r.needValue, source: "Обеспеченность" })
+        },
       ],
     });
+    wireCartButtons(byId("provTable"));
   }
   byId("provStatus").onchange = apply;
   apply();
@@ -573,8 +685,13 @@ function renderStock(host) {
         { key: "restrictedValue", label: "Ограничено", numeric: true, fmt: v => v > 0 ? `<span class="badge restricted">${rub(v)}</span>` : "" },
         { key: "availValue", label: "Доступно", numeric: true, fmt: rub },
         { key: "purchase", label: "В закупке", numeric: true, plain: v => v ? v.planV : "", fmt: v => v ? rub(v.planV) : "" },
+        {
+          key: "code", label: "", plain: () => "",
+          fmt: (v, r) => cartAddBtn({ code: v, name: r.name, value: r.availValue, source: "Запасы" })
+        },
       ],
     });
+    wireCartButtons(byId("stkTable"));
   }
   byId("stkQ").oninput = apply;
   byId("stkRestricted").onclick = e => { restrOnly = !restrOnly; e.target.classList.toggle("on"); apply(); };
@@ -636,8 +753,13 @@ function renderCodif(host) {
       { key: "nameRu", label: "Наименование", cls: "wrap" },
       { key: "priceCNY", label: "Цена, ¥", numeric: true, fmt: cny },
       { key: "tree", label: "Узел", cls: "wrap", plain: v => v && v.length ? v[0].mech : "", fmt: v => v && v.length ? esc(v[0].mech) : "" },
+      {
+        key: "art", label: "", plain: () => "",
+        fmt: (v, r) => cartAddBtn({ code: v, name: r.nameRu, value: null, source: "Кодификация" })
+      },
     ],
   });
+  wireCartButtons(byId("codifTable"));
 }
 
 /* ===================== ВЗАИМОЗАМЕНЯЕМОСТЬ ===================== */
@@ -1029,6 +1151,12 @@ function initNav() {
     html.setAttribute("data-theme", next);
     byId("btnTheme").textContent = next === "light" ? "☀" : "☾";
   };
+  byId("btnCart").onclick = () => {
+    qsa("#tabs button").forEach(x => x.classList.remove("on"));
+    TAB = "cart";
+    renderTab();
+  };
+  cartUpdateBadge();
   let searchTimer;
   byId("globalSearch").oninput = e => {
     clearTimeout(searchTimer);
