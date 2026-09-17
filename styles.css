@@ -180,3 +180,25 @@ tr.restricted-row:hover td{filter:brightness(1.08)}
 .progress-legend i{width:8px;height:8px;border-radius:2px;display:inline-block}
 
 footer{padding:24px 20px 40px;color:var(--ink-4);font-size:11px;text-align:center}
+
+/* ---------- карточка детали (модалка) ---------- */
+.modal-back{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:100}
+.modal-card{position:fixed;top:0;right:0;bottom:0;width:min(560px,92vw);background:var(--surface);
+  border-left:var(--hair);box-shadow:var(--shadow);z-index:101;overflow-y:auto;padding:18px 20px 40px}
+.modal-card .mclose{position:absolute;top:14px;right:16px;width:30px;height:30px;border-radius:99px;
+  background:var(--surface-2);border:var(--hair);color:var(--ink-2);cursor:pointer;font-size:16px;line-height:1}
+.modal-card .mclose:hover{background:var(--surface-3);color:var(--ink)}
+.modal-card h2{margin:0 0 2px;font-size:16px}
+.dl{display:grid;grid-template-columns:130px 1fr;gap:6px 10px;font-size:12.5px;margin:12px 0}
+.dl dt{color:var(--ink-3)}
+.dl dd{margin:0;color:var(--ink)}
+.mrow{cursor:pointer}
+.mrow:hover td{color:var(--accent)}
+
+/* ---------- база знаний ---------- */
+.kbgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:16px}
+.kbclass{background:var(--surface);border:var(--hair);border-radius:var(--radius);padding:10px 12px;cursor:pointer}
+.kbclass:hover{border-color:var(--line-2)}
+.kbclass.on{border-color:var(--accent);background:var(--accent-soft)}
+.kbclass .n{font-size:17px;font-weight:600}
+.kbclass .l{font-size:11px;color:var(--ink-3);margin-top:2px;line-height:1.3}

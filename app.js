@@ -30,7 +30,7 @@ const D = {}; // сюда лягут все витрины после загру
 let TAB = "sum";
 
 /* ---------- generic sortable table ---------- */
-function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, limit }) {
+function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, limit, onRowClick }) {
   let key = sortKey || (cols.find(c => c.numeric) || cols[0]).key;
   let dir = sortDir;
   function draw() {
@@ -46,9 +46,9 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
     const thead = `<thead><tr>${cols.map(c =>
       `<th class="${c.numeric ? "n" : ""} ${c.key === key ? "sorted" : ""}" data-k="${c.key}">${esc(c.label)}${c.key === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`
     ).join("")}</tr></thead>`;
-    const tbody = `<tbody>${shown.map(r => {
+    const tbody = `<tbody>${shown.map((r, ri) => {
       const cls = rowClass ? rowClass(r) : "";
-      return `<tr class="${cls}">${cols.map(c => {
+      return `<tr class="${cls}" data-ri="${ri}">${cols.map(c => {
         const v = c.fmt ? c.fmt(r[c.key], r) : esc(r[c.key]);
         return `<td class="${c.numeric ? "n" : ""} ${c.cls || ""}">${v}</td>`;
       }).join("")}</tr>`;
@@ -60,6 +60,9 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
       if (k === key) dir = -dir; else { key = k; dir = -1; }
       draw();
     });
+    if (onRowClick) {
+      qsa("tbody tr", container).forEach(tr => tr.onclick = () => onRowClick(shown[+tr.dataset.ri]));
+    }
   }
   draw();
 }
@@ -75,7 +78,7 @@ const FILES = {
   tree: "data/tree.json", interchange: "data/interchange.json",
   fleetBooks: "data/fleet_books.json", fleet: "data/fleet.json",
   repairs: "data/repairs.json", provision: "data/provision.json",
-  stock: "data/stock.json", quality: "data/quality.json",
+  stock: "data/stock.json", quality: "data/quality.json", kb: "data/kb.json",
 };
 
 function boot() {
@@ -95,9 +98,13 @@ function boot() {
 /* индексы для быстрого поиска и join между витринами */
 let STOCK_BY_CODE = new Map();
 let EKMTR_NAME = new Map();
+let CATALOG_BY_ART = new Map();
+let INTER_GROUP_OF = new Map(); // каталожный номер -> группа взаимозаменяемости (массив)
 function buildIndexes() {
   STOCK_BY_CODE = new Map(D.stock.items.map(i => [i.code, i]));
   EKMTR_NAME = new Map(D.ekmtrWk.items.map(i => [i.code, i.name]));
+  CATALOG_BY_ART = new Map(D.catalog.items.map(i => [i.art, i]));
+  D.interchange.groups.forEach(g => g.forEach(num => INTER_GROUP_OF.set(num, g)));
 }
 
 /* ---------- вкладки ---------- */
@@ -106,6 +113,7 @@ function renderTab() {
   switch (TAB) {
     case "sum": return renderSum(host);
     case "catalog": return renderCatalog(host);
+    case "kb": return renderKB(host);
     case "fleet": return renderFleet(host);
     case "repairs": return renderRepairs(host);
     case "provision": return renderProvision(host);
@@ -197,7 +205,8 @@ function renderCatalog(host) {
     });
     byId("catCount").textContent = num(rows.length) + " позиций";
     renderTable(byId("catTable"), {
-      rows, limit: 500,
+      rows, limit: 500, rowClass: () => "mrow",
+      onRowClick: r => openDetail(r.art),
       cols: [
         { key: "art", label: "Артикул", cls: "mono" },
         { key: "model", label: "Модель" },
@@ -513,6 +522,109 @@ function renderDoc(host) {
   `;
 }
 
+/* ===================== КАРТОЧКА ДЕТАЛИ (модалка) ===================== */
+function closeModal() {
+  byId("modalBack").hidden = true;
+  byId("modalCard").hidden = true;
+}
+function openDetail(art) {
+  const item = CATALOG_BY_ART.get(art);
+  if (!item) return;
+  const stock = item.ekmtr ? STOCK_BY_CODE.get(item.ekmtr) : null;
+  const group = INTER_GROUP_OF.get(item.art) ||
+    (item.tree[0] ? INTER_GROUP_OF.get(item.tree[0].num) : null);
+
+  const back = byId("modalBack"), card = byId("modalCard");
+  back.hidden = false; card.hidden = false;
+  back.onclick = closeModal;
+
+  card.innerHTML = `
+    <button class="mclose" id="mCloseBtn">✕</button>
+    <h2 class="mono">${esc(item.art)}</h2>
+    <p class="sub" style="margin:0">${esc(item.nameRu)} ${item.nameZh ? `· ${esc(item.nameZh)}` : ""}</p>
+    <dl class="dl">
+      <dt>Модель</dt><dd>${esc(item.model)}</dd>
+      <dt>Тип</dt><dd>${esc(item.type || "—")}</dd>
+      <dt>Ресурс</dt><dd>${item.resource ? num(item.resource) + " м/ч" : "—"}</dd>
+      <dt>ТНВЭД</dt><dd class="mono">${esc(item.tnved || "—")}</dd>
+      <dt>Цена ДП</dt><dd>${cny(item.priceCNY)}</dd>
+      <dt>Цена УСО</dt><dd>${cny(item.priceUsoCNY)} ${item.priceDiffCNY != null ? `<span class="badge warn">Δ ${cny(item.priceDiffCNY)}</span>` : ""}</dd>
+      <dt>Код ЕКМТР</dt><dd class="mono">${item.ekmtr ? esc(item.ekmtr) + (item.ekmtrAmbiguous ? ' <span class="badge warn">неоднозначно</span>' : "") : '<span class="badge bad">не кодифицировано</span>'}</dd>
+      ${item.artNew ? `<dt>Артикул обн.</dt><dd class="mono">${esc(item.artNew)}</dd>` : ""}
+    </dl>
+
+    ${stock ? `
+      <h3 style="font-size:12.5px;margin:16px 0 6px">Остаток и закупка</h3>
+      <dl class="dl">
+        <dt>Остаток</dt><dd>${num(stock.qty, 1)} ед. · ${rub(stock.value)}</dd>
+        <dt>Доступно</dt><dd>${rub(stock.availValue)}</dd>
+        ${stock.restrictedValue > 0 ? `<dt>Ограничено</dt><dd><span class="badge restricted">${rub(stock.restrictedValue)}</span>${stock.fullyRestricted ? " — весь остаток" : ""}</dd>` : ""}
+        ${stock.purchase ? `<dt>В закупке</dt><dd>${rub(stock.purchase.planV)} · ещё поставить ${num(stock.purchase.openQty, 1)} ед.</dd>` : ""}
+      </dl>` : (item.ekmtr ? '<p class="hint">Остатка по этому коду нет.</p>' : "")}
+
+    ${item.tree.length ? `
+      <h3 style="font-size:12.5px;margin:16px 0 6px">В узлах</h3>
+      <dl class="dl">
+        ${item.tree.map(t => `<dt>${esc(t.book)}</dt><dd>${esc(t.mech)} · кол-во ${num(t.qty)}</dd>`).join("")}
+      </dl>` : ""}
+
+    ${group ? `
+      <h3 style="font-size:12.5px;margin:16px 0 6px">Взаимозаменяемые номера</h3>
+      <p class="mono" style="font-size:12px">${group.map(esc).join(", ")}</p>` : ""}
+  `;
+  byId("mCloseBtn").onclick = closeModal;
+}
+
+/* ===================== БАЗА ЗНАНИЙ ===================== */
+let KB_FILTER = { cls: "", q: "" };
+function renderKB(host) {
+  const m = D.kb.meta;
+  const classes = Object.entries(m.byClass).sort((a, b) => b[1] - a[1]);
+  host.innerHTML = `
+    <h1>База знаний</h1>
+    <p class="sub">${num(m.docs)} документов из АТ-Майнинг (руководства, схемы, нормы ТО, чертежи CAD) — ${num(m.totalBytes / 1e9, 1)} ГБ. Каталоги в PDF (${m.skippedCatalogPdf}) сюда не входят — чертежи берутся из LinkOme, каталог остаётся только справочно там, где книги LinkOme нет (см. «Качество данных»).</p>
+    ${callout("info", "Реестр — метаданные (путь, класс, модель); сами файлы лежат в ветке <code>rawdata</code> и пока не раздаются порталом — см. открытый вопрос о хостинге в плане.")}
+    <div class="kbgrid" id="kbClasses"></div>
+    <div class="toolbar">
+      <input type="search" id="kbQ" placeholder="Имя файла…"/>
+      <select id="kbModel"><option value="">Все модели</option><option>WK-20</option><option>WK-20C</option><option>WK-35</option></select>
+      <span class="count" id="kbCount"></span>
+    </div>
+    <div id="kbTable"></div>
+  `;
+  byId("kbClasses").innerHTML = classes.map(([c, n]) => `
+    <div class="kbclass ${KB_FILTER.cls === c ? "on" : ""}" data-c="${esc(c)}">
+      <div class="n">${n}</div><div class="l">${esc(c)}</div>
+    </div>`).join("");
+  function apply() {
+    let rows = D.kb.docs.filter(d => {
+      if (KB_FILTER.cls && d.class !== KB_FILTER.cls) return false;
+      const model = byId("kbModel").value;
+      if (model && d.model !== model) return false;
+      if (KB_FILTER.q && !d.name.toLowerCase().includes(KB_FILTER.q.toLowerCase())) return false;
+      return true;
+    });
+    byId("kbCount").textContent = num(rows.length) + " документов";
+    renderTable(byId("kbTable"), {
+      rows, limit: 300, sortKey: "name", sortDir: 1,
+      cols: [
+        { key: "name", label: "Файл", cls: "wrap" },
+        { key: "class", label: "Класс" },
+        { key: "model", label: "Модель", fmt: v => v || '<span class="dim">общая</span>' },
+        { key: "sizeBytes", label: "Размер", numeric: true, fmt: v => num(v / 1e6, 1) + " МБ" },
+      ],
+    });
+  }
+  qsa(".kbclass", host).forEach(el => el.onclick = () => {
+    KB_FILTER.cls = KB_FILTER.cls === el.dataset.c ? "" : el.dataset.c;
+    qsa(".kbclass", host).forEach(x => x.classList.toggle("on", x.dataset.c === KB_FILTER.cls));
+    apply();
+  });
+  byId("kbQ").oninput = e => { KB_FILTER.q = e.target.value; apply(); };
+  byId("kbModel").onchange = apply;
+  apply();
+}
+
 /* ---------- навигация / поиск / тема ---------- */
 function initNav() {
   qsa("#tabs button").forEach(b => b.onclick = () => {
@@ -542,6 +654,8 @@ function initNav() {
     }, 250);
   };
 }
+
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
 initNav();
 boot();

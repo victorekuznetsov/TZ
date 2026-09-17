@@ -32,6 +32,7 @@
 <nav class="tabs" id="tabs" role="tablist">
   <button class="on" data-t="sum" role="tab">Сводка</button>
   <button data-t="catalog" role="tab">Каталог</button>
+  <button data-t="kb" role="tab">База знаний</button>
   <button data-t="fleet" role="tab">Парк</button>
   <button data-t="repairs" role="tab">Ремонты</button>
   <button data-t="provision" role="tab">Обеспеченность</button>
@@ -46,6 +47,9 @@
 <main id="main">
   <div class="callout info">Загрузка данных…</div>
 </main>
+
+<div id="modalBack" class="modal-back" hidden></div>
+<div id="modalCard" class="modal-card" hidden></div>
 
 <footer>WK CRM · данные: прайсы ДП/УСО, ведомость взаимозаменяемости WK4.7, SAP (остатки, закупки, ПМ-06), TOPO КТГ · сборка build/*.py</footer>
 
