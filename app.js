@@ -79,6 +79,7 @@ const FILES = {
   fleetBooks: "data/fleet_books.json", fleet: "data/fleet.json",
   repairs: "data/repairs.json", provision: "data/provision.json",
   stock: "data/stock.json", quality: "data/quality.json", kb: "data/kb.json",
+  drawings: "data/drawings.json",
 };
 
 function boot() {
@@ -223,6 +224,10 @@ function renderCatalog(host) {
           key: "tree", label: "Узел", cls: "wrap", fmt: v => v && v.length
             ? esc(v[0].mech) + (v.length > 1 ? ` (+${v.length - 1})` : "")
             : '<span class="dim">—</span>'
+        },
+        {
+          key: "art", label: "Чертёж", cls: "", fmt: (v) => D.drawings.byNum[v]
+            ? '<span class="badge good">есть</span>' : ""
         },
       ],
     });
@@ -533,6 +538,8 @@ function openDetail(art) {
   const stock = item.ekmtr ? STOCK_BY_CODE.get(item.ekmtr) : null;
   const group = INTER_GROUP_OF.get(item.art) ||
     (item.tree[0] ? INTER_GROUP_OF.get(item.tree[0].num) : null);
+  const drawings = D.drawings.byNum[item.art] ||
+    (item.tree[0] ? D.drawings.byNum[item.tree[0].num] : null);
 
   const back = byId("modalBack"), card = byId("modalCard");
   back.hidden = false; card.hidden = false;
@@ -571,6 +578,12 @@ function openDetail(art) {
     ${group ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Взаимозаменяемые номера</h3>
       <p class="mono" style="font-size:12px">${group.map(esc).join(", ")}</p>` : ""}
+
+    ${drawings ? `
+      <h3 style="font-size:12.5px;margin:16px 0 6px">Чертежи (реестр)</h3>
+      <p style="font-size:12px">${drawings.map(d => `<span class="badge good">${esc(d.ext.toUpperCase())}</span> ${esc(d.path.split("/").pop())}`).join("<br>")}</p>
+      <p class="hint">Файлы — в ветке <code>rawdata</code>, порталом пока не раздаются.</p>` :
+        '<p class="hint">Чертежа в реестре нет — по этому номеру нужен экспорт из LinkOne или OCR каталога-скана.</p>'}
   `;
   byId("mCloseBtn").onclick = closeModal;
 }
