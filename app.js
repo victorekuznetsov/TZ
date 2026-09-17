@@ -264,8 +264,30 @@ function renderSum(host) {
 
 /* ===================== КАТАЛОГ ===================== */
 let CAT_FILTER = { model: "", q: "" };
+
+/* Курс CNY→₽ — только для отображения в каталоге, нигде не сохраняется
+   в данных и не переносится между вкладками расчёта. Хранится в браузере
+   (per-viewer удобство): если пуст или очищен, каталог просто не
+   показывает колонку ₽, а не подставляет выдуманное значение. Из
+   закупок курс НЕ выводится: разброс «Учётная цена / Цена нетто» по
+   строкам ZCNY (6,9–55,7 на 5–95 перцентиле) слишком широкий, чтобы
+   считаться курсом обмена, а не искажённым пошлинами и логистикой. */
+function getRate() {
+  try {
+    const v = parseFloat(localStorage.getItem("wkcrm_cny_rate"));
+    return isFinite(v) && v > 0 ? v : null;
+  } catch (e) { return null; }
+}
+function setRate(v) {
+  try {
+    if (v == null) localStorage.removeItem("wkcrm_cny_rate");
+    else localStorage.setItem("wkcrm_cny_rate", String(v));
+  } catch (e) { /* приватный режим и т.п. — молча игнорируем */ }
+}
+
 function renderCatalog(host) {
   const items = D.catalog.items;
+  const rate = getRate();
   host.innerHTML = `
     <h1>Каталог запчастей</h1>
     <p class="sub">${num(items.length)} позиций прайса ДП (основной источник) со сверкой прайса УСО, привязкой к дереву узлов и к коду ЕКМТР. Цена — <b>в юанях</b>, единственное место в портале.</p>
@@ -277,12 +299,21 @@ function renderCatalog(host) {
       </select>
       <span class="pill" id="catNoCode">без кода ЕКМТР</span>
       <span class="pill" id="catDiff">цена ДП≠УСО</span>
+      <span style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-3)">
+        курс ¥→₽ <input type="number" id="catRate" step="0.01" min="0" placeholder="—" value="${rate || ""}" style="width:64px;background:var(--surface-2);border:var(--hair);border-radius:var(--radius);color:var(--ink);padding:5px 7px;font:inherit"/>
+      </span>
       <span class="count" id="catCount"></span>
     </div>
     <div id="catTable"></div>
   `;
+  byId("catRate").oninput = e => {
+    const v = parseFloat(e.target.value);
+    setRate(isFinite(v) && v > 0 ? v : null);
+    apply();
+  };
   let noCodeOnly = false, diffOnly = false;
   function apply() {
+    const curRate = getRate();
     const q = CAT_FILTER.q.trim().toLowerCase().replace(/-/g, "");
     let rows = items.filter(i => {
       if (CAT_FILTER.model && i.model !== CAT_FILTER.model) return false;
@@ -305,6 +336,7 @@ function renderCatalog(host) {
         { key: "nameRu", label: "Наименование", cls: "wrap" },
         { key: "resource", label: "Ресурс, м/ч", numeric: true },
         { key: "priceCNY", label: "Цена, ¥", numeric: true, fmt: cny },
+        ...(curRate ? [{ key: "priceCNY", label: "Цена, ₽", numeric: true, fmt: v => v == null ? "—" : rub(v * curRate) }] : []),
         { key: "priceDiffCNY", label: "Δ УСО", numeric: true, fmt: v => v == null ? "" : `<span class="badge warn">${cny(v)}</span>` },
         {
           key: "ekmtr", label: "ЕКМТР", cls: "mono", fmt: (v, r) => v
@@ -669,7 +701,7 @@ function openDetail(art) {
       <dt>Тип</dt><dd>${esc(item.type || "—")}</dd>
       <dt>Ресурс</dt><dd>${item.resource ? num(item.resource) + " м/ч" : "—"}</dd>
       <dt>ТНВЭД</dt><dd class="mono">${esc(item.tnved || "—")}</dd>
-      <dt>Цена ДП</dt><dd>${cny(item.priceCNY)}</dd>
+      <dt>Цена ДП</dt><dd>${cny(item.priceCNY)}${getRate() && item.priceCNY != null ? ` · ${rub(item.priceCNY * getRate())}` : ""}</dd>
       <dt>Цена УСО</dt><dd>${cny(item.priceUsoCNY)} ${item.priceDiffCNY != null ? `<span class="badge warn">Δ ${cny(item.priceDiffCNY)}</span>` : ""}</dd>
       <dt>Код ЕКМТР</dt><dd class="mono">${item.ekmtr ? esc(item.ekmtr) + (item.ekmtrAmbiguous ? ' <span class="badge warn">неоднозначно</span>' : "") : '<span class="badge bad">не кодифицировано</span>'}</dd>
       ${item.artNew ? `<dt>Артикул обн.</dt><dd class="mono">${esc(item.artNew)}</dd>` : ""}
