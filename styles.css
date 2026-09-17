@@ -214,3 +214,5 @@ footer{padding:24px 20px 40px;color:var(--ink-4);font-size:11px;text-align:cente
 .chart-tip .tr{display:flex;align-items:center;gap:6px;color:var(--ink-2);line-height:1.6}
 .chart-tip .tr i{width:8px;height:8px;border-radius:2px;flex:0 0 auto}
 .chart-tip .tr b{color:var(--ink);margin-left:auto;font-variant-numeric:tabular-nums}
+
+mark{background:var(--accent-soft);color:var(--ink);border-radius:2px;padding:0 1px}

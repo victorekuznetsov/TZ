@@ -215,6 +215,7 @@ function renderTab() {
     case "inter": return renderInter(host);
     case "dq": return renderDQ(host);
     case "doc": return renderDoc(host);
+    case "upd": return renderUpdate(host);
   }
 }
 
@@ -344,8 +345,9 @@ function renderCatalog(host) {
             : '<span class="badge bad">нет</span>'
         },
         {
-          key: "tree", label: "Узел", cls: "wrap", fmt: v => v && v.length
-            ? esc(v[0].mech) + (v.length > 1 ? ` (+${v.length - 1})` : "")
+          key: "tree", label: "Узел", cls: "wrap", fmt: (v, r) => v && v.length
+            ? esc(v[0].mech) + (v.length > 1 ? ` (+${v.length - 1})` : "") +
+              (r.treeMethod === "parent" ? ' <span class="badge info" title="сам номер в ведомости не значится, найден узел-родитель на уровень выше">родитель</span>' : "")
             : '<span class="dim">—</span>'
         },
         {
@@ -672,6 +674,128 @@ function renderDoc(host) {
   `;
 }
 
+/* ===================== ОБНОВЛЕНИЕ ДАННЫХ ===================== */
+/* Пересборка stock.json (остатки + ограниченный запас + закупки) прямо
+   в браузере — те же правила, что в build/build_stock.py (доступно =
+   остаток минус ограниченное), см. lib/stock_pipeline.js. Файлы не
+   уходят никуда за пределы вкладки: разбор целиком в браузере. */
+const UPD = { files: {}, busy: false, progress: null, result: null, err: "" };
+
+async function updRun() {
+  if (UPD.busy) return;
+  const need = ["stock", "restricted", "purchase"];
+  if (!need.every(k => UPD.files[k])) { UPD.err = "Нужны все три файла: остатки, ограниченный запас, закупка."; renderTab(); return; }
+  UPD.busy = true; UPD.err = ""; UPD.result = null; UPD.progress = null;
+  renderTab();
+  try {
+    const wkCodes = new Set(D.ekmtrWk.items.map(e => e.code));
+    const tick = (label) => (p) => { UPD.progress = { label, pct: p.total ? Math.round(100 * p.done / p.total) : 0 }; renderTab(); };
+
+    const zStock = await XLSXStream.openZip(UPD.files.stock);
+    const stock = await StockPipeline.parseStock(zStock, wkCodes, tick("Остатки"));
+
+    const zRestr = await XLSXStream.openZip(UPD.files.restricted);
+    const restrSheet = await StockPipeline.firstSheetName(zRestr);
+    const restr = await StockPipeline.parseRestricted(zRestr, restrSheet, wkCodes, tick("Ограниченный запас"));
+
+    const zPurch = await XLSXStream.openZip(UPD.files.purchase);
+    const purchSheet = await StockPipeline.firstSheetName(zPurch);
+    const purch = await StockPipeline.parsePurchase(zPurch, purchSheet, wkCodes, tick("Закупка"));
+
+    UPD.result = StockPipeline.assemble(D.ekmtrWk, stock, restr, purch, {
+      stock: UPD.files.stock.name, restricted: UPD.files.restricted.name, purchase: UPD.files.purchase.name,
+    });
+  } catch (e) {
+    UPD.err = "Ошибка разбора: " + e.message;
+  }
+  UPD.busy = false; UPD.progress = null;
+  renderTab();
+}
+
+function updApply() {
+  if (!UPD.result) return;
+  D.stock = UPD.result;
+  buildIndexes();
+  UPD.applied = true;
+  renderTab();
+}
+
+function updDownload() {
+  if (!UPD.result) return;
+  const blob = new Blob([JSON.stringify(UPD.result)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "stock.json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function updDiffRow(label, oldV, newV, fmt) {
+  const delta = newV - oldV;
+  const cls = Math.abs(delta) < 1e-6 ? "" : delta > 0 ? "good" : "bad";
+  return `<tr><td>${esc(label)}</td><td class="n">${fmt(oldV)}</td><td class="n">${fmt(newV)}</td>
+    <td class="n"><span class="badge ${cls}">${delta >= 0 ? "+" : ""}${fmt(delta)}</span></td></tr>`;
+}
+
+function renderUpdate(host) {
+  const f = UPD.files;
+  host.innerHTML = `
+    <h1>Обновление данных</h1>
+    <p class="sub">Пересборка остатков, ограниченного запаса и закупок — прямо в браузере, без Python. Разбирает те же три файла, что и <code>build/build_stock.py</code>, теми же правилами; файлы не покидают вкладку.</p>
+    ${callout("info", "Официальный способ обновить данные портала — <code>python3 build/build_stock.py</code> и коммит в репозиторий: здесь только предпросмотр и файл на скачивание, ничего не публикуется само.")}
+
+    <div class="card">
+      <h3>1. Файлы</h3>
+      <p class="hint">Три отдельных поля — надёжнее, чем угадывать тип по имени файла (его могут переименовать при сохранении).</p>
+      <div class="dl" style="grid-template-columns:170px 1fr">
+        <dt>Остатки</dt><dd><input type="file" id="updFileStock" accept=".xlsx,.XLSX"/> ${f.stock ? `<span class="badge good">✓ ${esc(f.stock.name)}</span>` : ""}</dd>
+        <dt>Ограниченный запас</dt><dd><input type="file" id="updFileRestricted" accept=".xlsx,.XLSX"/> ${f.restricted ? `<span class="badge good">✓ ${esc(f.restricted.name)}</span>` : ""}</dd>
+        <dt>Закупка</dt><dd><input type="file" id="updFilePurchase" accept=".xlsx,.XLSX"/> ${f.purchase ? `<span class="badge good">✓ ${esc(f.purchase.name)}</span>` : ""}</dd>
+      </div>
+      <div style="margin-top:12px">
+        <button class="iconbtn ${Object.keys(f).length === 3 ? "on" : ""}" id="updGo" ${UPD.busy ? "disabled" : ""}>${UPD.busy ? "Разбор…" : "Пересобрать"}</button>
+      </div>
+      ${UPD.progress ? `<div class="bar" style="margin-top:10px;height:8px"><i style="width:${UPD.progress.pct}%"></i></div><p class="hint">${esc(UPD.progress.label)} — ${UPD.progress.pct}%</p>` : ""}
+      ${UPD.err ? callout("bad", esc(UPD.err)) : ""}
+    </div>
+
+    ${UPD.result ? `
+    <div class="card">
+      <h3>2. Сверка с текущими данными портала</h3>
+      <div class="twrap"><table>
+        <thead><tr><th>Показатель</th><th class="n">Сейчас</th><th class="n">Новая выгрузка</th><th class="n">Δ</th></tr></thead>
+        <tbody>
+          ${updDiffRow("Остаток всего", D.stock.meta.totalValue, UPD.result.meta.totalValue, rub)}
+          ${updDiffRow("Доступно", D.stock.meta.totalAvailValue, UPD.result.meta.totalAvailValue, rub)}
+          ${updDiffRow("Ограничено", D.stock.meta.totalRestrictedValue, UPD.result.meta.totalRestrictedValue, rub)}
+          ${updDiffRow("Полностью ограничено, кодов", D.stock.meta.fullyRestrictedCodes, UPD.result.meta.fullyRestrictedCodes, v => num(v))}
+          ${updDiffRow("Закупка план", D.stock.meta.totalPurchasePlanValue, UPD.result.meta.totalPurchasePlanValue, rub)}
+          ${updDiffRow("Кодов с остатком", D.stock.meta.codesWithStock, UPD.result.meta.codesWithStock, v => num(v))}
+        </tbody>
+      </table></div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="iconbtn on" id="updApplyBtn">Применить в этом сеансе</button>
+        <button class="iconbtn" id="updDownloadBtn">Скачать stock.json</button>
+      </div>
+      ${UPD.applied ? callout("good", "Применено — разделы «Запасы», «Закупки», «Обеспеченность» и карточки деталей теперь используют новую выгрузку (только в этой вкладке браузера, до перезагрузки страницы).") : ""}
+      <p class="hint" style="margin-top:8px">Чтобы изменения остались навсегда — скачайте файл и замените <code>data/stock.json</code> в репозитории.</p>
+    </div>` : ""}
+  `;
+  [["updFileStock", "stock"], ["updFileRestricted", "restricted"], ["updFilePurchase", "purchase"]].forEach(([id, key]) => {
+    byId(id).onchange = e => {
+      if (e.target.files[0]) UPD.files[key] = e.target.files[0];
+      UPD.result = null; UPD.err = "";
+      renderTab();
+    };
+  });
+  const go = byId("updGo");
+  if (go) go.onclick = updRun;
+  const ap = byId("updApplyBtn");
+  if (ap) ap.onclick = updApply;
+  const dl = byId("updDownloadBtn");
+  if (dl) dl.onclick = updDownload;
+}
+
 /* ===================== КАРТОЧКА ДЕТАЛИ (модалка) ===================== */
 function closeModal() {
   byId("modalBack").hidden = true;
@@ -717,9 +841,10 @@ function openDetail(art) {
       </dl>` : (item.ekmtr ? '<p class="hint">Остатка по этому коду нет.</p>' : "")}
 
     ${item.tree.length ? `
-      <h3 style="font-size:12.5px;margin:16px 0 6px">В узлах</h3>
+      <h3 style="font-size:12.5px;margin:16px 0 6px">В узлах${item.treeMethod === "parent" ? ' <span class="badge info">через родителя</span>' : ""}</h3>
+      ${item.treeMethod === "parent" ? `<p class="hint">Номер ${esc(item.art)} сам в ведомости взаимозаменяемости не значится — показан узел-родитель на уровень выше (${esc(item.tree[0].num)}).</p>` : ""}
       <dl class="dl">
-        ${item.tree.map(t => `<dt>${esc(t.book)}</dt><dd>${esc(t.mech)} · кол-во ${num(t.qty)}</dd>`).join("")}
+        ${item.tree.map(t => `<dt>${esc(t.book)}</dt><dd>${esc(t.mech)} · кол-во ${num(t.qty)}${item.treeMethod === "parent" ? ` <span class="dim">(${esc(t.num)})</span>` : ""}</dd>`).join("")}
       </dl>` : ""}
 
     ${group ? `
@@ -741,6 +866,27 @@ function openDetail(art) {
 
 /* ===================== БАЗА ЗНАНИЙ ===================== */
 let KB_FILTER = { cls: "", q: "" };
+let KB_TEXT = null;     // lazy: data/kb_text.json грузится только по первому поиску по содержимому
+let KB_TEXT_LOADING = false;
+
+function kbEnsureText(onReady) {
+  if (KB_TEXT) { onReady(); return; }
+  if (KB_TEXT_LOADING) return;
+  KB_TEXT_LOADING = true;
+  fetchJSON("data/kb_text.json").then(d => {
+    KB_TEXT = d; KB_TEXT_LOADING = false; onReady();
+  }).catch(() => { KB_TEXT_LOADING = false; onReady(); });
+}
+
+function kbSnippet(text, q) {
+  const i = text.toLowerCase().indexOf(q.toLowerCase());
+  if (i < 0) return "";
+  const start = Math.max(0, i - 70), end = Math.min(text.length, i + q.length + 90);
+  let s = (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig");
+  return esc(s).replace(re, m => `<mark>${m}</mark>`);
+}
+
 function renderKB(host) {
   const m = D.kb.meta;
   const classes = Object.entries(m.byClass).sort((a, b) => b[1] - a[1]);
@@ -749,6 +895,14 @@ function renderKB(host) {
     <p class="sub">${num(m.docs)} документов из АТ-Майнинг (руководства, схемы, нормы ТО, чертежи CAD) — ${num(m.totalBytes / 1e9, 1)} ГБ. Каталоги в PDF (${m.skippedCatalogPdf}) сюда не входят — чертежи берутся из LinkOme, каталог остаётся только справочно там, где книги LinkOme нет (см. «Качество данных»).</p>
     ${callout("info", "Реестр — метаданные (путь, класс, модель); сами файлы лежат в ветке <code>rawdata</code> и пока не раздаются порталом — см. открытый вопрос о хостинге в плане.")}
     <div class="kbgrid" id="kbClasses"></div>
+
+    <div class="card">
+      <h3>Поиск по содержимому</h3>
+      <p class="hint" id="kbSearchHint">Индекс — первые ~60 тыс. знаков каждого PDF/DOCX/PPTX; загружается при первом запросе. Легаси .doc/.ppt не проиндексированы — LibreOffice не работает в этой песочнице.</p>
+      <input type="search" id="kbSearchQ" placeholder="Слово или фраза, например «регламент», «K1839»…"/>
+      <div id="kbSearchResults" style="margin-top:10px"></div>
+    </div>
+
     <div class="toolbar">
       <input type="search" id="kbQ" placeholder="Имя файла…"/>
       <select id="kbModel"><option value="">Все модели</option><option>WK-20</option><option>WK-20C</option><option>WK-35</option></select>
@@ -760,6 +914,37 @@ function renderKB(host) {
     <div class="kbclass ${KB_FILTER.cls === c ? "on" : ""}" data-c="${esc(c)}">
       <div class="n">${n}</div><div class="l">${esc(c)}</div>
     </div>`).join("");
+
+  const byPath = new Map(D.kb.docs.map(d => [d.path, d]));
+  let searchTimer;
+  byId("kbSearchQ").oninput = e => {
+    clearTimeout(searchTimer);
+    const q = e.target.value.trim();
+    const box = byId("kbSearchResults");
+    if (!q || q.length < 3) { box.innerHTML = q ? '<p class="hint">Минимум 3 символа.</p>' : ""; return; }
+    box.innerHTML = '<p class="hint">Поиск…</p>';
+    searchTimer = setTimeout(() => {
+      kbEnsureText(() => {
+        if (!KB_TEXT) { box.innerHTML = callout("bad", "Индекс недоступен."); return; }
+        const hintEl = byId("kbSearchHint");
+        if (hintEl) hintEl.textContent = `Индекс: ${num(KB_TEXT.meta.docsIndexed)} документов (PDF, DOCX, PPTX; первые ~${Math.round(KB_TEXT.meta.maxCharsPerDoc / 1000)} тыс. знаков каждого). Легаси .doc/.ppt не проиндексированы — LibreOffice не работает в этой песочнице.`;
+        const ql = q.toLowerCase();
+        const hits = [];
+        for (const path in KB_TEXT.docs) {
+          const t = KB_TEXT.docs[path].text;
+          if (t.toLowerCase().includes(ql)) hits.push({ path, doc: byPath.get(path) });
+        }
+        if (!hits.length) { box.innerHTML = '<p class="hint">Ничего не найдено.</p>'; return; }
+        box.innerHTML = `<p class="hint">${hits.length} документов</p>` + hits.slice(0, 40).map(h => `
+          <div style="padding:9px 0;border-bottom:1px solid var(--grid)">
+            <div style="font-size:12.5px;font-weight:600">${esc(h.doc ? h.doc.name : h.path)}</div>
+            <div style="font-size:11px;color:var(--ink-3);margin:1px 0 4px">${esc(h.doc ? h.doc.class : "")}</div>
+            <div style="font-size:12px;color:var(--ink-2);line-height:1.5">${kbSnippet(KB_TEXT.docs[h.path].text, q)}</div>
+          </div>`).join("");
+      });
+    }, 300);
+  };
+
   function apply() {
     let rows = D.kb.docs.filter(d => {
       if (KB_FILTER.cls && d.class !== KB_FILTER.cls) return false;

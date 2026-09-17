@@ -84,6 +84,19 @@ def match_tree(art, art2, idx, norm_idx):
         na = norm(a)
         if na in norm_idx:
             return norm_idx[na], "norm"
+    # родительский узел: ведомость взаимозаменяемости (2299 номеров) — подмножество
+    # полного состава машины (3042 в прайсе), у не попавших туда деталей часто есть
+    # узел-родитель на уровень выше (K1601.30.03.34 -> узел K1601.30.03 «Ковш»).
+    # Сам номер детали в дереве не значится — это НЕ то же самое, что точное
+    # совпадение, поэтому метод помечается отдельно: «через родителя».
+    for a in (art, art2):
+        if not a or not re.match(r"^K\d{4}", a, re.I):
+            continue
+        parts = a.upper().split(".")
+        for k in range(len(parts) - 1, 0, -1):
+            prefix = ".".join(parts[:k])
+            if prefix in idx:
+                return idx[prefix], "parent"
     return [], None
 
 
