@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<meta name="theme-color" content="#05080E" media="(prefers-color-scheme: dark)"/>
+<meta name="theme-color" content="#F1F2F3" media="(prefers-color-scheme: light)"/>
+<meta name="description" content="WK CRM — каталог запчастей, база знаний, запасы, обеспеченность, закупки и ремонты экскаваторов WK."/>
+<title>WK CRM · Экскаваторы WK</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 196 196'%3E%3Cpath d='M63.6 165.1 114.8 64.6 99.7 31H83.5L16 165.1Z' fill='%233EF0AF'/%3E%3Cpath d='M107.6 118.3h44.7l27.4-53.7L164.6 31h-45l15.1 33.6Z' fill='%233EF0AF'/%3E%3C/svg%3E"/>
+<link rel="stylesheet" href="styles.css"/>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 196 196" fill="none"><path d="M63.6 165.1 114.8 64.6 99.7 31H83.5L16 165.1Z" fill="currentColor"/><path d="M107.6 118.3h44.7l27.4-53.7L164.6 31h-45l15.1 33.6Z" fill="currentColor"/></svg>
+    <div>
+      <div class="bt">WK CRM</div>
+    </div>
+    <div class="bs hideSm">Каталог · запасы · обеспеченность · ремонты</div>
+  </div>
+  <div class="tb-search hideSm">
+    <input type="search" id="globalSearch" placeholder="Поиск по номеру или наименованию…" autocomplete="off"/>
+  </div>
+  <div class="sp"></div>
+  <div class="tb-actions">
+    <button class="iconbtn" id="btnTheme" title="Тема">☾</button>
+  </div>
+</div>
+
+<nav class="tabs" id="tabs" role="tablist">
+  <button class="on" data-t="sum" role="tab">Сводка</button>
+  <button data-t="catalog" role="tab">Каталог</button>
+  <button data-t="fleet" role="tab">Парк</button>
+  <button data-t="repairs" role="tab">Ремонты</button>
+  <button data-t="provision" role="tab">Обеспеченность</button>
+  <button data-t="stock" role="tab">Запасы</button>
+  <button data-t="purchase" role="tab">Закупки</button>
+  <button data-t="codif" role="tab">Кодификация</button>
+  <button data-t="inter" role="tab">Взаимозаменяемость</button>
+  <button data-t="dq" role="tab">Качество данных</button>
+  <button data-t="doc" role="tab">Методика</button>
+</nav>
+
+<main id="main">
+  <div class="callout info">Загрузка данных…</div>
+</main>
+
+<footer>WK CRM · данные: прайсы ДП/УСО, ведомость взаимозаменяемости WK4.7, SAP (остатки, закупки, ПМ-06), TOPO КТГ · сборка build/*.py</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
