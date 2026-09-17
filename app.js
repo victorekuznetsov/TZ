@@ -25,12 +25,31 @@ function fetchJSON(path) {
   });
 }
 
+/* ---------- выгрузка CSV ---------- */
+function csvCell(v) {
+  if (v == null) return "";
+  if (Array.isArray(v)) v = v.length;               // напр. массив узлов -> число
+  if (typeof v === "object") v = "";                 // прочие объекты в CSV не тащим
+  const s = String(v);
+  return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function downloadCSV(filename, rows, cols) {
+  const head = cols.map(c => csvCell(c.label)).join(";");
+  const body = rows.map(r => cols.map(c => csvCell(c.plain ? c.plain(r[c.key], r) : r[c.key])).join(";")).join("\n");
+  const blob = new Blob(["﻿" + head + "\n" + body], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
 /* ---------- состояние ---------- */
 const D = {}; // сюда лягут все витрины после загрузки
 let TAB = "sum";
 
 /* ---------- generic sortable table ---------- */
-function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, limit, onRowClick }) {
+function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, limit, onRowClick, csv, csvName }) {
   let key = sortKey || (cols.find(c => c.numeric) || cols[0]).key;
   let dir = sortDir;
   function draw() {
@@ -53,7 +72,9 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
         return `<td class="${c.numeric ? "n" : ""} ${c.cls || ""}">${v}</td>`;
       }).join("")}</tr>`;
     }).join("")}</tbody>`;
-    container.innerHTML = `<div class="twrap"><table>${thead}${tbody}</table></div>` +
+    container.innerHTML =
+      (csv ? `<div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button class="minibtn" id="${container.id}_csv" type="button">⇓ CSV (${num(sorted.length)})</button></div>` : "") +
+      `<div class="twrap"><table>${thead}${tbody}</table></div>` +
       (limit && rows.length > limit ? `<div class="count">показано ${limit} из ${rows.length}</div>` : "");
     qsa("th", container).forEach(th => th.onclick = () => {
       const k = th.dataset.k;
@@ -62,6 +83,10 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
     });
     if (onRowClick) {
       qsa("tbody tr", container).forEach(tr => tr.onclick = () => onRowClick(shown[+tr.dataset.ri]));
+    }
+    if (csv) {
+      const btn = byId(container.id + "_csv");
+      if (btn) btn.onclick = () => downloadCSV(csvName || "export.csv", sorted, cols);
     }
   }
   draw();
@@ -331,13 +356,14 @@ function renderCatalog(host) {
     renderTable(byId("catTable"), {
       rows, limit: 500, rowClass: () => "mrow",
       onRowClick: r => openDetail(r.art),
+      csv: true, csvName: "wk_catalog.csv",
       cols: [
         { key: "art", label: "Артикул", cls: "mono" },
         { key: "model", label: "Модель" },
         { key: "nameRu", label: "Наименование", cls: "wrap" },
         { key: "resource", label: "Ресурс, м/ч", numeric: true },
         { key: "priceCNY", label: "Цена, ¥", numeric: true, fmt: cny },
-        ...(curRate ? [{ key: "priceCNY", label: "Цена, ₽", numeric: true, fmt: v => v == null ? "—" : rub(v * curRate) }] : []),
+        ...(curRate ? [{ key: "priceCNY", label: "Цена, ₽", numeric: true, fmt: v => v == null ? "—" : rub(v * curRate), plain: v => v == null ? "" : Math.round(v * curRate) }] : []),
         { key: "priceDiffCNY", label: "Δ УСО", numeric: true, fmt: v => v == null ? "" : `<span class="badge warn">${cny(v)}</span>` },
         {
           key: "ekmtr", label: "ЕКМТР", cls: "mono", fmt: (v, r) => v
@@ -345,13 +371,16 @@ function renderCatalog(host) {
             : '<span class="badge bad">нет</span>'
         },
         {
-          key: "tree", label: "Узел", cls: "wrap", fmt: (v, r) => v && v.length
+          key: "tree", label: "Узел", cls: "wrap", plain: v => v && v.length ? v[0].mech : "",
+          fmt: (v, r) => v && v.length
             ? esc(v[0].mech) + (v.length > 1 ? ` (+${v.length - 1})` : "") +
               (r.treeMethod === "parent" ? ' <span class="badge info" title="сам номер в ведомости не значится, найден узел-родитель на уровень выше">родитель</span>' : "")
             : '<span class="dim">—</span>'
         },
         {
-          key: "art", label: "Чертёж", cls: "", fmt: (v) => D.drawings.byNum[v]
+          key: "art", label: "Чертёж", cls: "",
+          plain: v => D.drawings.byNum[v] ? "есть" : LINKOME_BOOKS_OF.has(v) ? "в LinkOme" : "",
+          fmt: (v) => D.drawings.byNum[v]
             ? '<span class="badge good">есть</span>'
             : LINKOME_BOOKS_OF.has(v) ? '<span class="badge info">в LinkOme</span>' : ""
         },
@@ -392,16 +421,18 @@ function renderFleet(host) {
 
   renderTable(byId("fleetTable"), {
     rows: D.fleet.units, sortKey: "ktg", sortDir: 1,
+    csv: true, csvName: "wk_fleet.csv",
     cols: [
       { key: "name", label: "Единица", cls: "wrap" },
       { key: "site", label: "Площадка" },
       { key: "model", label: "Модель" },
       { key: "book", label: "Книга", cls: "mono", fmt: v => v || '<span class="dim">—</span>' },
       {
-        key: "ktgByMonth", label: "КТГ, тренд", fmt: (v, r) => v ? sparkline(v.map(x => x > 0 ? x : null), MODEL_COLOR[r.model] || "var(--accent)") : ""
+        key: "ktgByMonth", label: "КТГ, тренд", plain: () => "",
+        fmt: (v, r) => v ? sparkline(v.map(x => x > 0 ? x : null), MODEL_COLOR[r.model] || "var(--accent)") : ""
       },
-      { key: "ktg", label: "КТГ", numeric: true, fmt: v => v == null ? "—" : pct(v) },
-      { key: "kio", label: "КИО", numeric: true, fmt: v => v == null ? "—" : pct(v) },
+      { key: "ktg", label: "КТГ", numeric: true, fmt: v => v == null ? "—" : pct(v), plain: v => v == null ? "" : Math.round(v * 1000) / 1000 },
+      { key: "kio", label: "КИО", numeric: true, fmt: v => v == null ? "—" : pct(v), plain: v => v == null ? "" : Math.round(v * 1000) / 1000 },
     ],
   });
 }
@@ -434,10 +465,11 @@ function renderRepairs(host) {
   });
   renderTable(byId("repMat"), {
     rows: D.repairs.byMaterial, limit: 30,
+    csv: true, csvName: "wk_repairs_materials.csv",
     cols: [
       { key: "code", label: "Код ЕКМТР", cls: "mono" },
       { key: "name", label: "Наименование", cls: "wrap" },
-      { key: "isWkPart", label: "WK-номенклатура", fmt: v => v ? '<span class="badge good">да</span>' : "" },
+      { key: "isWkPart", label: "WK-номенклатура", plain: v => v ? "да" : "", fmt: v => v ? '<span class="badge good">да</span>' : "" },
       { key: "value", label: "Факт", numeric: true, fmt: mrub },
     ],
   });
@@ -476,13 +508,16 @@ function renderProvision(host) {
     renderTable(byId("provTable"), {
       rows, limit: 300, sortKey: "needValue",
       rowClass: r => r.restricted ? "restricted-row" : "",
+      csv: true, csvName: "wk_provision.csv",
       cols: [
         { key: "code", label: "Код ЕКМТР", cls: "mono" },
         { key: "name", label: "Наименование", cls: "wrap" },
         { key: "needValue", label: "Потребность", numeric: true, fmt: rub },
         { key: "availQty", label: "Доступно, ед.", numeric: true, fmt: v => num(v, 1) },
         {
-          key: "status", label: "Статус", fmt: (v, r) => {
+          key: "status", label: "Статус",
+          plain: (v, r) => ({ full: "полностью", partial: "частично", none: "нет остатка" }[v] || v) + (r.restricted ? " + ограничено" : ""),
+          fmt: (v, r) => {
             const badge = v === "full" ? '<span class="badge good">полностью</span>' :
               v === "partial" ? '<span class="badge warn">частично</span>' :
                 '<span class="badge bad">нет остатка</span>';
@@ -529,6 +564,7 @@ function renderStock(host) {
     renderTable(byId("stkTable"), {
       rows, limit: 300, sortKey: "value",
       rowClass: r => r.fullyRestricted ? "restricted-row" : "",
+      csv: true, csvName: "wk_stock.csv",
       cols: [
         { key: "code", label: "Код", cls: "mono" },
         { key: "name", label: "Наименование", cls: "wrap" },
@@ -536,7 +572,7 @@ function renderStock(host) {
         { key: "value", label: "Стоимость", numeric: true, fmt: rub },
         { key: "restrictedValue", label: "Ограничено", numeric: true, fmt: v => v > 0 ? `<span class="badge restricted">${rub(v)}</span>` : "" },
         { key: "availValue", label: "Доступно", numeric: true, fmt: rub },
-        { key: "purchase", label: "В закупке", numeric: true, fmt: v => v ? rub(v.planV) : "" },
+        { key: "purchase", label: "В закупке", numeric: true, plain: v => v ? v.planV : "", fmt: v => v ? rub(v.planV) : "" },
       ],
     });
   }
@@ -562,6 +598,7 @@ function renderPurchase(host) {
   `;
   renderTable(byId("purTable"), {
     rows, limit: 300, sortKey: "planV",
+    csv: true, csvName: "wk_purchase.csv",
     cols: [
       { key: "code", label: "Код", cls: "mono" },
       { key: "name", label: "Наименование", cls: "wrap" },
@@ -592,12 +629,13 @@ function renderCodif(host) {
   `;
   renderTable(byId("codifTable"), {
     rows: uncoded, limit: 300, sortKey: "priceCNY",
+    csv: true, csvName: "wk_codification.csv",
     cols: [
       { key: "art", label: "Артикул", cls: "mono" },
       { key: "model", label: "Модель" },
       { key: "nameRu", label: "Наименование", cls: "wrap" },
       { key: "priceCNY", label: "Цена, ¥", numeric: true, fmt: cny },
-      { key: "tree", label: "Узел", cls: "wrap", fmt: v => v && v.length ? esc(v[0].mech) : "" },
+      { key: "tree", label: "Узел", cls: "wrap", plain: v => v && v.length ? v[0].mech : "", fmt: v => v && v.length ? esc(v[0].mech) : "" },
     ],
   });
 }
@@ -956,11 +994,13 @@ function renderKB(host) {
     byId("kbCount").textContent = num(rows.length) + " документов";
     renderTable(byId("kbTable"), {
       rows, limit: 300, sortKey: "name", sortDir: 1,
+      csv: true, csvName: "wk_kb_registry.csv",
       cols: [
+        { key: "path", label: "Путь", cls: "wrap mono" },
         { key: "name", label: "Файл", cls: "wrap" },
         { key: "class", label: "Класс" },
-        { key: "model", label: "Модель", fmt: v => v || '<span class="dim">общая</span>' },
-        { key: "sizeBytes", label: "Размер", numeric: true, fmt: v => num(v / 1e6, 1) + " МБ" },
+        { key: "model", label: "Модель", plain: v => v || "", fmt: v => v || '<span class="dim">общая</span>' },
+        { key: "sizeBytes", label: "Размер", numeric: true, plain: v => Math.round(v / 1e6 * 10) / 10, fmt: v => num(v / 1e6, 1) + " МБ" },
       ],
     });
   }
