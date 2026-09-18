@@ -228,6 +228,7 @@ function boot() {
 let STOCK_BY_CODE = new Map();
 let EKMTR_NAME = new Map();
 let CATALOG_BY_ART = new Map();
+let CATALOG_BY_NORMART = new Map(); // нормализованный номер -> позиция каталога (для кросс-линковки из LinkOne)
 let INTER_GROUP_OF = new Map(); // каталожный номер -> группа взаимозаменяемости (массив)
 function linkomeRowsFor(art) {
   // data/linkome_catalog.json.byPart уже ключуется нормализованным номером
@@ -237,6 +238,7 @@ function buildIndexes() {
   STOCK_BY_CODE = new Map(D.stock.items.map(i => [i.code, i]));
   EKMTR_NAME = new Map(D.ekmtrWk.items.map(i => [i.code, i.name]));
   CATALOG_BY_ART = new Map(D.catalog.items.map(i => [i.art, i]));
+  CATALOG_BY_NORMART = new Map(D.catalog.items.map(i => [normArt(i.art), i]));
   D.interchange.groups.forEach(g => g.forEach(num => INTER_GROUP_OF.set(num, g)));
 }
 
@@ -246,6 +248,7 @@ function renderTab() {
   switch (TAB) {
     case "sum": return renderSum(host);
     case "catalog": return renderCatalog(host);
+    case "linkone": return renderLinkone(host);
     case "kb": return renderKB(host);
     case "fleet": return renderFleet(host);
     case "repairs": return renderRepairs(host);
@@ -515,6 +518,221 @@ function renderCatalog(host) {
   byId("catNoCode").onclick = e => { noCodeOnly = !noCodeOnly; e.target.classList.toggle("on"); apply(); };
   byId("catDiff").onclick = e => { diffOnly = !diffOnly; e.target.classList.toggle("on"); apply(); };
   apply();
+}
+
+/* ===================== КАТАЛОГ LINKONE (формат Komatsu/Cat/Cummins) =====================
+   Дерево книга → узел → состав, как в песочнице KOMATSU_PARTS_BOOK: слева дерево, справа
+   таблица позиций текущего узла, клик по позиции с дочерним узлом — раскрывает его, клик по
+   номеру, сверенному с прайсом ДП, — открывает карточку детали. В отличие от Komatsu, чертёж
+   (растровый .ilg) не декодирован — контейнер LinkOne читается, картинка нет (см. «Качество
+   данных»), поэтому показывается только состав узла, без изображения. */
+const LO = { book: null, index: null, current: null, filter: "" };
+
+function loBuildIndex(bookCode) {
+  const byPageId = new Map(); // нормализованный (lower) id -> {id, title, rows}
+  const prefix = bookCode + "|";
+  for (const key in D.linkome.pages) {
+    if (!key.startsWith(prefix)) continue;
+    const p = D.linkome.pages[key];
+    byPageId.set(p.id.toLowerCase(), p);
+  }
+  const referenced = new Set();
+  byPageId.forEach(p => (p.rows || []).forEach(r => { if (r.link) referenced.add(r.link.toLowerCase()); }));
+  const roots = [];
+  byPageId.forEach((p, id) => { if (!referenced.has(id)) roots.push(p); });
+  // главный узел книги — корень с самым большим деревом (сумма строк по всем потомкам), а не
+  // просто самой длинной собственной таблицей: у страницы-узла в глубине дерева бывает больше
+  // прямых строк, чем у корня, но это не делает её книгой. Остальные корни (если есть) —
+  // несвязанные страницы (не входят в дерево главного корня), показываем отдельным списком.
+  const subtreeSize = p => {
+    const seen = new Set();
+    const walk = id => {
+      if (seen.has(id)) return 0;
+      seen.add(id);
+      const page = byPageId.get(id);
+      if (!page) return 0;
+      let n = (page.rows || []).length;
+      for (const r of page.rows || []) if (r.link) n += walk(r.link.toLowerCase());
+      return n;
+    };
+    return walk(p.id.toLowerCase());
+  };
+  roots.sort((a, b) => subtreeSize(b) - subtreeSize(a));
+  return { byPageId, roots };
+}
+
+function loFindPage(id) {
+  return id ? LO.index.byPageId.get(id.toLowerCase()) || null : null;
+}
+
+// путь от ближайшего корня до узла (BFS по rows[].link) — для «хлебных крошек»
+function loPathTo(targetId) {
+  const target = targetId.toLowerCase();
+  for (const root of LO.index.roots) {
+    if (root.id.toLowerCase() === target) return [root];
+    const seen = new Set([root.id.toLowerCase()]);
+    const q = [[root]];
+    while (q.length) {
+      const path = q.shift();
+      const last = path[path.length - 1];
+      for (const r of last.rows || []) {
+        if (!r.link) continue;
+        const lid = r.link.toLowerCase();
+        if (seen.has(lid)) continue;
+        const kid = loFindPage(lid);
+        if (!kid) continue;
+        const next = [...path, kid];
+        if (lid === target) return next;
+        seen.add(lid);
+        q.push(next);
+      }
+    }
+  }
+  const p = loFindPage(targetId);
+  return p ? [p] : [];
+}
+
+function renderLinkone(host) {
+  const books = Object.entries(D.linkome.books).sort((a, b) => a[0].localeCompare(b[0]));
+  host.innerHTML = `
+    <h1>Каталог LinkOne</h1>
+    <p class="sub">${D.linkome.meta.books} книг, ${num(D.linkome.meta.pagesTotal)} страниц, ${num(D.linkome.meta.rowsTotal)} строк состава — разбор заводской выгрузки LinkOne, формат тот же, что у каталогов Komatsu/Cat/Cummins: дерево узлов книги, таблица позиций узла, карточка детали. ${D.linkome.meta.pagesFailed} страниц не разобрались (см. «Качество данных»).</p>
+    ${callout("warn", "Растровый чертёж (.ilg) не декодирован — контейнер LinkOne читается, изображение нет. Показан только состав узла (номер, наименование, количество), без картинки. Подробности — «Качество данных».")}
+    <div class="lo-books" id="loBooks">
+      ${books.map(([code, b]) => `
+        <div class="lo-book${LO.book === code ? " on" : ""}" data-book="${esc(code)}">
+          <span class="n">${esc(code)}</span>
+          <span class="s">${esc(b.model || "")} · ${num(b.pageCount)} стр.</span>
+        </div>`).join("")}
+    </div>
+    <div id="loBody"></div>
+  `;
+  qsa(".lo-book", host).forEach(el => el.onclick = () => loSelectBook(el.dataset.book, host));
+  if (LO.book && books.some(([c]) => c === LO.book)) {
+    loRenderBody(host);
+  } else if (books.length) {
+    loSelectBook(books[0][0], host);
+  }
+}
+
+function loSelectBook(code, host) {
+  LO.book = code;
+  LO.index = loBuildIndex(code);
+  LO.current = LO.index.roots[0] ? LO.index.roots[0].id : null;
+  LO.filter = "";
+  qsa(".lo-book", host).forEach(el => el.classList.toggle("on", el.dataset.book === code));
+  loRenderBody(host);
+}
+
+function loRenderBody(host) {
+  const body = byId("loBody");
+  if (!LO.index || !LO.index.roots.length) {
+    body.innerHTML = callout("bad", "В этой книге не удалось построить дерево — нет ни одной страницы.");
+    return;
+  }
+  body.innerHTML = `
+    <div class="lo-wrap">
+      <div>
+        <input type="search" id="loFilter" placeholder="Название узла или номер детали…" value="${esc(LO.filter)}" style="width:100%;margin-bottom:8px;background:var(--surface-2);border:var(--hair);border-radius:var(--radius);color:var(--ink);padding:7px 10px;font:inherit;font-size:12px"/>
+        <div class="lo-tree" id="loTree"></div>
+      </div>
+      <div id="loMain"></div>
+    </div>
+  `;
+  byId("loFilter").oninput = e => { LO.filter = e.target.value; loRenderTree(); };
+  loRenderTree();
+  loRenderMain();
+}
+
+function loRenderTree() {
+  const host = byId("loTree");
+  const q = LO.filter.trim().toLowerCase();
+  if (q) {
+    const hits = [];
+    LO.index.byPageId.forEach(p => {
+      const hay = (p.title || "").toLowerCase();
+      const partHit = (p.rows || []).some(r => (r.part || "").toLowerCase().includes(q) || (r.name || "").toLowerCase().includes(q));
+      if (hay.includes(q) || partHit || p.id.toLowerCase().includes(q)) hits.push(p);
+    });
+    host.innerHTML = hits.length
+      ? hits.slice(0, 200).map(p => `
+          <div class="lo-node-head" data-id="${esc(p.id)}" style="border-left-color:transparent">
+            <span class="t">${esc(p.title || p.id)}</span>
+            <span class="c">${(p.rows || []).length}</span>
+          </div>`).join("")
+      : '<div class="tree-note" style="padding:8px 10px;font-size:12px;color:var(--ink-3)">Ничего не найдено</div>';
+    qsa(".lo-node-head", host).forEach(el => el.onclick = () => { LO.current = el.dataset.id; LO.filter = ""; loRenderTree(); loRenderMain(); byId("loFilter").value = ""; });
+    return;
+  }
+  const path = LO.current ? loPathTo(LO.current) : [];
+  const openIds = new Set(path.map(p => p.id.toLowerCase()));
+  const seenGlobal = new Set();
+  const nodeHtml = (p, depth) => {
+    const id = p.id.toLowerCase();
+    const cycle = seenGlobal.has(id);
+    seenGlobal.add(id);
+    const kids = cycle ? [] : (p.rows || []).map(r => r.link && loFindPage(r.link)).filter(Boolean);
+    const isOpen = openIds.has(id);
+    const isActive = LO.current && LO.current.toLowerCase() === id;
+    return `<div class="lo-node${isOpen ? " open" : ""}${isActive ? " active" : ""}">
+      <div class="lo-node-head" data-id="${esc(p.id)}">
+        <span class="tw">${kids.length ? (isOpen ? "▾" : "▸") : ""}</span>
+        <span class="t" title="${esc(p.title || p.id)}">${esc(p.title || p.id)}</span>
+        <span class="c">${(p.rows || []).length}</span>
+      </div>
+      ${kids.length ? `<div class="lo-node-kids">${kids.map(k => nodeHtml(k, depth + 1)).join("")}</div>` : ""}
+    </div>`;
+  };
+  const main = LO.index.roots[0];
+  const orphans = LO.index.roots.slice(1);
+  let html = nodeHtml(main, 0);
+  if (orphans.length) {
+    html += `<div class="lo-orphans">
+      <div class="lo-node-head" data-toggle-orphans style="color:var(--ink-3)">
+        <span class="t">Несвязанные страницы книги</span><span class="c">${orphans.length}</span>
+      </div>
+      <div class="lo-node-kids" id="loOrphanKids">${orphans.map(o => nodeHtml(o, 0)).join("")}</div>
+    </div>`;
+  }
+  host.innerHTML = html;
+  qsa(".lo-node-head[data-id]", host).forEach(el => el.onclick = e => {
+    e.stopPropagation();
+    LO.current = el.dataset.id;
+    loRenderTree();
+    loRenderMain();
+  });
+  const orphToggle = host.querySelector("[data-toggle-orphans]");
+  if (orphToggle) orphToggle.onclick = () => byId("loOrphanKids").classList.toggle("open-orphans");
+}
+
+function loRenderMain() {
+  const host = byId("loMain");
+  const page = loFindPage(LO.current);
+  if (!page) { host.innerHTML = callout("bad", "Узел не найден."); return; }
+  const path = loPathTo(page.id);
+  const crumbs = path.map(p => `<a data-id="${esc(p.id)}">${esc(p.title || p.id)}</a>`).join(" › ") || esc(page.title || page.id);
+  const rows = page.rows || [];
+  host.innerHTML = `
+    <div class="lo-crumbs">${crumbs}</div>
+    <h3 style="margin:0 0 10px;font-size:15px">${esc(page.title || page.id)}</h3>
+    <div class="twrap"><table>
+      <thead><tr><th>№</th><th>Номер</th><th>Наименование</th><th class="n">Кол-во</th><th></th></tr></thead>
+      <tbody>${rows.map(r => {
+        const kid = r.link && loFindPage(r.link);
+        const match = r.part && CATALOG_BY_NORMART.get(normArt(r.part));
+        return `<tr>
+          <td>${esc(r.item || "")}</td>
+          <td class="mono">${esc(r.part || "")}</td>
+          <td class="wrap">${esc(r.name || "")}</td>
+          <td class="n">${r.qty != null ? num(r.qty) : ""}</td>
+          <td>${kid ? `<span class="badge info" data-goto="${esc(kid.id)}" style="cursor:pointer">узел ▸</span>` : ""}${match ? ` <span class="badge good" data-art="${esc(match.art)}" style="cursor:pointer">в прайсе ДП</span>` : ""}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" class="dim">Состав пуст</td></tr>`}</tbody>
+    </table></div>
+  `;
+  qsa(".lo-crumbs a", host).forEach(el => el.onclick = () => { LO.current = el.dataset.id; loRenderTree(); loRenderMain(); });
+  qsa("[data-goto]", host).forEach(el => el.onclick = () => { LO.current = el.dataset.goto; loRenderTree(); loRenderMain(); });
+  qsa("[data-art]", host).forEach(el => el.onclick = () => openDetail(el.dataset.art));
 }
 
 /* ===================== ПАРК ===================== */

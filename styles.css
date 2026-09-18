@@ -226,6 +226,32 @@ mark{background:var(--accent-soft);color:var(--ink);border-radius:2px;padding:0 
   background:var(--accent);color:var(--on-accent);font-size:9.5px;font-weight:700;line-height:15px;text-align:center}
 .cart-add{width:26px;height:26px;padding:0;justify-content:center;font-weight:700;font-size:13px}
 .cart-add.on{background:var(--good-bg);border-color:var(--good);color:var(--good)}
+/* ---------- каталог LinkOne (дерево книга -> узел) ---------- */
+.lo-books{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+.lo-book{padding:7px 12px;background:var(--surface);border:var(--hair);border-radius:var(--radius);cursor:pointer}
+.lo-book:hover{border-color:var(--line-2)}
+.lo-book.on{border-color:var(--accent);background:var(--accent-soft)}
+.lo-book .n{font-size:12px;font-weight:600;font-family:var(--mono)}
+.lo-book .s{display:block;color:var(--ink-3);font-size:10.5px;margin-top:1px}
+.lo-wrap{display:grid;grid-template-columns:320px 1fr;gap:14px;align-items:start}
+@media(max-width:900px){.lo-wrap{grid-template-columns:1fr}}
+.lo-tree{background:var(--surface);border:var(--hair);border-radius:var(--radius-lg);max-height:74vh;overflow:auto;padding:4px 0}
+.lo-node-head{display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;font-size:12px;
+  border-left:2px solid transparent}
+.lo-node-head:hover{background:var(--surface-2)}
+.lo-node.active>.lo-node-head{background:var(--accent-soft);border-left-color:var(--accent);color:var(--ink);font-weight:600}
+.lo-node-head .tw{width:11px;flex:0 0 auto;color:var(--ink-3);font-size:10px;text-align:center}
+.lo-node-head .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lo-node-head .c{color:var(--ink-3);font-size:10.5px;flex:0 0 auto}
+.lo-node-kids{display:none;padding-left:14px}
+.lo-node.open>.lo-node-kids{display:block}
+.lo-orphans{border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
+.lo-orphans>.lo-node-kids{display:none;padding-left:14px}
+.lo-orphans>.lo-node-kids.open-orphans{display:block}
+.lo-crumbs{font-size:11.5px;color:var(--ink-3);margin-bottom:8px}
+.lo-crumbs a{color:var(--info);cursor:pointer}
+.lo-crumbs a:hover{text-decoration:underline}
+
 @media print{
   .topbar,.tabs,#modalBack,#modalCard,footer,.toolbar button,.cart-add,th:last-child,td:last-child{display:none!important}
 }
