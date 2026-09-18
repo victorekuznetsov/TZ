@@ -173,13 +173,16 @@ class Book:
         """Разобрать страницу: название, чертёж, строки позиций, выноски."""
         c = Chunk(os.path.join(self.root, page_id.lower() + '.bli'), self.encoding)
         out = {'id': page_id, 'title': '', 'ref': '', 'graphic': '',
-               'w': 0, 'h': 0, 'rows': [], 'spots': []}
+               'w': 0, 'h': 0, 'sheets': [], 'rows': [], 'spots': []}
         for title, _fl, ref, _pid in c.recs(0x6b, '<IIII'):
             out['title'] = c.s(title) or ''
             out['ref'] = c.s(ref) or ''
+        # Записей 0x67 столько же, сколько листов у страницы (a, b, c…), и
+        # у каждого листа своя система координат выносок — держим все.
         for gr, _a, w, h, _d in c.recs(0x67, '<IIHHH'):
+            out['sheets'].append({'graphic': c.s(gr) or '', 'w': w, 'h': h})
             out['graphic'] = c.s(gr) or ''
-            out['w'], out['h'] = w, h        # система координат выносок
+            out['w'], out['h'] = w, h
 
         extras = [c.s(o) for (o,) in c.recs(0x6a, '<I')]
         rows = list(c.recs(0x69, '<15I'))
@@ -216,18 +219,34 @@ class Book:
         return out
 
 
-def _spot(c, rec):
-    """Выноска: номер позиции и прямоугольник на чертеже.
+def _sane_box(b):
+    """Рамка осмысленна, если это непустой прямоугольник в разумных числах."""
+    return (len(b) == 4 and b[2] > b[0] and b[3] > b[1]
+            and max(b) < 0x8000)
 
-    Раскладка записи у книг Komatsu Japan и Komatsu Mining разная, но обе
-    ставят перед координатами метку 0xFFFF, а сразу за ней — четыре
-    16-битных числа: левый верхний и правый нижний углы.
+
+def _spot(c, rec):
+    """Выноска: номер позиции, лист и прямоугольник на чертеже.
+
+    Метка 0xFFFF есть у всех раскладок, но лежит по-разному: у книг Komatsu
+    координаты идут сразу за ней, у книг WK — наоборот, перед ней (запись
+    30 байт: [u32 номер][2][лист, с единицы][?][0][x1][y1][x2][y2][FFFF]…).
+    Поэтому берём ту четвёрку, которая даёт непустой прямоугольник.
+
+    Координаты — в системе листа, её размер объявлен в записи 0x67 того же
+    .bli (он на пару точек больше самой картинки .ilg).
     """
     item = c.s(struct.unpack('<I', rec[:4])[0]) or ''
     words = struct.unpack('<%dH' % (len(rec) // 2), rec[:len(rec) // 2 * 2])
-    box = [0, 0, 0, 0]
+    box, sheet = [0, 0, 0, 0], 1
     for i, w in enumerate(words[2:], 2):
-        if w == 0xFFFF and i + 4 < len(words):
-            box = list(words[i + 1:i + 5])
-            break
-    return {'item': item, 'box': box}
+        if w != 0xFFFF:
+            continue
+        after = list(words[i + 1:i + 5])
+        before = list(words[i - 4:i]) if i >= 6 else []
+        if _sane_box(before):
+            box, sheet = before, (words[3] or 1)
+        elif _sane_box(after):
+            box = after
+        break
+    return {'item': item, 'sheet': sheet, 'box': box}

@@ -250,7 +250,19 @@ mark{background:var(--accent-soft);color:var(--ink);border-radius:2px;padding:0 
 .lo-orphans>.lo-node-kids.open-orphans{display:block}
 .lo-draw{background:#fff;border:var(--hair);border-radius:var(--radius);padding:6px;margin-bottom:12px;
   max-height:52vh;overflow:auto;text-align:center}
-.lo-draw img{max-width:100%;height:auto;display:block;margin:0 auto;cursor:zoom-in}
+.lo-stage{position:relative;display:inline-block;line-height:0}
+.lo-draw img{max-width:100%;height:auto;display:block;margin:0 auto}
+.lo-spots{position:absolute;inset:0}
+/* Выноска: номер позиции поверх пустого кружка на чертеже. Цифры в самой
+   картинке нет — в книге её рисует программа просмотра, здесь рисуем мы. */
+.lo-spot{position:absolute;display:flex;align-items:center;justify-content:center;
+  font:600 10px/1 var(--mono);color:#0b3;background:rgba(255,255,255,.72);
+  border:1px solid rgba(0,160,107,.55);border-radius:50%;cursor:pointer;
+  color:#0a7a52;box-sizing:border-box;transition:background .12s,border-color .12s}
+.lo-spot:hover,.lo-spot.hov{background:#8ce8c8;border-color:#00805a;color:#05402d}
+.lo-spot.on{background:#00b87c;border-color:#00805a;color:#fff}
+tbody tr.lo-hi td{background:var(--accent-soft)}
+tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
 .lo-sheets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;justify-content:center}
 .lo-sheets .pill{padding:4px 10px;background:var(--surface-2);border:var(--hair);border-radius:99px;
   font-size:11px;color:var(--ink-2);cursor:pointer}

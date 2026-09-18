@@ -26,6 +26,7 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from linkone import book as book_mod  # noqa: E402
 from linkone import ilg  # noqa: E402
 
 SHEET_RE = re.compile(r'^(.*?)([a-z])$', re.I)
@@ -65,7 +66,28 @@ def main():
             continue
         dest = os.path.join(media_dir, code)
         os.makedirs(dest, exist_ok=True)
-        ok = fail = 0
+        # Выноски лежат в .bli рядом с .ilg: номер позиции, лист и рамка в
+        # системе координат листа. Разбираем страницу один раз на все её листы.
+        roots = {os.path.dirname(p) for p in files}
+        pages = {}
+        for r in roots:
+            if not os.path.exists(os.path.join(r, 'book.bbi')):
+                continue
+            try:
+                bk = book_mod.Book(r)
+            except Exception:                            # noqa: BLE001
+                continue
+            for p in files:
+                if os.path.dirname(p) != r:
+                    continue
+                page_id = page_and_sheet(os.path.splitext(os.path.basename(p))[0])[0]
+                if page_id in pages:
+                    continue
+                try:
+                    pages[page_id] = bk.page(page_id)
+                except Exception:                        # noqa: BLE001
+                    pages[page_id] = None
+        ok = fail = spots_total = 0
         for p in sorted(files):
             stem = os.path.splitext(os.path.basename(p))[0]
             page, sheet = page_and_sheet(stem)
@@ -79,14 +101,39 @@ def main():
                 fail += 1
                 print(f'  не отрисовался {stem}: {e}', file=sys.stderr)
                 continue
-            key = f'{code}|{page}'
-            entry = reg['byPage'].setdefault(key, [])
             item = {'sheet': sheet, 'file': rel.replace(os.sep, '/'),
                     'w': im.width, 'h': im.height}
+            pg = pages.get(page)
+            if pg:
+                idx = ord(sheet) - ord('a') + 1 if sheet else 1
+                canvas = pg['sheets'][idx - 1] if idx <= len(pg['sheets']) else None
+                cw = canvas['w'] if canvas else im.width
+                ch = canvas['h'] if canvas else im.height
+                spots = []
+                for s in pg['spots']:
+                    if s['sheet'] != idx or not any(s['box']):
+                        continue
+                    x1, y1, x2, y2 = s['box']
+                    # Ось Y у выносок снизу вверх (так же лежат и рамки
+                    # вклеенных растров, см. book.py), поэтому переворачиваем.
+                    # Держим в процентах холста — накладывать на картинку любого
+                    # размера можно без пересчёта.
+                    spots.append({
+                        'n': s['item'],
+                        'x': round(100.0 * x1 / cw, 3),
+                        'y': round(100.0 * (ch - y2) / ch, 3),
+                        'w': round(100.0 * (x2 - x1) / cw, 3),
+                        'h': round(100.0 * (y2 - y1) / ch, 3),
+                    })
+                if spots:
+                    item['spots'] = spots
+                    spots_total += len(spots)
+            key = f'{code}|{page}'
+            entry = reg['byPage'].setdefault(key, [])
             entry[:] = [x for x in entry if x['file'] != item['file']] + [item]
             entry.sort(key=lambda x: x['sheet'])
             ok += 1
-        print(f'{book}: отрисовано {ok}, не удалось {fail}')
+        print(f'{book}: отрисовано {ok}, не удалось {fail}, выносок {spots_total}')
 
     sheets = sum(len(v) for v in reg['byPage'].values())
     reg['meta'] = {

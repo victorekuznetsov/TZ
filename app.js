@@ -718,19 +718,23 @@ function loRenderMain() {
     <div class="lo-crumbs">${crumbs}</div>
     <h3 style="margin:0 0 10px;font-size:15px">${esc(page.title || page.id)}</h3>
     ${sheets.length ? `
-      <div class="lo-draw">
+      <div>
         ${sheets.length > 1 ? `<div class="lo-sheets">${sheets.map((s, k) =>
           `<span class="pill${k ? "" : " on"}" data-sheet="${k}">лист ${esc(s.sheet || (k + 1))}</span>`).join("")}</div>` : ""}
-        <a href="${esc(sheets[0].file)}" target="_blank" rel="noopener" id="loDrawLink" title="Открыть чертёж в полный размер">
-          <img src="${esc(sheets[0].file)}" id="loDrawImg" alt="Чертёж ${esc(page.id)}"/>
-        </a>
+        <div class="lo-draw" id="loDraw">
+          <div class="lo-stage" id="loStage">
+            <img src="${esc(sheets[0].file)}" id="loDrawImg" alt="Чертёж ${esc(page.id)}"/>
+            <div class="lo-spots" id="loSpots"></div>
+          </div>
+        </div>
+        <p class="hint" id="loDrawHint"></p>
       </div>` : `<p class="hint">Чертежа для этого узла в книге нет.</p>`}
     <div class="twrap"><table>
       <thead><tr><th>№</th><th>Номер</th><th>Наименование</th><th class="n">Кол-во</th><th></th></tr></thead>
       <tbody>${rows.map(r => {
         const kid = r.link && loFindPage(r.link);
         const match = r.part && CATALOG_BY_NORMART.get(normArt(r.part));
-        return `<tr>
+        return `<tr data-item="${esc(r.item || "")}">
           <td>${esc(r.item || "")}</td>
           <td class="mono">${esc(r.part || "")}</td>
           <td class="wrap">${esc(r.name || "")}</td>
@@ -740,10 +744,60 @@ function loRenderMain() {
       }).join("") || `<tr><td colspan="5" class="dim">Состав пуст</td></tr>`}</tbody>
     </table></div>
   `;
-  qsa("[data-sheet]", host).forEach(el => el.onclick = () => {
-    const s = sheets[+el.dataset.sheet];
+  // Номера позиций в самом чертеже не нарисованы — в книге это пустые кружки,
+  // а цифру в них рисует программа просмотра по рамкам выносок из .bli. Здесь
+  // то же самое: накладываем номер поверх кружка и делаем его кликабельным.
+  function loShowSheet(k) {
+    const s = sheets[k];
+    if (!s) return;
     byId("loDrawImg").src = s.file;
-    byId("loDrawLink").href = s.file;
+    const box = byId("loSpots");
+    const spots = s.spots || [];
+    box.innerHTML = spots.map((sp, i) =>
+      `<b class="lo-spot" data-n="${esc(sp.n)}" data-i="${i}" title="Позиция ${esc(sp.n)}"
+         style="left:${sp.x}%;top:${sp.y}%;width:${sp.w}%;height:${sp.h}%">${esc(sp.n)}</b>`).join("");
+    const hint = byId("loDrawHint");
+    if (hint) {
+      hint.textContent = spots.length
+        ? `${spots.length} выносок — клик по номеру подсвечивает позицию в таблице, наведение на строку — выноску на чертеже.`
+        : "Выноски для этого листа в книге не заданы.";
+    }
+    qsa(".lo-spot", box).forEach(el => el.onclick = () => loPickItem(el.dataset.n, true));
+    qsa(".lo-spot", box).forEach(el => {
+      el.onmouseenter = () => loHiRow(el.dataset.n, true);
+      el.onmouseleave = () => loHiRow(el.dataset.n, false);
+    });
+  }
+  // Номер позиции подставляется в селектор как значение атрибута в кавычках:
+  // CSS.escape тут не годится — он экранирует по правилам идентификатора и из
+  // «7» делает «\37 », что уже ничему не соответствует.
+  const attrVal = v => String(v).replace(/[\\"]/g, "\\$&");
+  // Наведение и выбор — разные состояния: иначе уход мыши с выноски снимал бы
+  // подсветку, поставленную кликом по ней же.
+  function loHiRow(n, on) {
+    qsa(`tbody tr[data-item="${attrVal(n)}"]`, host).forEach(tr => tr.classList.toggle("lo-hi", on));
+  }
+  function loHiSpot(n, on) {
+    qsa(`.lo-spot[data-n="${attrVal(n)}"]`, host).forEach(el => el.classList.toggle("hov", on));
+  }
+  function loPickItem(n, scroll) {
+    qsa(".lo-spot", host).forEach(el => el.classList.toggle("on", el.dataset.n === n));
+    qsa("tbody tr", host).forEach(tr => tr.classList.toggle("lo-pin", tr.dataset.item === n));
+    if (!scroll) return;
+    const tr = qs(`tbody tr[data-item="${attrVal(n)}"]`, host);
+    if (tr) tr.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+  if (sheets.length) {
+    loShowSheet(0);
+    qsa("tbody tr[data-item]", host).forEach(tr => {
+      const n = tr.dataset.item;
+      if (!n) return;
+      tr.onmouseenter = () => loHiSpot(n, true);
+      tr.onmouseleave = () => loHiSpot(n, false);
+    });
+  }
+  qsa("[data-sheet]", host).forEach(el => el.onclick = () => {
+    loShowSheet(+el.dataset.sheet);
     qsa("[data-sheet]", host).forEach(x => x.classList.toggle("on", x === el));
   });
   qsa(".lo-crumbs a", host).forEach(el => el.onclick = () => { LO.current = el.dataset.id; loRenderTree(); loRenderMain(); });
@@ -1308,6 +1362,55 @@ function kbFileUrl(path) {
   return "media/kb/" + rel.split("/").map(encodeURIComponent).join("/");
 }
 
+/* ---------- единый поиск базы знаний ----------
+   Один запрос идёт по всем витринам сразу: прайс ДП, состав узлов LinkOne,
+   дерево узлов, коды ЕКМТР, парк и документы — по номеру и по наименованию.
+   Номера сравниваются в нормализованном виде (normArt: без точек и дефисов),
+   наименования — по подстроке без учёта регистра. Так же устроен поиск в
+   каталоге Cummins: одна строка, дальше результат разложен по разделам.
+   Содержимое документов ищется отдельно и лениво — индекс тяжёлый. */
+const KB_LIMIT = 40;   // строк на раздел; остальное сворачивается в «…ещё N»
+
+function kbFindAll(q) {
+  const lo = q.trim().toLowerCase();
+  const num = normArt(q);
+  const hasNum = num.length >= 2;
+  const hit = (s) => s && String(s).toLowerCase().includes(lo);
+  const hitNum = (s) => hasNum && normArt(s).includes(num);
+  const out = { parts: [], linkome: [], nodes: [], ekmtr: [], fleet: [], docs: [] };
+
+  for (const i of D.catalog.items) {
+    if (hitNum(i.art) || hit(i.nameRu) || hit(i.nameZh) || hitNum(i.ekmtr)) out.parts.push(i);
+  }
+  for (const key in D.linkome.byPart) {
+    if (out.linkome.length > 400) break;
+    const rows = D.linkome.byPart[key];
+    if (key.includes(num) && hasNum) { out.linkome.push([key, rows]); continue; }
+    if (lo.length >= 2 && rows.some(r => hit(r.name))) out.linkome.push([key, rows]);
+  }
+  for (const n of D.tree.nodes) {
+    if (hitNum(n.num) || hit(n.nameRu) || hit(n.nameZh) || hit(n.mech)) out.nodes.push(n);
+  }
+  for (const e of D.ekmtrWk.items) {
+    if (hitNum(e.code) || hit(e.name) || hitNum(e.cat)) out.ekmtr.push(e);
+  }
+  for (const u of D.fleet.units) {
+    if (hit(u.name) || hit(u.model) || hit(u.garage) || hit(u.book) || hitNum(u.serial)) out.fleet.push(u);
+  }
+  for (const d of D.kb.docs) {
+    if (hit(d.name) || hit(d.class) || hit(d.model) || hit(d.path)) out.docs.push(d);
+  }
+  return out;
+}
+
+function kbSection(title, n, bodyHtml, shown) {
+  return `<section class="card" style="margin-bottom:12px">
+    <h3>${esc(title)} <span class="count" style="margin-left:6px">${num(n)}</span></h3>
+    ${bodyHtml}
+    ${n > shown ? `<p class="hint" style="margin:6px 0 0">…ещё ${num(n - shown)}</p>` : ""}
+  </section>`;
+}
+
 function renderKB(host) {
   const m = D.kb.meta;
   const classes = Object.entries(m.byClass).sort((a, b) => b[1] - a[1]);
@@ -1318,9 +1421,9 @@ function renderKB(host) {
     <div class="kbgrid" id="kbClasses"></div>
 
     <div class="card">
-      <h3>Поиск по содержимому</h3>
-      <p class="hint" id="kbSearchHint">Индекс — первые ~60 тыс. знаков каждого документа (PDF, DOCX, PPTX, легаси .doc/.ppt); загружается при первом запросе.</p>
-      <input type="search" id="kbSearchQ" placeholder="Слово или фраза, например «регламент», «K1839»…"/>
+      <h3>Поиск по всему</h3>
+      <p class="hint" id="kbSearchHint">Номер детали, наименование, узел, код ЕКМТР, борт, имя документа — и содержимое документов (индекс — первые ~60 тыс. знаков каждого, грузится при первом запросе). Номера сверяются без учёта точек и дефисов.</p>
+      <input type="search" id="kbSearchQ" placeholder="K1601.30.02, пружина, 1001785, регламент, №02…"/>
       <div id="kbSearchResults" style="margin-top:10px"></div>
     </div>
 
@@ -1338,32 +1441,110 @@ function renderKB(host) {
 
   const byPath = new Map(D.kb.docs.map(d => [d.path, d]));
   let searchTimer;
+
+  function kbRenderResults(q, box) {
+    const r = kbFindAll(q);
+    const total = r.parts.length + r.linkome.length + r.nodes.length +
+                  r.ekmtr.length + r.fleet.length + r.docs.length;
+    const h = [`<p class="hint">Найдено: прайс ДП ${num(r.parts.length)} · LinkOne ${num(r.linkome.length)} · узлы ${num(r.nodes.length)} · ЕКМТР ${num(r.ekmtr.length)} · парк ${num(r.fleet.length)} · документы ${num(r.docs.length)}</p>`];
+
+    if (r.parts.length) {
+      h.push(kbSection("Детали прайса ДП", r.parts.length, `<div class="twrap"><table>
+        <thead><tr><th>Артикул</th><th>Наименование</th><th>Модель</th><th>ЕКМТР</th><th>Цена, ¥</th></tr></thead>
+        <tbody>${r.parts.slice(0, KB_LIMIT).map(i => `<tr class="mrow" data-art="${esc(i.art)}">
+          <td class="mono">${esc(i.art)}</td><td class="wrap">${esc(i.nameRu || "")}</td>
+          <td>${esc(i.model || "")}</td><td class="mono">${i.ekmtr ? esc(i.ekmtr) : '<span class="dim">—</span>'}</td>
+          <td class="n">${i.priceCNY == null ? "" : cny(i.priceCNY)}</td></tr>`).join("")}</tbody>
+        </table></div>`, KB_LIMIT));
+    }
+    if (r.linkome.length) {
+      h.push(kbSection("Состав узлов LinkOne", r.linkome.length, `<div class="twrap"><table>
+        <thead><tr><th>Номер</th><th>Наименование</th><th>Где встречается</th></tr></thead>
+        <tbody>${r.linkome.slice(0, KB_LIMIT).map(([, rows]) => {
+          const f = rows[0];
+          return `<tr class="mrow" data-book="${esc(f.book)}" data-page="${esc(f.page)}">
+            <td class="mono">${esc(f.raw)}</td><td class="wrap">${esc(f.name || "")}</td>
+            <td class="wrap"><span class="badge info">${esc(f.book)}</span> ${esc(f.pageTitle || f.page)}${rows.length > 1 ? ` <span class="dim">+${rows.length - 1}</span>` : ""}</td></tr>`;
+        }).join("")}</tbody></table></div>`, KB_LIMIT));
+    }
+    if (r.nodes.length) {
+      h.push(kbSection("Узлы дерева", r.nodes.length, `<div class="twrap"><table>
+        <thead><tr><th>Номер</th><th>Наименование</th><th>Механизм</th><th>Книга</th><th>Модель</th></tr></thead>
+        <tbody>${r.nodes.slice(0, KB_LIMIT).map(n => `<tr>
+          <td class="mono">${esc(n.num)}</td><td class="wrap">${esc(n.nameRu || "")}</td>
+          <td class="wrap">${esc(n.mech || "")}</td><td>${esc(n.book || "")}</td><td>${esc(n.model || "")}</td></tr>`).join("")}</tbody>
+        </table></div>`, KB_LIMIT));
+    }
+    if (r.ekmtr.length) {
+      h.push(kbSection("Коды ЕКМТР", r.ekmtr.length, `<div class="twrap"><table>
+        <thead><tr><th>Код</th><th>Наименование</th><th>Каталожный</th><th>Изготовитель</th></tr></thead>
+        <tbody>${r.ekmtr.slice(0, KB_LIMIT).map(e => `<tr>
+          <td class="mono">${esc(e.code)}</td><td class="wrap">${esc(e.name || "")}</td>
+          <td class="mono">${esc(e.cat || "")}</td><td>${esc(e.mf || "")}</td></tr>`).join("")}</tbody>
+        </table></div>`, KB_LIMIT));
+    }
+    if (r.fleet.length) {
+      h.push(kbSection("Парк", r.fleet.length, `<div class="twrap"><table>
+        <thead><tr><th>Борт</th><th>Модель</th><th>Наименование</th><th>Книга</th><th class="n">КТГ</th></tr></thead>
+        <tbody>${r.fleet.slice(0, KB_LIMIT).map(u => `<tr>
+          <td>${esc(u.garage)}</td><td>${esc(u.model)}</td><td class="wrap">${esc(u.name || "")}</td>
+          <td>${esc(u.book || "")}</td><td class="n">${u.ktg == null ? "" : pct(u.ktg)}</td></tr>`).join("")}</tbody>
+        </table></div>`, KB_LIMIT));
+    }
+    if (r.docs.length) {
+      h.push(kbSection("Документы (по имени и классу)", r.docs.length,
+        r.docs.slice(0, KB_LIMIT).map(d => `<div style="padding:7px 0;border-bottom:1px solid var(--grid)">
+          <div style="font-size:12.5px;font-weight:600">${esc(d.name)}
+            <a href="${esc(kbFileUrl(d.path))}" target="_blank" rel="noopener" class="badge good" style="text-decoration:none">файл ↗</a></div>
+          <div style="font-size:11px;color:var(--ink-3)">${esc(d.class)}${d.model ? " · " + esc(d.model) : ""}</div>
+        </div>`).join(""), KB_LIMIT));
+    }
+    if (!total) h.push('<p class="hint">По номерам и наименованиям ничего не найдено.</p>');
+    h.push('<div id="kbFullText"><p class="hint">Поиск по содержимому документов…</p></div>');
+    box.innerHTML = h.join("");
+
+    qsa("[data-art]", box).forEach(el => el.onclick = () => openDetail(el.dataset.art));
+    qsa("[data-page]", box).forEach(el => el.onclick = () => {
+      TAB = "linkone";
+      LO.book = el.dataset.book;
+      LO.index = loBuildIndex(LO.book);
+      LO.current = el.dataset.page;
+      LO.filter = "";
+      qsa("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.t === "linkone"));
+      renderTab();
+    });
+
+    // содержимое документов — отдельно и лениво: индекс на 10 МБ
+    kbEnsureText(() => {
+      const ft = byId("kbFullText");
+      if (!ft) return;
+      if (!KB_TEXT) { ft.innerHTML = callout("bad", "Индекс содержимого недоступен."); return; }
+      const ql = q.toLowerCase();
+      const hits = [];
+      for (const path in KB_TEXT.docs) {
+        if (KB_TEXT.docs[path].text.toLowerCase().includes(ql)) hits.push(path);
+      }
+      ft.innerHTML = hits.length
+        ? kbSection("Документы (по содержимому)", hits.length, hits.slice(0, KB_LIMIT).map(p => {
+            const d = byPath.get(p);
+            return `<div style="padding:9px 0;border-bottom:1px solid var(--grid)">
+              <div style="font-size:12.5px;font-weight:600">${esc(d ? d.name : p)}
+                <a href="${esc(kbFileUrl(p))}" target="_blank" rel="noopener" class="badge good" style="text-decoration:none">файл ↗</a></div>
+              <div style="font-size:11px;color:var(--ink-3);margin:1px 0 4px">${esc(d ? d.class : "")}</div>
+              <div style="font-size:12px;color:var(--ink-2);line-height:1.5">${kbSnippet(KB_TEXT.docs[p].text, q)}</div>
+            </div>`;
+          }).join(""), KB_LIMIT)
+        : '<p class="hint">В содержимом документов совпадений нет.</p>';
+    });
+  }
+
   byId("kbSearchQ").oninput = e => {
     clearTimeout(searchTimer);
     const q = e.target.value.trim();
     const box = byId("kbSearchResults");
-    if (!q || q.length < 3) { box.innerHTML = q ? '<p class="hint">Минимум 3 символа.</p>' : ""; return; }
+    if (!q || q.length < 2) { box.innerHTML = q ? '<p class="hint">Минимум два символа.</p>' : ""; return; }
     box.innerHTML = '<p class="hint">Поиск…</p>';
-    searchTimer = setTimeout(() => {
-      kbEnsureText(() => {
-        if (!KB_TEXT) { box.innerHTML = callout("bad", "Индекс недоступен."); return; }
-        const hintEl = byId("kbSearchHint");
-        if (hintEl) hintEl.textContent = `Индекс: ${num(KB_TEXT.meta.docsIndexed)} документов (PDF, DOCX, PPTX, легаси .doc/.ppt; первые ~${Math.round(KB_TEXT.meta.maxCharsPerDoc / 1000)} тыс. знаков каждого).`;
-        const ql = q.toLowerCase();
-        const hits = [];
-        for (const path in KB_TEXT.docs) {
-          const t = KB_TEXT.docs[path].text;
-          if (t.toLowerCase().includes(ql)) hits.push({ path, doc: byPath.get(path) });
-        }
-        if (!hits.length) { box.innerHTML = '<p class="hint">Ничего не найдено.</p>'; return; }
-        box.innerHTML = `<p class="hint">${hits.length} документов</p>` + hits.slice(0, 40).map(h => `
-          <div style="padding:9px 0;border-bottom:1px solid var(--grid)">
-            <div style="font-size:12.5px;font-weight:600">${esc(h.doc ? h.doc.name : h.path)} <a href="${esc(kbFileUrl(h.path))}" target="_blank" rel="noopener" class="badge good" style="text-decoration:none">файл ↗</a></div>
-            <div style="font-size:11px;color:var(--ink-3);margin:1px 0 4px">${esc(h.doc ? h.doc.class : "")}</div>
-            <div style="font-size:12px;color:var(--ink-2);line-height:1.5">${kbSnippet(KB_TEXT.docs[h.path].text, q)}</div>
-          </div>`).join("");
-      });
-    }, 300);
+    searchTimer = setTimeout(() => kbRenderResults(q, box), 220);
   };
 
   function apply() {
