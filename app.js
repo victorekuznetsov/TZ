@@ -21,11 +21,25 @@ const qsa = (sel, root = document) => [...root.querySelectorAll(sel)];
 // ключи в data/linkome_catalog.json.byPart
 const normArt = s => String(s == null ? "" : s).toUpperCase().replace(/[^0-9A-ZА-Я]/g, "");
 
-function fetchJSON(path) {
-  return fetch(path).then(r => {
-    if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
-    return r.json();
+// Витрины грузятся тегами <script src="data/*.local.js"> (не fetch): fetch()
+// локального файла браузер блокирует при открытии страницы без сервера
+// (file://…, двойной щелчок по index.html) — <script> этому не подчиняется.
+// Каждый такой файл кладёт свои данные в window.__DATA__["<имя>"]. Тот же
+// приём — в TOPO, CAT и KOMATSU_PARTS_BOOK. build/make_local_js.py
+// генерирует .local.js из уже собранного data/*.json.
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`${src}: не удалось загрузить`));
+    document.head.appendChild(s);
   });
+}
+function dataFor(key) {
+  const v = window.__DATA__ && window.__DATA__[key];
+  if (v === undefined) throw new Error(`data/${key}.local.js: нет window.__DATA__["${key}"]`);
+  return v;
 }
 
 /* ---------- выгрузка CSV ---------- */
@@ -185,26 +199,28 @@ function kpi(label, value, kind) {
 }
 
 /* ---------- загрузка ---------- */
+// ключ витрины (D.<key>) -> имя файла data/<файл>.local.js
 const FILES = {
-  catalog: "data/catalog.json", ekmtrWk: "data/ekmtr_wk.json",
-  tree: "data/tree.json", interchange: "data/interchange.json",
-  fleetBooks: "data/fleet_books.json", fleet: "data/fleet.json",
-  repairs: "data/repairs.json", provision: "data/provision.json",
-  stock: "data/stock.json", quality: "data/quality.json", kb: "data/kb.json",
-  drawings: "data/drawings.json", linkome: "data/linkome_catalog.json",
+  catalog: "catalog", ekmtrWk: "ekmtr_wk",
+  tree: "tree", interchange: "interchange",
+  fleetBooks: "fleet_books", fleet: "fleet",
+  repairs: "repairs", provision: "provision",
+  stock: "stock", quality: "quality", kb: "kb",
+  drawings: "drawings", linkome: "linkome_catalog",
 };
 
 function boot() {
   const keys = Object.keys(FILES);
-  Promise.all(keys.map(k => fetchJSON(FILES[k]).then(v => D[k] = v)))
+  Promise.all(keys.map(k => loadScript(`data/${FILES[k]}.local.js`)))
     .then(() => {
+      keys.forEach(k => { D[k] = dataFor(FILES[k]); });
       buildIndexes();
       renderTab();
     })
     .catch(e => {
       byId("main").innerHTML = callout("bad",
-        `Не удалось загрузить данные: ${esc(e.message)}. Портал открывается только через http(s) — ` +
-        `откройте его с сервера (GitHub Pages / Vercel / <code>python3 -m http.server</code>), не двойным щелчком по файлу.`);
+        `Не удалось загрузить данные: ${esc(e.message)}. Проверьте, что рядом с index.html лежит вся ` +
+        `папка целиком (включая data/) — файлы data/*.local.js должны быть на месте.`);
     });
 }
 
@@ -1037,8 +1053,8 @@ function kbEnsureText(onReady) {
   if (KB_TEXT) { onReady(); return; }
   if (KB_TEXT_LOADING) return;
   KB_TEXT_LOADING = true;
-  fetchJSON("data/kb_text.json").then(d => {
-    KB_TEXT = d; KB_TEXT_LOADING = false; onReady();
+  loadScript("data/kb_text.local.js").then(() => {
+    KB_TEXT = dataFor("kb_text"); KB_TEXT_LOADING = false; onReady();
   }).catch(() => { KB_TEXT_LOADING = false; onReady(); });
 }
 

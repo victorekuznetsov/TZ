@@ -39,13 +39,34 @@ git ls-tree -r -l origin/rawdata "rawdata/АТ майнинг/" \
 python3 build/unpack_linkome.py <rawdata_dir_с_zip_LinkOme> work/linkome
 python3 build/build_linkome_catalog.py work/linkome data/tree.json \
   data/catalog.json data/fleet_books.json                                  data/
+
+# последний шаг — всегда, после любого из перечисленных выше
+python3 build/make_local_js.py data/
 ```
 
 `build_tree.py` — первый шаг: даёт `tree.json` (дерево узлов) и
 `fleet_books.json` (книга ↔ борт), которые нужны остальным.
 `build_catalog.py` — второй: даёт `ekmtr_wk.json` (срез НСИ по WK),
 нужный `build_stock.py`, `build_repairs.py` и `build_provision.py`.
-`build_provision.py` — последний: ему нужен уже собранный `stock.json`.
+`build_provision.py` — последний из «основных»: ему нужен уже собранный
+`stock.json`. `make_local_js.py` — обязательно последний шаг любой
+пересборки: без него портал не увидит новые данные (см. ниже).
+
+**Портал грузит `data/*.local.js`, не `data/*.json`.** Каждый
+`build_*.py` пишет `data/<имя>.json` как обычно; `make_local_js.py`
+оборачивает его в `data/<имя>.local.js` (`window.__DATA__["<имя>"]=...;`)
+и именно этот файл подключает `index.html` тегом `<script src>`.
+Так сделано потому, что браузер блокирует `fetch()` локального файла,
+когда страница открыта без сервера (`file://…`, двойной щелчок по
+`index.html`) — тег `<script>` этому ограничению не подчиняется. Тот же
+приём — в TOPO, CAT и KOMATSU_PARTS_BOOK. На GitHub Pages/Vercel разницы
+нет: `<script src>` там работает точно так же. `data/kb_text.json` —
+единственный ленивый: его `.local.js` подгружается тем же способом, но
+только по первому поиску по содержимому базы знаний (12 МБ, незачем
+грузить сразу). Если добавили новый `data/*.json` руками, а не через
+`build_*.py`, — не забудьте перезапустить `make_local_js.py`, иначе
+портал будет молча показывать старые данные (в `window.__DATA__` попадёт
+то, что было на момент последнего запуска).
 
 **Обновление данных без Python.** Вкладка портала «Обновление данных»
 пересобирает `stock.json` (остатки + ограниченный запас + закупки) прямо
