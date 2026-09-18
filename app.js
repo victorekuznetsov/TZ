@@ -207,6 +207,7 @@ const FILES = {
   repairs: "repairs", provision: "provision",
   stock: "stock", quality: "quality", kb: "kb",
   drawings: "drawings", linkome: "linkome_catalog",
+  linkomeDraw: "linkome_drawings",
 };
 
 function boot() {
@@ -597,7 +598,7 @@ function renderLinkone(host) {
   host.innerHTML = `
     <h1>Каталог LinkOne</h1>
     <p class="sub">${D.linkome.meta.books} книг, ${num(D.linkome.meta.pagesTotal)} страниц, ${num(D.linkome.meta.rowsTotal)} строк состава — разбор заводской выгрузки LinkOne, формат тот же, что у каталогов Komatsu/Cat/Cummins: дерево узлов книги, таблица позиций узла, карточка детали. ${D.linkome.meta.pagesFailed} страниц не разобрались (см. «Качество данных»).</p>
-    ${callout("warn", "Растровый чертёж (.ilg) не декодирован — контейнер LinkOne читается, изображение нет. Показан только состав узла (номер, наименование, количество), без картинки. Подробности — «Качество данных».")}
+    ${callout("good", `Чертежи распакованы из самих книг: ${num(D.linkomeDraw.meta.sheets)} листов на ${num(D.linkomeDraw.meta.pages)} узлов — формат .ilg разобран (палитра + построчный RLE, см. «Методика»). Чертёж открывается рядом с составом узла, клик — в полный размер.`)}
     <div class="lo-books" id="loBooks">
       ${books.map(([code, b]) => `
         <div class="lo-book${LO.book === code ? " on" : ""}" data-book="${esc(code)}">
@@ -712,9 +713,18 @@ function loRenderMain() {
   const path = loPathTo(page.id);
   const crumbs = path.map(p => `<a data-id="${esc(p.id)}">${esc(p.title || p.id)}</a>`).join(" › ") || esc(page.title || page.id);
   const rows = page.rows || [];
+  const sheets = (D.linkomeDraw.byPage[`${LO.book}|${page.id.toUpperCase()}`]) || [];
   host.innerHTML = `
     <div class="lo-crumbs">${crumbs}</div>
     <h3 style="margin:0 0 10px;font-size:15px">${esc(page.title || page.id)}</h3>
+    ${sheets.length ? `
+      <div class="lo-draw">
+        ${sheets.length > 1 ? `<div class="lo-sheets">${sheets.map((s, k) =>
+          `<span class="pill${k ? "" : " on"}" data-sheet="${k}">лист ${esc(s.sheet || (k + 1))}</span>`).join("")}</div>` : ""}
+        <a href="${esc(sheets[0].file)}" target="_blank" rel="noopener" id="loDrawLink" title="Открыть чертёж в полный размер">
+          <img src="${esc(sheets[0].file)}" id="loDrawImg" alt="Чертёж ${esc(page.id)}"/>
+        </a>
+      </div>` : `<p class="hint">Чертежа для этого узла в книге нет.</p>`}
     <div class="twrap"><table>
       <thead><tr><th>№</th><th>Номер</th><th>Наименование</th><th class="n">Кол-во</th><th></th></tr></thead>
       <tbody>${rows.map(r => {
@@ -730,6 +740,12 @@ function loRenderMain() {
       }).join("") || `<tr><td colspan="5" class="dim">Состав пуст</td></tr>`}</tbody>
     </table></div>
   `;
+  qsa("[data-sheet]", host).forEach(el => el.onclick = () => {
+    const s = sheets[+el.dataset.sheet];
+    byId("loDrawImg").src = s.file;
+    byId("loDrawLink").href = s.file;
+    qsa("[data-sheet]", host).forEach(x => x.classList.toggle("on", x === el));
+  });
   qsa(".lo-crumbs a", host).forEach(el => el.onclick = () => { LO.current = el.dataset.id; loRenderTree(); loRenderMain(); });
   qsa("[data-goto]", host).forEach(el => el.onclick = () => { LO.current = el.dataset.goto; loRenderTree(); loRenderMain(); });
   qsa("[data-art]", host).forEach(el => el.onclick = () => openDetail(el.dataset.art));

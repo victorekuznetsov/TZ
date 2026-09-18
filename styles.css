@@ -248,6 +248,13 @@ mark{background:var(--accent-soft);color:var(--ink);border-radius:2px;padding:0 
 .lo-orphans{border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
 .lo-orphans>.lo-node-kids{display:none;padding-left:14px}
 .lo-orphans>.lo-node-kids.open-orphans{display:block}
+.lo-draw{background:#fff;border:var(--hair);border-radius:var(--radius);padding:6px;margin-bottom:12px;
+  max-height:52vh;overflow:auto;text-align:center}
+.lo-draw img{max-width:100%;height:auto;display:block;margin:0 auto;cursor:zoom-in}
+.lo-sheets{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;justify-content:center}
+.lo-sheets .pill{padding:4px 10px;background:var(--surface-2);border:var(--hair);border-radius:99px;
+  font-size:11px;color:var(--ink-2);cursor:pointer}
+.lo-sheets .pill.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 .lo-crumbs{font-size:11.5px;color:var(--ink-3);margin-bottom:8px}
 .lo-crumbs a{color:var(--info);cursor:pointer}
 .lo-crumbs a:hover{text-decoration:underline}
