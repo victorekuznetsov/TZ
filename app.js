@@ -714,43 +714,69 @@ function loRenderMain() {
   const crumbs = path.map(p => `<a data-id="${esc(p.id)}">${esc(p.title || p.id)}</a>`).join(" › ") || esc(page.title || page.id);
   const rows = page.rows || [];
   const sheets = (D.linkomeDraw.byPage[`${LO.book}|${page.id.toUpperCase()}`]) || [];
+  // Раскладка узла — как в каталоге Cummins: чертёж слева «липким» столбцом,
+  // таблица позиций справа, листы переключаются каруселью, клик по чертежу
+  // разворачивает его в натуральную величину.
   host.innerHTML = `
     <div class="lo-crumbs">${crumbs}</div>
-    <h3 style="margin:0 0 10px;font-size:15px">${esc(page.title || page.id)}</h3>
-    ${sheets.length ? `
-      <div>
-        ${sheets.length > 1 ? `<div class="lo-sheets">${sheets.map((s, k) =>
-          `<span class="pill${k ? "" : " on"}" data-sheet="${k}">лист ${esc(s.sheet || (k + 1))}</span>`).join("")}</div>` : ""}
-        <div class="lo-draw" id="loDraw">
-          <div class="lo-stage" id="loStage">
-            <img src="${esc(sheets[0].file)}" id="loDrawImg" alt="Чертёж ${esc(page.id)}"/>
-            <div class="lo-spots" id="loSpots"></div>
+    <div class="lo-head">
+      <h2 class="lo-title">${esc(page.title || page.id)}</h2>
+      <div class="lo-meta"><span class="mono">${esc(page.id)}</span> · позиций: ${num(rows.length)}${sheets.length ? ` · листов: ${sheets.length}` : " · чертежа нет"}</div>
+    </div>
+    <div class="lo-body">
+      <div class="lo-pane">
+        ${sheets.length ? `
+          <div class="lo-draw" id="loDraw">
+            <div class="lo-stage" id="loStage">
+              <img src="${esc(sheets[0].file)}" id="loDrawImg" alt="Чертёж ${esc(page.id)}"/>
+              <div class="lo-spots" id="loSpots"></div>
+            </div>
           </div>
-        </div>
-        <p class="hint" id="loDrawHint"></p>
-      </div>` : `<p class="hint">Чертежа для этого узла в книге нет.</p>`}
-    <div class="twrap"><table>
-      <thead><tr><th>№</th><th>Номер</th><th>Наименование</th><th class="n">Кол-во</th><th></th></tr></thead>
-      <tbody>${rows.map(r => {
-        const kid = r.link && loFindPage(r.link);
-        const match = r.part && CATALOG_BY_NORMART.get(normArt(r.part));
-        return `<tr data-item="${esc(r.item || "")}">
-          <td>${esc(r.item || "")}</td>
-          <td class="mono">${esc(r.part || "")}</td>
-          <td class="wrap">${esc(r.name || "")}</td>
-          <td class="n">${r.qty != null ? num(r.qty) : ""}</td>
-          <td>${kid ? `<span class="badge info" data-goto="${esc(kid.id)}" style="cursor:pointer">узел ▸</span>` : ""}${match ? ` <span class="badge good" data-art="${esc(match.art)}" style="cursor:pointer">в прайсе ДП</span>` : ""}</td>
-        </tr>`;
-      }).join("") || `<tr><td colspan="5" class="dim">Состав пуст</td></tr>`}</tbody>
-    </table></div>
+          ${sheets.length > 1 ? `<div class="lo-carousel">
+            <button class="lo-navbtn" id="loPrev" type="button" title="Предыдущий лист">‹</button>
+            <span id="loSheetLabel"></span>
+            <button class="lo-navbtn" id="loNext" type="button" title="Следующий лист">›</button>
+          </div>` : ""}
+          <div class="lo-hint" id="loDrawHint"></div>`
+        : `<div class="lo-nodraw">Для этого узла в книге нет чертежа — состав приведён справа.</div>`}
+      </div>
+      <div class="lo-tablepane">
+        <div class="twrap"><table class="lo-parts">
+          <thead><tr><th class="c-pos">№</th><th>Номер</th><th>Наименование</th><th class="n">Кол.</th>
+            <th>ЕКМТР</th><th>Наличие<br>и заказ</th><th class="n">Цена</th><th></th></tr></thead>
+          <tbody>${rows.map(r => {
+            const kid = r.link && loFindPage(r.link);
+            const sup = supplyCells(r.part);
+            return `<tr data-item="${esc(r.item || "")}">
+              <td class="c-pos">${esc(r.item || "")}</td>
+              <td class="mono">${sup.art
+                ? `<span class="pn-link" data-art="${esc(sup.art)}" title="Открыть карточку детали">${esc(r.part || "")}</span>`
+                : esc(r.part || "")}</td>
+              <td class="wrap">${esc(r.name || "")}</td>
+              <td class="n">${r.qty != null ? num(r.qty) : ""}</td>
+              <td>${sup.ekmtr}</td>
+              <td class="c-stock">${sup.stock}${sup.order ? " " + sup.order : ""}</td>
+              <td class="n c-price">${sup.price}</td>
+              <td class="c-act">${kid ? `<span class="badge info" data-goto="${esc(kid.id)}" style="cursor:pointer">узел ▸</span>` : ""}${sup.art ? ` ${cartAddBtn(sup.cart)}` : ""}</td>
+            </tr>`;
+          }).join("") || `<tr><td colspan="8" class="dim">Состав пуст</td></tr>`}</tbody>
+        </table></div>
+      </div>
+    </div>
   `;
   // Номера позиций в самом чертеже не нарисованы — в книге это пустые кружки,
   // а цифру в них рисует программа просмотра по рамкам выносок из .bli. Здесь
   // то же самое: накладываем номер поверх кружка и делаем его кликабельным.
+  let loSheet = 0;
   function loShowSheet(k) {
     const s = sheets[k];
     if (!s) return;
-    byId("loDrawImg").src = s.file;
+    loSheet = k;
+    const img = byId("loDrawImg");
+    img.src = s.file;
+    img.classList.remove("zoomed");
+    const label = byId("loSheetLabel");
+    if (label) label.textContent = `Лист ${k + 1} из ${sheets.length}`;
     const box = byId("loSpots");
     const spots = s.spots || [];
     box.innerHTML = spots.map((sp, i) =>
@@ -759,8 +785,8 @@ function loRenderMain() {
     const hint = byId("loDrawHint");
     if (hint) {
       hint.textContent = spots.length
-        ? `${spots.length} выносок — клик по номеру подсвечивает позицию в таблице, наведение на строку — выноску на чертеже.`
-        : "Выноски для этого листа в книге не заданы.";
+        ? `Номер на чертеже = № позиции в таблице (${spots.length} выносок). Клик по номеру подсвечивает позицию, наведение на строку — выноску. Щелчок по чертежу — увеличить.`
+        : "Выноски для этого листа в книге не заданы. Щелчок по чертежу — увеличить.";
     }
     qsa(".lo-spot", box).forEach(el => el.onclick = () => loPickItem(el.dataset.n, true));
     qsa(".lo-spot", box).forEach(el => {
@@ -796,13 +822,16 @@ function loRenderMain() {
       tr.onmouseleave = () => loHiSpot(n, false);
     });
   }
-  qsa("[data-sheet]", host).forEach(el => el.onclick = () => {
-    loShowSheet(+el.dataset.sheet);
-    qsa("[data-sheet]", host).forEach(x => x.classList.toggle("on", x === el));
-  });
+  const prev = byId("loPrev"), next = byId("loNext"), dimg = byId("loDrawImg");
+  if (prev) prev.onclick = () => loShowSheet((loSheet - 1 + sheets.length) % sheets.length);
+  if (next) next.onclick = () => loShowSheet((loSheet + 1) % sheets.length);
+  // Зум — как в Cummins: снимаем ограничение по ширине, выноски остаются на
+  // местах, потому что заданы в процентах и масштабируются вместе с картинкой.
+  if (dimg) dimg.onclick = () => dimg.classList.toggle("zoomed");
   qsa(".lo-crumbs a", host).forEach(el => el.onclick = () => { LO.current = el.dataset.id; loRenderTree(); loRenderMain(); });
   qsa("[data-goto]", host).forEach(el => el.onclick = () => { LO.current = el.dataset.goto; loRenderTree(); loRenderMain(); });
   qsa("[data-art]", host).forEach(el => el.onclick = () => openDetail(el.dataset.art));
+  wireCartButtons(host);
 }
 
 /* ===================== ПАРК ===================== */
@@ -835,8 +864,14 @@ function renderFleet(host) {
     csv: true, csvName: "wk_fleet.csv",
     cols: [
       { key: "name", label: "Единица", cls: "wrap" },
-      { key: "site", label: "Площадка" },
+      { key: "garage", label: "Борт", cls: "mono", fmt: v => v || '<span class="dim">—</span>' },
+      {
+        key: "siteName", label: "Площадка", cls: "wrap",
+        plain: (v, r) => v || r.site || "",
+        fmt: (v, r) => v ? `${esc(v)} <span class="dim">${esc(r.site)}</span>` : esc(r.site || "—"),
+      },
       { key: "model", label: "Модель" },
+      { key: "serial", label: "Заводской №", cls: "mono", fmt: v => v || '<span class="dim">—</span>' },
       { key: "book", label: "Книга", cls: "mono", fmt: v => v || '<span class="dim">—</span>' },
       {
         key: "ktgByMonth", label: "КТГ, тренд", plain: () => "",
@@ -1395,12 +1430,92 @@ function kbFindAll(q) {
     if (hitNum(e.code) || hit(e.name) || hitNum(e.cat)) out.ekmtr.push(e);
   }
   for (const u of D.fleet.units) {
-    if (hit(u.name) || hit(u.model) || hit(u.garage) || hit(u.book) || hitNum(u.serial)) out.fleet.push(u);
+    if (hit(u.name) || hit(u.model) || hit(u.garage) || hit(u.book) ||
+        hitNum(u.serial) || hit(u.siteName) || hit(u.site)) out.fleet.push(u);
   }
   for (const d of D.kb.docs) {
     if (hit(d.name) || hit(d.class) || hit(d.model) || hit(d.path)) out.docs.push(d);
   }
   return out;
+}
+
+// Подсветка совпадения в результате: сначала экранируем, потом вставляем <mark>,
+// иначе разметка из данных попала бы в вывод как разметка.
+function kbMark(text, q) {
+  const s = esc(text == null ? "" : text);
+  const needle = String(q || "").trim();
+  if (!needle) return s;
+  const re = new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "ig");
+  return s.replace(re, m => `<mark>${m}</mark>`);
+}
+
+/* ---------- снабжение позиции: ЕКМТР, остаток, консигнация, цена, заказ ----------
+   Формат тот же, что в каталоге Komatsu: в строке состава — короткие «пилюли»,
+   подробности (по складам, по годам поставки) в подсказке. Источник — прайс ДП
+   (цена, код ЕКМТР) и выгрузка SAP (остатки с разбивкой по складам, открытые
+   закупки). Консигнация в остатках приходит отдельным складом, поэтому
+   показывается своей пометкой: она лежит на площадке, но ещё не наша.
+   Разбивки консигнации по площадкам в выгрузке пока нет — будет добавлена. */
+const CONSIGN_RE = /консигнац/i;
+
+function supplyOf(part) {
+  const item = part && CATALOG_BY_NORMART.get(normArt(part));
+  if (!item) return null;
+  const stock = item.ekmtr ? STOCK_BY_CODE.get(item.ekmtr) : null;
+  let consign = 0, own = 0;
+  const byWh = (stock && stock.byWarehouse) || {};
+  for (const wh in byWh) {
+    if (CONSIGN_RE.test(wh)) consign += byWh[wh]; else own += byWh[wh];
+  }
+  return { item, stock, consign, own, byWh };
+}
+
+function supplyCells(part) {
+  const s = supplyOf(part);
+  if (!s) return { ekmtr: '<span class="dim">—</span>', stock: '<span class="dim">—</span>',
+                   price: '<span class="dim">—</span>', order: "" };
+  const { item, stock, consign, own, byWh } = s;
+  const whTitle = Object.keys(byWh).sort((a, b) => byWh[b] - byWh[a])
+    .map(w => `${w}: ${num(byWh[w], 1)}`).join("\n");
+
+  let stockHtml;
+  if (!stock || !stock.qty) {
+    stockHtml = '<span class="dim">—</span>';
+  } else {
+    const parts = [];
+    if (own) parts.push(`<span class="sup-pill${stock.availQty > 0 ? " ok" : ""}" title="${esc(whTitle)}">${num(own, 1)}</span>`);
+    if (stock.restrictedQty > 0) {
+      parts.push(`<span class="sup-pill restricted" title="Ограниченный запас — есть, но использовать нельзя">${num(stock.restrictedQty, 1)}</span>`);
+    }
+    if (consign) {
+      parts.push(`<span class="sup-pill consign" title="Консигнация — лежит на площадке, но ещё не выкуплено">К ${num(consign, 1)}</span>`);
+    }
+    stockHtml = parts.join(" ") || '<span class="dim">—</span>';
+  }
+
+  const rate = getRate();
+  const priceHtml = item.priceCNY == null ? '<span class="dim">—</span>'
+    : `<span class="sup-price" title="${esc(item.nameRu || "")}">${cny(item.priceCNY)}</span>` +
+      (rate ? `<span class="sup-sub">${rub(item.priceCNY * rate)}</span>` : "");
+
+  let orderHtml = "";
+  const p = stock && stock.purchase;
+  if (p && p.openQty > 0) {
+    const years = Object.keys(p.years || {}).sort().map(y => `${y}: ${p.years[y]}`).join("\n");
+    orderHtml = `<span class="sup-pill order" title="${esc(`в закупке ${num(p.qty, 1)}, поставщик ${p.topSupplier || "—"}${years ? "\n" + years : ""}`)}">едет ${num(p.openQty, 1)}</span>`;
+  }
+  return {
+    ekmtr: item.ekmtr ? `<span class="mono">${esc(item.ekmtr)}</span>` : '<span class="dim">—</span>',
+    stock: stockHtml, price: priceHtml, order: orderHtml, art: item.art,
+    // в заявку кладём по коду ЕКМТР, а без кода — по артикулу прайса:
+    // иначе позиция без кодификации в заявку вообще не попадёт
+    cart: {
+      code: item.ekmtr || item.art,
+      name: item.nameRu || item.art,
+      value: rate && item.priceCNY != null ? item.priceCNY * rate : null,
+      source: "Каталог LinkOne",
+    },
+  };
 }
 
 function kbSection(title, n, bodyHtml, shown) {
@@ -1452,7 +1567,7 @@ function renderKB(host) {
       h.push(kbSection("Детали прайса ДП", r.parts.length, `<div class="twrap"><table>
         <thead><tr><th>Артикул</th><th>Наименование</th><th>Модель</th><th>ЕКМТР</th><th>Цена, ¥</th></tr></thead>
         <tbody>${r.parts.slice(0, KB_LIMIT).map(i => `<tr class="mrow" data-art="${esc(i.art)}">
-          <td class="mono">${esc(i.art)}</td><td class="wrap">${esc(i.nameRu || "")}</td>
+          <td class="mono">${kbMark(i.art, q)}</td><td class="wrap">${kbMark(i.nameRu || "", q)}</td>
           <td>${esc(i.model || "")}</td><td class="mono">${i.ekmtr ? esc(i.ekmtr) : '<span class="dim">—</span>'}</td>
           <td class="n">${i.priceCNY == null ? "" : cny(i.priceCNY)}</td></tr>`).join("")}</tbody>
         </table></div>`, KB_LIMIT));
@@ -1463,7 +1578,7 @@ function renderKB(host) {
         <tbody>${r.linkome.slice(0, KB_LIMIT).map(([, rows]) => {
           const f = rows[0];
           return `<tr class="mrow" data-book="${esc(f.book)}" data-page="${esc(f.page)}">
-            <td class="mono">${esc(f.raw)}</td><td class="wrap">${esc(f.name || "")}</td>
+            <td class="mono">${kbMark(f.raw, q)}</td><td class="wrap">${kbMark(f.name || "", q)}</td>
             <td class="wrap"><span class="badge info">${esc(f.book)}</span> ${esc(f.pageTitle || f.page)}${rows.length > 1 ? ` <span class="dim">+${rows.length - 1}</span>` : ""}</td></tr>`;
         }).join("")}</tbody></table></div>`, KB_LIMIT));
     }
@@ -1471,7 +1586,7 @@ function renderKB(host) {
       h.push(kbSection("Узлы дерева", r.nodes.length, `<div class="twrap"><table>
         <thead><tr><th>Номер</th><th>Наименование</th><th>Механизм</th><th>Книга</th><th>Модель</th></tr></thead>
         <tbody>${r.nodes.slice(0, KB_LIMIT).map(n => `<tr>
-          <td class="mono">${esc(n.num)}</td><td class="wrap">${esc(n.nameRu || "")}</td>
+          <td class="mono">${kbMark(n.num, q)}</td><td class="wrap">${kbMark(n.nameRu || "", q)}</td>
           <td class="wrap">${esc(n.mech || "")}</td><td>${esc(n.book || "")}</td><td>${esc(n.model || "")}</td></tr>`).join("")}</tbody>
         </table></div>`, KB_LIMIT));
     }
@@ -1479,22 +1594,24 @@ function renderKB(host) {
       h.push(kbSection("Коды ЕКМТР", r.ekmtr.length, `<div class="twrap"><table>
         <thead><tr><th>Код</th><th>Наименование</th><th>Каталожный</th><th>Изготовитель</th></tr></thead>
         <tbody>${r.ekmtr.slice(0, KB_LIMIT).map(e => `<tr>
-          <td class="mono">${esc(e.code)}</td><td class="wrap">${esc(e.name || "")}</td>
+          <td class="mono">${kbMark(e.code, q)}</td><td class="wrap">${kbMark(e.name || "", q)}</td>
           <td class="mono">${esc(e.cat || "")}</td><td>${esc(e.mf || "")}</td></tr>`).join("")}</tbody>
         </table></div>`, KB_LIMIT));
     }
     if (r.fleet.length) {
       h.push(kbSection("Парк", r.fleet.length, `<div class="twrap"><table>
-        <thead><tr><th>Борт</th><th>Модель</th><th>Наименование</th><th>Книга</th><th class="n">КТГ</th></tr></thead>
+        <thead><tr><th>Борт</th><th>Площадка</th><th>Модель</th><th>Заводской №</th><th>Книга</th><th class="n">КТГ</th></tr></thead>
         <tbody>${r.fleet.slice(0, KB_LIMIT).map(u => `<tr>
-          <td>${esc(u.garage)}</td><td>${esc(u.model)}</td><td class="wrap">${esc(u.name || "")}</td>
+          <td class="mono">${kbMark(u.garage || "", q)}</td>
+          <td class="wrap">${esc(u.siteName || u.site || "")} <span class="dim">${esc(u.site || "")}</span></td>
+          <td>${esc(u.model)}</td><td class="mono">${kbMark(u.serial || "", q)}</td>
           <td>${esc(u.book || "")}</td><td class="n">${u.ktg == null ? "" : pct(u.ktg)}</td></tr>`).join("")}</tbody>
         </table></div>`, KB_LIMIT));
     }
     if (r.docs.length) {
       h.push(kbSection("Документы (по имени и классу)", r.docs.length,
         r.docs.slice(0, KB_LIMIT).map(d => `<div style="padding:7px 0;border-bottom:1px solid var(--grid)">
-          <div style="font-size:12.5px;font-weight:600">${esc(d.name)}
+          <div style="font-size:12.5px;font-weight:600">${kbMark(d.name, q)}
             <a href="${esc(kbFileUrl(d.path))}" target="_blank" rel="noopener" class="badge good" style="text-decoration:none">файл ↗</a></div>
           <div style="font-size:11px;color:var(--ink-3)">${esc(d.class)}${d.model ? " · " + esc(d.model) : ""}</div>
         </div>`).join(""), KB_LIMIT));

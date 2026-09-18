@@ -18,6 +18,17 @@ from collections import defaultdict
 
 WK_RE = re.compile(r"WK-?\d", re.I)
 
+# Площадки: в ktg.json лежит только код МВЗ, названия к нему нет. Расшифровка
+# взята из витрины TOPO (cube.json, поле `sites`) — она собрана из той же
+# выгрузки SAP, так что коды совпадают один в один. Держим здесь, а не в
+# ktg.json, чтобы не править чужую витрину.
+SITES = {
+    "1100": "Красноярск / Еруда",
+    "1200": "Вернинское / Сухой Лог",
+    "1300": "Алдан",
+    "1400": "Магадан",
+}
+
 
 def garage_no(name):
     m = re.search(r"№\s*([0-9]+[A-ZА-Я]?)\s*$", name.strip())
@@ -70,7 +81,8 @@ def main():
         if b:
             matched_books += 1
         units.append({
-            "site": site, "garage": garage, "model": e.get("md"),
+            "site": site, "siteName": SITES.get(site, site),
+            "garage": garage, "model": e.get("md"),
             "name": name, "manufacturer": e.get("mk"),
             "ktg": e.get("p"), "kio": e.get("a"),
             "ktgByMonth": e.get("pm"), "kioByMonth": e.get("am"),
@@ -82,6 +94,7 @@ def main():
         "meta": {
             "src": os.path.basename(ktg_path),
             "months": months,
+            "sites": SITES,
             "units": len(units),
             "matchedToBook": matched_books,
             "unmatchedToBook": len(units) - matched_books,
