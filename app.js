@@ -1248,8 +1248,7 @@ function openDetail(art) {
 
     ${drawings ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Чертежи (реестр)</h3>
-      <p style="font-size:12px">${drawings.map(d => `<span class="badge good">${esc(d.ext.toUpperCase())}</span> ${esc(d.path.split("/").pop())}`).join("<br>")}</p>
-      <p class="hint">Файлы — в ветке <code>rawdata</code>, порталом пока не раздаются.</p>` : ""}
+      <p style="font-size:12px">${drawings.map(d => `<a href="${esc(kbFileUrl(d.path))}" target="_blank" rel="noopener" style="text-decoration:none"><span class="badge good">${esc(d.ext.toUpperCase())}</span> ${esc(d.path.split("/").pop())}</a>`).join("<br>")}</p>` : ""}
 
     ${linkomeRows ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Состав в LinkOme</h3>
@@ -1285,13 +1284,21 @@ function kbSnippet(text, q) {
   return esc(s).replace(re, m => `<mark>${m}</mark>`);
 }
 
+// data/kb.json.docs[].path — "rawdata/АТ майнинг/…"; сами файлы лежат в этой же ветке
+// под media/kb/ (см. build/README.md) — переписываем префикс и кодируем каждый сегмент
+// пути отдельно (не всю строку — иначе "/" превратится в %2F и ссылка сломается).
+function kbFileUrl(path) {
+  const rel = path.startsWith("rawdata/") ? path.slice("rawdata/".length) : path;
+  return "media/kb/" + rel.split("/").map(encodeURIComponent).join("/");
+}
+
 function renderKB(host) {
   const m = D.kb.meta;
   const classes = Object.entries(m.byClass).sort((a, b) => b[1] - a[1]);
   host.innerHTML = `
     <h1>База знаний</h1>
     <p class="sub">${num(m.docs)} документов из АТ-Майнинг (руководства, схемы, нормы ТО, чертежи CAD) — ${num(m.totalBytes / 1e9, 1)} ГБ. Каталоги в PDF (${m.skippedCatalogPdf}) сюда не входят — чертежи берутся из LinkOme, каталог остаётся только справочно там, где книги LinkOme нет (см. «Качество данных»).</p>
-    ${callout("info", "Реестр — метаданные (путь, класс, модель); сами файлы лежат в ветке <code>rawdata</code> и пока не раздаются порталом — см. открытый вопрос о хостинге в плане.")}
+    ${callout("good", `Сами файлы (не только реестр) лежат в этой же ветке под <code>media/kb/</code> — ${num(m.totalBytes / 1e9, 1)} ГБ, открываются кликом «файл» и в строке таблицы, и в результатах поиска по содержимому, без интернета. При деплое на GitHub Pages эта папка не публикуется — только для скачанной локально копии ветки.`)}
     <div class="kbgrid" id="kbClasses"></div>
 
     <div class="card">
@@ -1335,7 +1342,7 @@ function renderKB(host) {
         if (!hits.length) { box.innerHTML = '<p class="hint">Ничего не найдено.</p>'; return; }
         box.innerHTML = `<p class="hint">${hits.length} документов</p>` + hits.slice(0, 40).map(h => `
           <div style="padding:9px 0;border-bottom:1px solid var(--grid)">
-            <div style="font-size:12.5px;font-weight:600">${esc(h.doc ? h.doc.name : h.path)}</div>
+            <div style="font-size:12.5px;font-weight:600">${esc(h.doc ? h.doc.name : h.path)} <a href="${esc(kbFileUrl(h.path))}" target="_blank" rel="noopener" class="badge good" style="text-decoration:none">файл ↗</a></div>
             <div style="font-size:11px;color:var(--ink-3);margin:1px 0 4px">${esc(h.doc ? h.doc.class : "")}</div>
             <div style="font-size:12px;color:var(--ink-2);line-height:1.5">${kbSnippet(KB_TEXT.docs[h.path].text, q)}</div>
           </div>`).join("");
@@ -1361,6 +1368,7 @@ function renderKB(host) {
         { key: "class", label: "Класс" },
         { key: "model", label: "Модель", plain: v => v || "", fmt: v => v || '<span class="dim">общая</span>' },
         { key: "sizeBytes", label: "Размер", numeric: true, plain: v => Math.round(v / 1e6 * 10) / 10, fmt: v => num(v / 1e6, 1) + " МБ" },
+        { key: "path", label: "Файл", plain: v => kbFileUrl(v), fmt: (v) => `<a href="${esc(kbFileUrl(v))}" target="_blank" rel="noopener" class="badge good" style="text-decoration:none">файл ↗</a>` },
       ],
     });
   }

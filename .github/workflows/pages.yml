@@ -21,11 +21,21 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
+      # sparse-checkout: без media/ (2,8 ГБ полной библиотеки знаний, только для
+      # локального скачивания ветки) — иначе каждый деплой качает лишние гигабайты.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            index.html
+            app.js
+            styles.css
+            data
+            lib
 
       # Публикуем только сам портал: index.html/app.js/styles.css/data/lib.
-      # Не публикуем PLAN.md, README.md, build/ (сборка) и сырые прайсы
+      # Не публикуем PLAN.md, README.md, build/ (сборка), media/ (полная
+      # библиотека знаний — 2,8 ГБ, для локального скачивания) и сырые прайсы
       # (Прайс-лист ДП/УСО *.xlsx лежат в корне ветки — коммерческие
       # исходники, порталу в рантайме не нужны).
       - name: Собрать сайт (только нужные порталу файлы)
