@@ -1,0 +1,47 @@
+name: Деплой на GitHub Pages
+
+on:
+  push:
+    branches: [catalog-crm]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Публикуем только сам портал: index.html/app.js/styles.css/data/lib.
+      # Не публикуем PLAN.md, README.md, build/ (сборка) и сырые прайсы
+      # (Прайс-лист ДП/УСО *.xlsx лежат в корне ветки — коммерческие
+      # исходники, порталу в рантайме не нужны).
+      - name: Собрать сайт (только нужные порталу файлы)
+        run: |
+          mkdir -p _site
+          cp index.html app.js styles.css _site/
+          cp -r data lib _site/
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '_site'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
