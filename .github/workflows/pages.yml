@@ -32,17 +32,20 @@ jobs:
             styles.css
             data
             lib
+            media/linkome
 
-      # Публикуем только сам портал: index.html/app.js/styles.css/data/lib.
-      # Не публикуем PLAN.md, README.md, build/ (сборка), media/ (полная
-      # библиотека знаний — 2,8 ГБ, для локального скачивания) и сырые прайсы
-      # (Прайс-лист ДП/УСО *.xlsx лежат в корне ветки — коммерческие
-      # исходники, порталу в рантайме не нужны).
+      # Публикуем сам портал (index.html/app.js/styles.css/data/lib) и чертежи
+      # LinkOne (media/linkome, 97 МБ — без них в «Каталоге LinkOne» вместо
+      # чертежей будут битые картинки). Не публикуем PLAN.md, README.md,
+      # build/ (сборка), media/kb (полная библиотека знаний — 2,8 ГБ, только
+      # для локально скачанной копии ветки) и сырые прайсы (Прайс-лист ДП/УСО
+      # *.xlsx в корне ветки — коммерческие исходники, в рантайме не нужны).
       - name: Собрать сайт (только нужные порталу файлы)
         run: |
-          mkdir -p _site
+          mkdir -p _site/media
           cp index.html app.js styles.css _site/
           cp -r data lib _site/
+          cp -r media/linkome _site/media/
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
