@@ -1078,7 +1078,7 @@ function renderKB(host) {
 
     <div class="card">
       <h3>Поиск по содержимому</h3>
-      <p class="hint" id="kbSearchHint">Индекс — первые ~60 тыс. знаков каждого PDF/DOCX/PPTX; загружается при первом запросе. Легаси .doc/.ppt не проиндексированы — LibreOffice не работает в этой песочнице.</p>
+      <p class="hint" id="kbSearchHint">Индекс — первые ~60 тыс. знаков каждого документа (PDF, DOCX, PPTX, легаси .doc/.ppt); загружается при первом запросе.</p>
       <input type="search" id="kbSearchQ" placeholder="Слово или фраза, например «регламент», «K1839»…"/>
       <div id="kbSearchResults" style="margin-top:10px"></div>
     </div>
@@ -1107,7 +1107,7 @@ function renderKB(host) {
       kbEnsureText(() => {
         if (!KB_TEXT) { box.innerHTML = callout("bad", "Индекс недоступен."); return; }
         const hintEl = byId("kbSearchHint");
-        if (hintEl) hintEl.textContent = `Индекс: ${num(KB_TEXT.meta.docsIndexed)} документов (PDF, DOCX, PPTX; первые ~${Math.round(KB_TEXT.meta.maxCharsPerDoc / 1000)} тыс. знаков каждого). Легаси .doc/.ppt не проиндексированы — LibreOffice не работает в этой песочнице.`;
+        if (hintEl) hintEl.textContent = `Индекс: ${num(KB_TEXT.meta.docsIndexed)} документов (PDF, DOCX, PPTX, легаси .doc/.ppt; первые ~${Math.round(KB_TEXT.meta.maxCharsPerDoc / 1000)} тыс. знаков каждого).`;
         const ql = q.toLowerCase();
         const hits = [];
         for (const path in KB_TEXT.docs) {
