@@ -39,7 +39,25 @@ GROUPS = {
     "K1849": ["old_K1849-WK-35-08022901-6-№10-12&№14-16.zip.001",
               "old_K1849-WK-35-08022901-6-№10-12&№14-16.zip.002",
               "old_K1849-WK-35-08022901-6-№10-12&№14-16.zip.003"],
+    "K1861": ["каталог WK-35 для СЛ K1861.zip"],
 }
+
+
+def _extract_nested(dest, max_depth=3):
+    """Некоторые поставки — zip внутри zip (K1861: внешний архив с
+    инструкцией и парой PNG, сама книга — вложенный
+    'Linkone WK-35 ... K1861-.zip'). Пока в dest нет book.bbi, ищем и
+    распаковываем вложенные .zip — так же, через unzip -O GBK."""
+    for _ in range(max_depth):
+        if any(fn.lower() == "book.bbi" for _root, _dirs, fns in os.walk(dest) for fn in fns):
+            return
+        nested = [os.path.join(r, fn) for r, _dirs, fns in os.walk(dest)
+                  for fn in fns if fn.lower().endswith(".zip")]
+        if not nested:
+            return
+        for z in nested:
+            subprocess.run(["unzip", "-q", "-O", "GBK", "-o", z, "-d", os.path.dirname(z)],
+                            check=False)
 
 
 def main():
@@ -75,6 +93,7 @@ def main():
                         check=False)
         if len(parts) > 1:
             os.remove(src)
+        _extract_nested(dest)
         done += 1
         print(f"{group}: распаковано из {len(parts)} том(ов)")
 
