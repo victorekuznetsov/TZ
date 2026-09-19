@@ -21,11 +21,31 @@
   python3 build/build_stock.py <ekmtr_wk.json> <stock.xlsx> \
       <restricted.xlsx> <purchase.xlsx> <out_dir>
 """
-import sys, os, json
+import sys, os, json, statistics
+from datetime import datetime
 import openpyxl
 from collections import defaultdict
 
 N = lambda x: x if isinstance(x, (int, float)) else 0
+
+
+# Медиану округляем вверх при .5 — как Math.round в lib/stock_pipeline.js.
+# Встроенный round() в Python банковский (400.5 -> 400), и на чётном числе
+# замеров браузерная пересборка расходилась бы с этой на день.
+def med(vals):
+    return int(statistics.median(vals) + 0.5) if vals else None
+
+
+def as_date(x):
+    """Дата из ячейки: SAP отдаёт либо datetime, либо строку ISO."""
+    if isinstance(x, datetime):
+        return x
+    if isinstance(x, str) and len(x) >= 10:
+        try:
+            return datetime.strptime(x[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+    return None
 
 
 def col_index(hdr, needle):
@@ -111,9 +131,14 @@ def parse_purchase(path, wk_codes):
     rq = col_index(hdr, "Дата заявки")
     qn = col_index(hdr, "Количество")
     rows_total = 0
+    # byMonth/years — это ОТКРЫТОЕ КОЛИЧЕСТВО («еще поставить») по сроку
+    # поставки, а не число строк: для обеспеченности важно, сколько и когда
+    # придёт, а не сколькими строками это оформлено. Строки без даты поставки
+    # идут в ключ "" — срок у них неизвестен, и обещать его нельзя.
     by_code = defaultdict(lambda: {"planV": 0.0, "openQty": 0.0, "transitQty": 0.0,
                                     "qty": 0.0, "lines": 0, "suppliers": defaultdict(float),
-                                    "years": defaultdict(int)})
+                                    "years": defaultdict(float), "byMonth": defaultdict(float),
+                                    "lead": []})
     for r in it:
         rows_total += 1
         code = r[ci]
@@ -130,8 +155,19 @@ def parse_purchase(path, wk_codes):
         e["lines"] += 1
         if r[si]:
             e["suppliers"][str(r[si]).strip()] += N(r[vi])
-        if r[di]:
-            e["years"][str(r[di])[:4]] += 1
+        # Фактический срок поставки: от даты заявки до даты поставки. Берём
+        # по УЖЕ ОФОРМЛЕННЫМ строкам (в том числе закрытым) — это единственный
+        # в выгрузке замер того, сколько реально идёт позиция.
+        da, db = as_date(r[rq]), as_date(r[di])
+        if da and db:
+            days = (db - da).days
+            if 0 < days < 1500:
+                e["lead"].append(days)
+        left = N(r[li])
+        if left:
+            d = str(r[di])[:10] if r[di] else ""
+            e["years"][d[:4]] += left
+            e["byMonth"][d[:7]] += left
     wb.close()
     out = {}
     for code, e in by_code.items():
@@ -139,9 +175,16 @@ def parse_purchase(path, wk_codes):
             "planV": round(e["planV"], 2), "openQty": e["openQty"],
             "transitQty": e["transitQty"], "qty": e["qty"], "lines": e["lines"],
             "topSupplier": max(e["suppliers"].items(), key=lambda x: x[1])[0] if e["suppliers"] else None,
-            "years": dict(e["years"]),
+            "years": {k: round(v, 3) for k, v in sorted(e["years"].items())},
+            "byMonth": {k: round(v, 3) for k, v in sorted(e["byMonth"].items())},
+            "leadDays": med(e["lead"]),
+            "leadN": len(e["lead"]),
         }
-    return {"rowsTotal": rows_total, "byCode": out}
+    all_lead = [d for e in by_code.values() for d in e["lead"]]
+    return {"rowsTotal": rows_total, "byCode": out,
+            "leadMedian": med(all_lead),
+            "leadN": len(all_lead),
+            "leadCodes": sum(1 for e in by_code.values() if e["lead"])}
 
 
 def main():
@@ -206,6 +249,9 @@ def main():
             "totalAvailValue": round(sum(i["availValue"] for i in items), 2),
             "totalRestrictedValue": round(sum(i["restrictedValue"] for i in items), 2),
             "totalPurchasePlanValue": round(sum(p["planV"] for p in purch["byCode"].values()), 2),
+            "leadMedianDays": purch["leadMedian"],
+            "leadMeasurements": purch["leadN"],
+            "leadCodes": purch["leadCodes"],
         },
         "items": items,
     }
@@ -217,6 +263,8 @@ def main():
     print(f"  доступно:   {m['totalAvailValue']/1e6:.1f} млн ₽")
     print(f"  ограничено: {m['totalRestrictedValue']/1e6:.1f} млн ₽  (полностью — {m['fullyRestrictedCodes']} кодов)")
     print(f"Закупка WK: {m['codesWithPurchase']} кодов, {m['totalPurchasePlanValue']/1e6:.1f} млн ₽ плановых")
+    print(f"  срок поставки: медиана {m['leadMedianDays']} дн. "
+          f"({m['leadMeasurements']} замеров по {m['leadCodes']} кодам)")
 
 
 if __name__ == "__main__":

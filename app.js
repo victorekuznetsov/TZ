@@ -385,16 +385,19 @@ function renderSum(host) {
       ${kpi("Запас ограничен", mrub(s.totalRestrictedValue), s.totalRestrictedValue > 0 ? "bad" : "")}
       ${kpi("Закупка план", mrub(s.totalPurchasePlanValue))}
       ${kpi("Ремонт факт 22-27", mrub(r.factTotal))}
-      ${kpi("Не обеспечено 26-27", mrub(p.noCoverage.value), "bad")}
+      ${kpi("Не обеспечено 26-27", mrub(p.wk.late + p.wk.undated + p.wk.gap), "bad")}
     </div>
 
     ${callout("info", `<b>Ограниченный запас</b> — позиции, которые физически есть на складе, но SAP запрещает их использовать в ремонте (брак, резерв, спорное качество). Такой запас <b>вычитается</b> из доступного остатка везде в этом портале и подсвечивается статусом «ограничено» — не путайте с обычным наличием.`)}
 
     <h2>Обеспеченность плана 2026–2027 (номенклатура WK)</h2>
-    <div class="grid3">
-      <div class="card"><h3>Полностью обеспечено</h3><div class="kpi good" style="border:0;padding:0"><div class="v">${mrub(p.fullCoverage.value)}</div></div><p class="hint">${num(p.fullCoverage.n)} позиций</p></div>
-      <div class="card"><h3>Частично обеспечено</h3><div class="kpi warn" style="border:0;padding:0"><div class="v">${mrub(p.partialCoverage.value)}</div></div><p class="hint">${num(p.partialCoverage.n)} позиций</p></div>
-      <div class="card"><h3>Нет остатка</h3><div class="kpi bad" style="border:0;padding:0"><div class="v">${mrub(p.noCoverage.value)}</div></div><p class="hint">${num(p.noCoverage.n)} позиций</p></div>
+    <p class="sub">Потребность ${mrub(p.wk.value)} закрывается остатком и уже размещённой закупкой с учётом сроков поставки. Данные на ${dmy(p.asOf)}.</p>
+    ${provBar(p.wk, p.wk.value, 14)}
+    ${provLegend(p.wk)}
+    <div class="grid3" style="margin-top:14px">
+      <div class="card"><h3>Обеспечено к сроку работ</h3><div class="kpi good" style="border:0;padding:0"><div class="v">${mrub(p.wk.fromStock + p.wk.fromBuy)}</div></div><p class="hint">${num(100 * (p.wk.fromStock + p.wk.fromBuy) / (p.wk.value || 1), 0)}% потребности</p></div>
+      <div class="card"><h3>Ещё можно успеть заказом</h3><div class="kpi warn" style="border:0;padding:0"><div class="v">${mrub((p.feasible.inTime || {}).value || 0)}</div></div><p class="hint">при сроке поставки ${num(p.leadMedianDays)} дн.</p></div>
+      <div class="card"><h3>Заказывать уже поздно</h3><div class="kpi bad" style="border:0;padding:0"><div class="v">${mrub(["late3", "lateMore", "past"].reduce((a, k) => a + ((p.feasible[k] || {}).value || 0), 0))}</div></div><p class="hint">срок работ наступит раньше поставки</p></div>
     </div>
 
     <h2>Парк по моделям</h2>
@@ -922,57 +925,187 @@ function renderRepairs(host) {
 }
 
 /* ===================== ОБЕСПЕЧЕННОСТЬ ===================== */
+// Пять корзин покрытия — порядок фиксирован: от «уже есть» к «ничего нет».
+// Цвет закреплён за смыслом корзины, а не за её местом в списке.
+const PROV_BUCKETS = [
+  { key: "fromStock", label: "Есть на складе", color: "var(--c1)" },
+  { key: "fromBuy", label: "Закупка успевает", color: "var(--c7)" },
+  { key: "late", label: "Закупка опаздывает", color: "var(--c5)" },
+  { key: "undated", label: "Закупка без срока", color: "var(--c6)" },
+  { key: "gap", label: "Не покрыто ничем", color: "var(--c8)" },
+];
+// Вердикт — по БЛИЖАЙШЕМУ незакрытому сроку позиции. Деньги при этом
+// делятся построчно (canOrder / tooLate): у одной позиции часть строк
+// может быть просрочена, а часть — ещё закрываема заказом.
+const PROV_VERDICT = {
+  covered: { label: "обеспечено", cls: "good" },
+  inTime: { label: "успеем, если заказать", cls: "warn" },
+  late: { label: "не успеем", cls: "bad" },
+  past: { label: "ближайший срок прошёл", cls: "bad" },
+  nodate: { label: "срок не проставлен", cls: "" },
+};
+const dmy = s => s && s.length >= 10 ? s.slice(8, 10) + "." + s.slice(5, 7) + "." + s.slice(0, 4) : "—";
+
+// Горизонтальная доля: один прямоугольник = одна корзина, между заливками
+// зазор цветом фона, чтобы соседние сегменты не сливались.
+function provBar(t, total, h) {
+  const T = total || 1;
+  const seg = PROV_BUCKETS.filter(b => t[b.key] > 0).map(b =>
+    `<i style="width:${(100 * t[b.key] / T).toFixed(2)}%;background:${b.color}" title="${esc(b.label)}: ${mrub(t[b.key])}"></i>`).join("");
+  return `<div class="prov-bar" style="height:${h || 10}px">${seg}</div>`;
+}
+// Пустые корзины в легенду и разбивку не попадают: строка «0,0 млн ₽»
+// ничего не сообщает, а место занимает.
+function provLegend(t) {
+  return `<div class="prov-legend">` + PROV_BUCKETS.filter(b => !t || t[b.key] > 0).map(b =>
+    `<span><i style="background:${b.color}"></i>${esc(b.label)}</span>`).join("") + `</div>`;
+}
+// Разрез: строка = группа, слева подпись, справа доля и обеспеченность.
+function provCut(rows, nameOf) {
+  return `<table class="prov-cut"><tbody>` + rows.map(r => {
+    const ok = r.fromStock + r.fromBuy;
+    return `<tr>
+      <th>${esc(nameOf ? nameOf(r.key) : r.key)}</th>
+      <td class="n">${mrub(r.value)}</td>
+      <td class="b">${provBar(r, r.value, 8)}</td>
+      <td class="n ${ok / (r.value || 1) < .5 ? "low" : ""}">${num(100 * ok / (r.value || 1), 0)}%</td>
+    </tr>`;
+  }).join("") + `</tbody></table>`;
+}
+
 function renderProvision(host) {
-  const m = D.provision.meta;
+  const m = D.provision.meta, w = m.wk;
+  const T = w.value || 1;
+  const sites = (D.fleet && D.fleet.meta && D.fleet.meta.sites) || {};
+  const f = m.feasible || {};
+  const fv = k => (f[k] && f[k].value) || 0;
+  const gapTotal = w.late + w.undated + w.gap;
+  const eta = new Date(m.asOf + "T00:00:00");
+  eta.setDate(eta.getDate() + (m.leadMedianDays || 0));
+  const etaStr = dmy(eta.toISOString().slice(0, 10));
+
   host.innerHTML = `
-    <h1>Обеспеченность плана 2026–2027</h1>
-    <p class="sub">${num(m.orders)} заказов без единого факта, ${num(m.lines)} строк. Обеспеченность считается по <b>доступному</b> остатку (за вычетом ограниченного) — только для номенклатуры WK.</p>
+    <h1>Обеспеченность плана ТОиР 2026–2027</h1>
+    <p class="sub">${num(m.orders)} открытых заказов, ${num(m.lines)} строк плана без факта.
+      Потребность закрывается <b>доступным остатком</b> (за вычетом ограниченного) и <b>уже размещённой закупкой</b>,
+      приход которой сопоставлен с датой начала работ помесячно. Данные на ${dmy(m.asOf)}.</p>
     <div class="kpis">
-      ${kpi("Потребность WK", mrub(m.wkPartsTotal))}
-      ${kpi("Полностью", mrub(m.fullCoverage.value), "good")}
-      ${kpi("Частично", mrub(m.partialCoverage.value), "warn")}
-      ${kpi("Нет остатка", mrub(m.noCoverage.value), "bad")}
-      ${kpi("Прочие материалы*", mrub(m.notWkParts.value))}
+      ${kpi("Потребность WK", mrub(w.value))}
+      ${kpi("Обеспечено к сроку", mrub(w.fromStock + w.fromBuy) + ` <span class="kpi-sub">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}%</span>`, "good")}
+      ${kpi("Не обеспечено", mrub(gapTotal) + ` <span class="kpi-sub">${num(100 * gapTotal / T, 0)}%</span>`, "bad")}
+      ${kpi("Ещё можно успеть", mrub(fv("inTime")), "warn")}
+      ${kpi("Уже не успеть", mrub(fv("late3") + fv("lateMore") + fv("past")), "bad")}
     </div>
-    <p class="hint" style="color:var(--ink-3);font-size:11.5px;margin:-10px 0 14px">* ГСМ, общий крепёж и другие материалы, которые расходуют единицы WK, но которых нет в номенклатуре ППЗ 3.1.2.7 — остаток по ним здесь не отслеживается.</p>
+
+    <div class="prov-main">
+      ${provBar(w, T, 16)}
+      ${provLegend(w)}
+      <table class="prov-cut wide"><tbody>
+        ${PROV_BUCKETS.filter(b => w[b.key] > 0).map(b => `<tr>
+          <th><i class="dot" style="background:${b.color}"></i>${esc(b.label)}</th>
+          <td class="n">${mrub(w[b.key])}</td>
+          <td class="n">${num(100 * w[b.key] / T, 1)}%</td>
+          <td class="n">${num(w[b.key + "Qty"], 0)} ед.</td>
+        </tr>`).join("")}
+      </tbody></table>
+    </div>
+
+    <h2>Сроки: что ещё можно закрыть заказом сегодня</h2>
+    <p class="sub">Медианный фактический срок поставки по номенклатуре WK — <b>${num(m.leadMedianDays)} дн.</b>
+      (${num(m.leadMeasurements)} замеров «дата поставки − дата заявки» по ${num(m.leadCodes)} кодам той же выгрузки закупки).
+      Заказ, размещённый на дату выгрузки, приходит около <b>${etaStr}</b>. Для позиции со своей статистикой берётся её собственный срок.</p>
+    <table class="prov-cut wide"><tbody>
+      ${[["inTime", "Успеем, если заказать сейчас", "good"],
+         ["late3", "Не успеем, опоздание до 3 мес.", "warn"],
+         ["lateMore", "Не успеем, опоздание больше 3 мес.", "bad"],
+         ["past", "Срок работ уже прошёл", "bad"],
+         ["nodate", "Срок работ не проставлен", ""]]
+        .filter(([k]) => f[k]).map(([k, label, cls]) => `<tr>
+          <th><span class="badge ${cls}">${esc(label)}</span></th>
+          <td class="n">${mrub(f[k].value)}</td>
+          <td class="n">${num(100 * f[k].value / (gapTotal || 1), 0)}% дефицита</td>
+          <td class="n">${num(f[k].lines)} строк</td>
+        </tr>`).join("")}
+    </tbody></table>
+
+    <h2>Разрезы</h2>
+    <div class="prov-cuts">
+      <div><h3>По году плана</h3>${provCut(m.byYear)}</div>
+      <div><h3>По сроку начала работ</h3>${provCut(m.byHalf, k => k.replace(/ (I+)$/, (_, r) => ", " + r + " полугодие"))}</div>
+      <div><h3>По площадкам</h3>${provCut(m.bySite, k => sites[k] ? k + " " + sites[k] : k)}</div>
+      <div><h3>По виду затрат</h3>${provCut(m.byKind)}</div>
+    </div>
+
+    <h2>Позиции</h2>
+    <p class="sub">${num(m.positions)} позиций номенклатуры WK. Прочие материалы (ГСМ, общий крепёж, общие МТР)
+      на ${mrub(m.notWkParts.value)} в расчёт не входят — витрины остатков по ним нет, и считать их дефицитом было бы неправдой.</p>
     <div class="toolbar">
       <select id="provStatus">
-        <option value="">Все статусы</option>
-        <option value="none">Нет остатка</option>
-        <option value="partial">Частично</option>
-        <option value="full">Полностью</option>
+        <option value="">Все позиции</option>
+        <option value="can">Ещё можно успеть — заказать сейчас</option>
+        <option value="too">Заказывать уже поздно</option>
+        <option value="none">Нет ни остатка, ни закупки</option>
+        <option value="partial">Покрыто частично</option>
+        <option value="full">Покрыто полностью</option>
       </select>
       <span class="count" id="provCount"></span>
     </div>
     <div id="provTable"></div>
   `;
-  const items = D.provision.items.filter(i => i.status !== "notWkPart");
+
+  const items = D.provision.items;
   function apply() {
-    const st = byId("provStatus").value;
-    const rows = st ? items.filter(i => i.status === st) : items;
-    byId("provCount").textContent = num(rows.length) + " позиций";
+    const f2 = byId("provStatus").value;
+    const rows = f2 === "can" ? items.filter(i => i.canOrder > 0)
+      : f2 === "too" ? items.filter(i => i.tooLate > 0)
+        : f2 ? items.filter(i => i.status === f2) : items;
+    // Считаем ту сумму, по которой отфильтровали, иначе итог в счётчике
+    // не сойдётся с цифрой в сводке наверху.
+    const sumKey = f2 === "can" ? "canOrder" : f2 === "too" ? "tooLate" : "gapValue";
+    byId("provCount").textContent = num(rows.length) + " позиций · " +
+      (f2 === "can" ? "ещё можно заказать " : f2 === "too" ? "поздно заказывать " : "дефицит ") +
+      mrub(rows.reduce((s, r) => s + r[sumKey], 0));
     renderTable(byId("provTable"), {
-      rows, limit: 300, sortKey: "needValue",
+      rows, limit: 300, sortKey: sumKey,
       rowClass: r => r.restricted ? "restricted-row" : "",
       csv: true, csvName: "wk_provision.csv",
       cols: [
         { key: "code", label: "Код ЕКМТР", cls: "mono" },
         { key: "name", label: "Наименование", cls: "wrap" },
-        { key: "needValue", label: "Потребность", numeric: true, fmt: rub },
-        { key: "availQty", label: "Доступно, ед.", numeric: true, fmt: v => num(v, 1) },
+        { key: "needQty", label: "Нужно", numeric: true, fmt: v => num(v, 0) },
+        { key: "fromStock", label: "Со склада", numeric: true, fmt: v => num(v, 0) },
+        { key: "fromBuy", label: "Закупка к сроку", numeric: true, fmt: v => num(v, 0) },
         {
-          key: "status", label: "Статус",
-          plain: (v, r) => ({ full: "полностью", partial: "частично", none: "нет остатка" }[v] || v) + (r.restricted ? " + ограничено" : ""),
+          key: "gap", label: "Дефицит", numeric: true,
+          plain: (v, r) => num(v + r.late + r.undated, 0),
           fmt: (v, r) => {
-            const badge = v === "full" ? '<span class="badge good">полностью</span>' :
-              v === "partial" ? '<span class="badge warn">частично</span>' :
-                '<span class="badge bad">нет остатка</span>';
-            return badge + (r.restricted ? ' <span class="badge restricted">огранич.</span>' : "");
+            const g = v + r.late + r.undated;
+            return g > 0 ? `<b style="color:var(--bad)">${num(g, 0)}</b>` : "—";
+          }
+        },
+        { key: "gapValue", label: "Дефицит, ₽", numeric: true, fmt: rub },
+        {
+          key: "canOrder", label: "Ещё можно заказать", numeric: true,
+          fmt: v => v > 0 ? `<span style="color:var(--warn)">${rub(v)}</span>` : "—"
+        },
+        {
+          key: "leadDays", label: "Срок пост.", numeric: true,
+          plain: (v, r) => v + (r.leadN ? "" : "*"),
+          fmt: (v, r) => num(v) + " дн." + (r.leadN ? "" : '<span title="своей статистики нет — медиана по WK" style="color:var(--ink-4)">*</span>')
+        },
+        { key: "orderBy", label: "Заказать до", plain: v => v || "", fmt: v => v ? `<span class="mono">${dmy(v)}</span>` : "—" },
+        {
+          key: "verdict", label: "Вывод",
+          plain: (v, r) => (PROV_VERDICT[v] || {}).label + (r.slipDays ? ` (+${r.slipDays} дн.)` : ""),
+          fmt: (v, r) => {
+            const d = PROV_VERDICT[v] || { label: v, cls: "" };
+            return `<span class="badge ${d.cls}">${esc(d.label)}</span>` +
+              (r.slipDays ? ` <span style="color:var(--ink-3);font-size:11px">+${num(r.slipDays)} дн.</span>` : "");
           }
         },
         {
           key: "code", label: "", plain: () => "",
-          fmt: (v, r) => cartAddBtn({ code: v, name: r.name, value: r.needValue, source: "Обеспеченность" })
+          fmt: (v, r) => cartAddBtn({ code: v, name: r.name, value: r.gapValue || r.needValue, source: "Обеспеченность" })
         },
       ],
     });
@@ -1169,6 +1302,17 @@ function renderDoc(host) {
         <li>Обеспеченность считается только по номенклатуре WK (код входит в ППЗ 3.1.2.7 «Запчасти к экскаваторам WK»).</li>
         <li>Дубли карточек КТГ схлопываются по паре (площадка, точное имя борта) — берётся запись с непустым КТГ.</li>
       </ul>
+    </div>
+    <div class="card"><h3>Обеспеченность: как считается</h3>
+      <p class="hint">Потребность — строки плана ТОиР 2026–2027 по технике WK, у которых нет ни факта количества, ни факта суммы. Распределение — как в MRP/ATP, в два прохода.</p>
+      <ul>
+        <li><b>Проход 1.</b> Потребность, отсортированная по дате начала работ, забирает доступный остаток, затем — те приходы закупки, чей месяц поставки не позже месяца начала работ («успевает»).</li>
+        <li><b>Проход 2.</b> Остатками приходов закрывается то, что не успели, — это «опоздание».</li>
+        <li>Два прохода здесь принципиальны: в один проход ранняя потребность забирает поздний приход и помечает его опозданием, хотя тот же приход мог бы вовремя закрыть более позднюю потребность. На этих данных разница почти вдвое по доле «закупка успевает».</li>
+        <li><b>Срок поставки</b> — медиана «дата поставки − дата заявки» по той же выгрузке закупки (${num(D.provision.meta.leadMeasurements)} замеров по ${num(D.provision.meta.leadCodes)} кодам). Для позиции со своей статистикой берётся её собственный срок, иначе — медиана по WK (${num(D.provision.meta.leadMedianDays)} дн.).</li>
+        <li><b>Дата анализа</b> — самая поздняя из дат выгрузок (${dmy(D.provision.meta.asOf)}), а не дата открытия портала: иначе один и тот же исходник давал бы разный ответ ото дня ко дню.</li>
+      </ul>
+      <p class="hint">Чего расчёт сознательно не делает: прочая номенклатура (ГСМ, общий крепёж, общие МТР) в него не входит — витрины остатков по ней нет, и считать её дефицитом было бы неправдой; срок прихода закупки известен только до месяца, внутри месяца приход считается успевающим.</p>
     </div>
   `;
 }

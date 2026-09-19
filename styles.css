@@ -313,3 +313,32 @@ tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--
 @media print{
   .topbar,.tabs,#modalBack,#modalCard,footer,.toolbar button,.cart-add,th:last-child,td:last-child{display:none!important}
 }
+
+/* ---------- обеспеченность: доли покрытия и разрезы ---------- */
+/* Между заливками — зазор цветом поверхности (2px), иначе соседние
+   сегменты сливаются в одну полосу и доли перестают читаться. */
+.prov-bar{display:flex;height:10px;border-radius:99px;overflow:hidden;
+  background:var(--surface-3);gap:2px}
+.prov-bar > i{display:block;height:100%;min-width:2px}
+.prov-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:8px 0 0;
+  font-size:11.5px;color:var(--ink-2)}
+.prov-legend span{display:inline-flex;align-items:center;gap:6px}
+.prov-legend i,.prov-cut i.dot{width:9px;height:9px;border-radius:2px;flex:0 0 auto}
+.prov-cut i.dot{display:inline-block;margin-right:7px;vertical-align:-1px}
+.prov-main{background:var(--surface);border:var(--hair);border-radius:var(--radius-lg);
+  padding:16px;margin:0 0 20px}
+.prov-cut{width:100%;border-collapse:collapse;font-size:12.5px}
+.prov-cut th{text-align:left;font-weight:500;color:var(--ink-2);padding:6px 10px 6px 0;
+  white-space:nowrap}
+.prov-cut td{padding:6px 0 6px 10px;color:var(--ink)}
+.prov-cut td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.prov-cut td.n.low{color:var(--bad)}
+.prov-cut td.b{width:34%;min-width:90px}
+.prov-cut tr + tr th,.prov-cut tr + tr td{border-top:1px solid var(--line)}
+.prov-cut.wide{margin-top:14px}
+.prov-cuts{display:grid;grid-template-columns:1fr 1fr;gap:14px 28px}
+.prov-cuts > div{background:var(--surface);border:var(--hair);
+  border-radius:var(--radius-lg);padding:14px 16px}
+.prov-cuts h3{margin:0 0 6px}
+@media(max-width:900px){.prov-cuts{grid-template-columns:1fr}}
+.kpi-sub{font-size:12px;color:var(--ink-3);font-weight:500}
