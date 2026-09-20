@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ru" data-theme="dark">
+<html lang="ru">
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
@@ -20,15 +20,16 @@
     </div>
     <div class="bs hideSm">Каталог · запасы · обеспеченность · ремонты</div>
   </div>
-  <div class="tb-search hideSm">
-    <input type="search" id="globalSearch" placeholder="Поиск по номеру или наименованию…" autocomplete="off"/>
+  <div class="tb-search">
+    <label class="sr-only" for="globalSearch">Поиск по всему порталу</label>
+    <input type="search" id="globalSearch" placeholder="Поиск по всему порталу…" autocomplete="off" aria-label="Поиск по всему порталу"/>
   </div>
   <div class="sp"></div>
   <div class="tb-actions">
-    <button class="iconbtn" id="btnCart" title="Заявка" style="position:relative">
-      🛒<span id="cartBadge" class="tb-badge" style="display:none"></span>
+    <button class="iconbtn" id="btnCart" title="Заявка" aria-label="Открыть заявку" style="position:relative">
+      <span aria-hidden="true">🛒</span><span id="cartBadge" class="tb-badge" style="display:none" aria-live="polite"></span>
     </button>
-    <button class="iconbtn" id="btnTheme" title="Тема">☾</button>
+    <button class="iconbtn" id="btnTheme" title="Переключить тему" aria-label="Переключить тему"><span aria-hidden="true">☾</span></button>
   </div>
 </div>
 
@@ -49,12 +50,12 @@
   <button data-t="upd" role="tab">Обновление данных</button>
 </nav>
 
-<main id="main">
-  <div class="callout info">Загрузка данных…</div>
+<main id="main" tabindex="-1">
+  <div class="callout info" role="status" aria-live="polite">Загрузка данных…</div>
 </main>
 
 <div id="modalBack" class="modal-back" hidden></div>
-<div id="modalCard" class="modal-card" hidden></div>
+<div id="modalCard" class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1" hidden></div>
 
 <footer>WK CRM · данные: прайсы ДП/УСО, ведомость взаимозаменяемости WK4.7, SAP (остатки, закупки, ПМ-06), TOPO КТГ · сборка build/*.py</footer>
 

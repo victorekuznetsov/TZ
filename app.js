@@ -17,9 +17,23 @@ const pct = v => v == null ? "—" : num(v * 100, 0) + "%";
 const byId = id => document.getElementById(id);
 const qs = (sel, root = document) => root.querySelector(sel);
 const qsa = (sel, root = document) => [...root.querySelectorAll(sel)];
+function makeActivatable(root, selector) {
+  qsa(selector, root).forEach(el => {
+    if (!el.hasAttribute("tabindex")) el.tabIndex = 0;
+    if (!el.hasAttribute("role")) el.setAttribute("role", "button");
+    el.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.click(); }
+    });
+  });
+}
 // та же нормализация номера, что в build/ekmtr_match.py::norm — по ней
 // ключи в data/linkome_catalog.json.byPart
-const normArt = s => String(s == null ? "" : s).toUpperCase().replace(/[^0-9A-ZА-Я]/g, "");
+const normText = s => String(s == null ? "" : s).normalize("NFKC").toLocaleLowerCase("ru-RU").replace(/ё/g, "е");
+const normArt = s => normText(s).toUpperCase().replace(/[^0-9A-ZА-ЯЁ]/g, "");
+const debounce = (fn, wait = 220) => {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), wait); };
+};
 
 // Витрины грузятся тегами <script src="data/*.local.js"> (не fetch): fetch()
 // локального файла браузер блокирует при открытии страницы без сервера
@@ -47,7 +61,8 @@ function csvCell(v) {
   if (v == null) return "";
   if (Array.isArray(v)) v = v.length;               // напр. массив узлов -> число
   if (typeof v === "object") v = "";                 // прочие объекты в CSV не тащим
-  const s = String(v);
+  let s = String(v);
+  if (/^[=+\-@]/.test(s)) s = "'" + s;
   return /[",\n;]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 function downloadCSV(filename, rows, cols) {
@@ -69,22 +84,23 @@ let TAB = "sum";
 function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, limit, onRowClick, csv, csvName }) {
   let key = sortKey || (cols.find(c => c.numeric) || cols[0]).key;
   let dir = sortDir;
+  let shownLimit = limit || rows.length;
   function draw() {
     const sorted = [...rows].sort((a, b) => {
       const va = a[key], vb = b[key];
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
-      if (typeof va === "number") return (va - vb) * dir;
+      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
       return String(va).localeCompare(String(vb), "ru") * dir;
     });
-    const shown = limit ? sorted.slice(0, limit) : sorted;
+    const shown = shownLimit ? sorted.slice(0, shownLimit) : sorted;
     const thead = `<thead><tr>${cols.map(c =>
-      `<th class="${c.numeric ? "n" : ""} ${c.key === key ? "sorted" : ""}" data-k="${c.key}">${esc(c.label)}${c.key === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`
+      `<th class="${c.numeric ? "n" : ""} ${c.key === key ? "sorted" : ""}" data-k="${c.key}" tabindex="0" role="columnheader" aria-sort="${c.key === key ? (dir > 0 ? "ascending" : "descending") : "none"}">${esc(c.label)}${c.key === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`
     ).join("")}</tr></thead>`;
     const tbody = `<tbody>${shown.map((r, ri) => {
       const cls = rowClass ? rowClass(r) : "";
-      return `<tr class="${cls}" data-ri="${ri}">${cols.map(c => {
+      return `<tr class="${cls}" data-ri="${ri}"${onRowClick ? ' tabindex="0" role="button"' : ""}>${cols.map(c => {
         const v = c.fmt ? c.fmt(r[c.key], r) : esc(r[c.key]);
         return `<td class="${c.numeric ? "n" : ""} ${c.cls || ""}">${v}</td>`;
       }).join("")}</tr>`;
@@ -92,19 +108,29 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
     container.innerHTML =
       (csv ? `<div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button class="minibtn" id="${container.id}_csv" type="button">⇓ CSV (${num(sorted.length)})</button></div>` : "") +
       `<div class="twrap"><table>${thead}${tbody}</table></div>` +
-      (limit && rows.length > limit ? `<div class="count">показано ${limit} из ${rows.length}</div>` : "");
-    qsa("th", container).forEach(th => th.onclick = () => {
+      (shown.length < rows.length ? `<div class="table-more"><span class="count">показано ${shown.length} из ${rows.length}</span><button class="minibtn" type="button" data-more>Показать ещё</button><button class="minibtn" type="button" data-all>Показать все</button></div>` : "");
+    const sortBy = th => {
       const k = th.dataset.k;
       if (k === key) dir = -dir; else { key = k; dir = -1; }
       draw();
+    };
+    qsa("th[data-k]", container).forEach(th => {
+      th.onclick = () => sortBy(th);
+      th.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sortBy(th); } };
     });
     if (onRowClick) {
-      qsa("tbody tr", container).forEach(tr => tr.onclick = () => onRowClick(shown[+tr.dataset.ri]));
+      qsa("tbody tr", container).forEach(tr => {
+        tr.onclick = () => onRowClick(shown[+tr.dataset.ri]);
+        tr.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onRowClick(shown[+tr.dataset.ri]); } };
+      });
     }
     if (csv) {
       const btn = byId(container.id + "_csv");
       if (btn) btn.onclick = () => downloadCSV(csvName || "export.csv", sorted, cols);
     }
+    const more = qs("[data-more]", container), all = qs("[data-all]", container);
+    if (more) more.onclick = () => { shownLimit += limit || rows.length; draw(); };
+    if (all) all.onclick = () => { shownLimit = rows.length; draw(); };
   }
   draw();
 }
@@ -114,10 +140,12 @@ function callout(kind, html) { return `<div class="callout ${kind}">${html}</div
 /* ---------- линейный график (SVG, hover-курсор + тултип) ---------- */
 /* series: [{label, values, color}] — values выровнены по months, null = нет данных за месяц */
 function renderLineChart(container, { months, series, height = 220, yFormat = v => pct(v), yDomain = [0, 1] }) {
+  if (!months || !months.length) { container.innerHTML = callout("info", "Нет данных для графика."); return; }
   const W = 760, H = height, padL = 34, padR = 8, padT = 10, padB = 22;
   const innerW = W - padL - padR, innerH = H - padT - padB;
-  const [yMin, yMax] = yDomain;
-  const x = i => padL + (innerW * i) / (months.length - 1);
+  const [yMin, yMaxRaw] = yDomain;
+  const yMax = yMaxRaw === yMin ? yMin + 1 : yMaxRaw;
+  const x = i => padL + (months.length === 1 ? innerW / 2 : (innerW * i) / (months.length - 1));
   const y = v => padT + innerH - (innerH * (v - yMin)) / (yMax - yMin);
 
   const gridN = 4;
@@ -154,7 +182,7 @@ function renderLineChart(container, { months, series, height = 220, yFormat = v 
   container.innerHTML = `
     ${legend}
     <div class="chart-wrap" style="position:relative">
-      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;display:block" id="${uid}">
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:${H}px;display:block" id="${uid}" role="img" aria-label="${esc(series.map(s => s.label).join(", "))}">
         ${gridSvg}${xLabels}${paths}
         <line id="${uid}-cross" x1="0" y1="${padT}" x2="0" y2="${H - padB}" stroke="var(--axis)" stroke-width="1" opacity="0"/>
         <rect x="${padL}" y="${padT}" width="${innerW}" height="${innerH}" fill="transparent" id="${uid}-cap" style="cursor:crosshair"/>
@@ -166,7 +194,7 @@ function renderLineChart(container, { months, series, height = 220, yFormat = v 
   cap.addEventListener("mousemove", e => {
     const rect = svg.getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * W;
-    let i = Math.round(((px - padL) / innerW) * (months.length - 1));
+    let i = months.length === 1 ? 0 : Math.round(((px - padL) / innerW) * (months.length - 1));
     i = Math.max(0, Math.min(months.length - 1, i));
     cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", "1");
     const rows = series.map(s => `<div class="tr"><i style="background:${s.color}"></i>${esc(s.label)} <b>${s.values[i] == null ? "—" : yFormat(s.values[i])}</b></div>`).join("");
@@ -236,11 +264,12 @@ function linkomeRowsFor(art) {
   return (art && D.linkome.byPart[normArt(art)]) || null;
 }
 function buildIndexes() {
-  STOCK_BY_CODE = new Map(D.stock.items.map(i => [i.code, i]));
-  EKMTR_NAME = new Map(D.ekmtrWk.items.map(i => [i.code, i.name]));
+  STOCK_BY_CODE = new Map(D.stock.items.map(i => [String(i.code), i]));
+  EKMTR_NAME = new Map(D.ekmtrWk.items.map(i => [String(i.code), i.name]));
   CATALOG_BY_ART = new Map(D.catalog.items.map(i => [i.art, i]));
   CATALOG_BY_NORMART = new Map(D.catalog.items.map(i => [normArt(i.art), i]));
-  D.interchange.groups.forEach(g => g.forEach(num => INTER_GROUP_OF.set(num, g)));
+  INTER_GROUP_OF = new Map();
+  D.interchange.groups.forEach(g => g.forEach(part => INTER_GROUP_OF.set(normArt(part), g)));
 }
 
 /* ---------- вкладки ---------- */
@@ -262,6 +291,7 @@ function renderTab() {
     case "doc": return renderDoc(host);
     case "upd": return renderUpdate(host);
     case "cart": return renderCart(host);
+    default: TAB = "sum"; return renderSum(host);
   }
 }
 
@@ -272,7 +302,15 @@ function renderTab() {
    выгружается в CSV или печатается, дальше — обычным порядком в закупку. */
 const CART_KEY = "wkcrm_cart_v1";
 function cartGet() {
-  try { return JSON.parse(localStorage.getItem(CART_KEY) || "[]"); } catch (e) { return []; }
+  try {
+    const value = JSON.parse(localStorage.getItem(CART_KEY) || "[]");
+    if (!Array.isArray(value)) return [];
+    return value.filter(i => i && typeof i === "object" && i.code != null).map(i => ({
+      code: String(i.code), name: String(i.name || ""), source: String(i.source || ""),
+      value: Number.isFinite(Number(i.value)) ? Number(i.value) : null,
+      qty: Math.max(1, parseInt(i.qty, 10) || 1), note: String(i.note || ""), addedAt: i.addedAt || "",
+    }));
+  } catch (e) { return []; }
 }
 function cartSet(items) {
   try { localStorage.setItem(CART_KEY, JSON.stringify(items)); } catch (e) { /* приватный режим и т.п. */ }
@@ -293,6 +331,7 @@ function cartUpdateBadge() {
   const n = cartGet().length;
   el.textContent = n || "";
   el.style.display = n ? "" : "none";
+  byId("btnCart")?.setAttribute("aria-label", n ? `Открыть заявку, позиций: ${n}` : "Открыть заявку");
 }
 
 function cartAddBtn(item) {
@@ -330,7 +369,7 @@ function renderCart(host) {
     ${!items.length ? callout("info", "Пусто. Добавляйте позиции кнопкой «+» на строках в «Обеспеченности», «Запасах» или «Кодификации».") : ""}
     ${items.length ? `
     <div class="toolbar">
-      <span class="count">${num(items.length)} позиций${items.some(i => i.value) ? " · " + rub(items.reduce((s, i) => s + (i.value || 0) * (i.qty || 1), 0)) : ""}</span>
+      <span class="count" id="cartTotal" aria-live="polite">${num(items.length)} позиций${items.some(i => i.value) ? " · " + rub(items.reduce((s, i) => s + (i.value || 0) * (i.qty || 1), 0)) : ""}</span>
       <button class="minibtn" id="cartClearBtn" type="button">Очистить</button>
       <button class="minibtn" id="cartPrintBtn" type="button">Печать</button>
     </div>
@@ -359,7 +398,11 @@ function renderCart(host) {
   qsa(".cart-qty", host).forEach(el => el.onchange = () => {
     const items2 = cartGet();
     const it = items2.find(i => i.code === el.dataset.code);
-    if (it) { it.qty = Math.max(1, parseInt(el.value) || 1); cartSet(items2); }
+    if (it) {
+      it.qty = Math.max(1, parseInt(el.value, 10) || 1); el.value = it.qty; cartSet(items2);
+      const total = byId("cartTotal");
+      if (total) total.textContent = `${num(items2.length)} позиций · ${rub(items2.reduce((s, i) => s + (i.value || 0) * i.qty, 0))}`;
+    }
   });
   qsa(".cart-note", host).forEach(el => el.onchange = () => {
     const items2 = cartGet();
@@ -419,7 +462,7 @@ function renderSum(host) {
 }
 
 /* ===================== КАТАЛОГ ===================== */
-let CAT_FILTER = { model: "", q: "" };
+let CAT_FILTER = { model: "", q: "", noCode: false, diff: false };
 
 /* Курс CNY→₽ — только для отображения в каталоге, нигде не сохраняется
    в данных и не переносится между вкладками расчёта. Хранится в браузере
@@ -453,11 +496,12 @@ function renderCatalog(host) {
         <option value="">Все модели</option>
         ${["WK-20", "WK-35", "WK-20C", "WK-20&WK-35"].map(m => `<option ${CAT_FILTER.model === m ? "selected" : ""}>${m}</option>`).join("")}
       </select>
-      <span class="pill" id="catNoCode">без кода ЕКМТР</span>
-      <span class="pill" id="catDiff">цена ДП≠УСО</span>
+      <button class="pill ${CAT_FILTER.noCode ? "on" : ""}" id="catNoCode" type="button" aria-pressed="${CAT_FILTER.noCode}">без кода ЕКМТР</button>
+      <button class="pill ${CAT_FILTER.diff ? "on" : ""}" id="catDiff" type="button" aria-pressed="${CAT_FILTER.diff}">цена ДП≠УСО</button>
       <span style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-3)">
         курс ¥→₽ <input type="number" id="catRate" step="0.01" min="0" placeholder="—" value="${rate || ""}" style="width:64px;background:var(--surface-2);border:var(--hair);border-radius:var(--radius);color:var(--ink);padding:5px 7px;font:inherit"/>
       </span>
+      <button class="minibtn" id="catReset" type="button">Сбросить</button>
       <span class="count" id="catCount"></span>
     </div>
     <div id="catTable"></div>
@@ -467,22 +511,24 @@ function renderCatalog(host) {
     setRate(isFinite(v) && v > 0 ? v : null);
     apply();
   };
-  let noCodeOnly = false, diffOnly = false;
   function apply() {
     const curRate = getRate();
-    const q = CAT_FILTER.q.trim().toLowerCase().replace(/-/g, "");
+    const qText = normText(CAT_FILTER.q).trim();
+    const qNum = normArt(CAT_FILTER.q);
     let rows = items.filter(i => {
       if (CAT_FILTER.model && i.model !== CAT_FILTER.model) return false;
-      if (noCodeOnly && i.ekmtr) return false;
-      if (diffOnly && i.priceDiffCNY == null) return false;
-      if (q) {
-        const a = (i.art || "").toLowerCase().replace(/-/g, "");
-        const n = (i.nameRu || "").toLowerCase();
-        if (!a.includes(q) && !n.includes(q)) return false;
+      if (CAT_FILTER.noCode && i.ekmtr) return false;
+      if (CAT_FILTER.diff && i.priceDiffCNY == null) return false;
+      if (qText) {
+        const text = normText([i.nameRu, i.nameZh, i.model, i.type, i.tnved,
+          ...(i.tree || []).flatMap(t => [t.num, t.mech])].filter(Boolean).join(" "));
+        const numberHit = qNum.length >= 2 && [i.art, i.artNew, i.ekmtr].some(v => normArt(v).includes(qNum));
+        if (!numberHit && !text.includes(qText)) return false;
       }
       return true;
     });
     byId("catCount").textContent = num(rows.length) + " позиций";
+    if (!rows.length) { byId("catTable").innerHTML = callout("info", "По текущим фильтрам позиций нет. Измените запрос или сбросьте фильтры."); return; }
     renderTable(byId("catTable"), {
       rows, limit: 500, rowClass: () => "mrow",
       onRowClick: r => openDetail(r.art),
@@ -517,10 +563,11 @@ function renderCatalog(host) {
       ],
     });
   }
-  byId("catQ").oninput = e => { CAT_FILTER.q = e.target.value; apply(); };
+  byId("catQ").oninput = debounce(e => { CAT_FILTER.q = e.target.value; apply(); });
   byId("catModel").onchange = e => { CAT_FILTER.model = e.target.value; apply(); };
-  byId("catNoCode").onclick = e => { noCodeOnly = !noCodeOnly; e.target.classList.toggle("on"); apply(); };
-  byId("catDiff").onclick = e => { diffOnly = !diffOnly; e.target.classList.toggle("on"); apply(); };
+  byId("catNoCode").onclick = e => { CAT_FILTER.noCode = !CAT_FILTER.noCode; e.currentTarget.classList.toggle("on", CAT_FILTER.noCode); e.currentTarget.setAttribute("aria-pressed", CAT_FILTER.noCode); apply(); };
+  byId("catDiff").onclick = e => { CAT_FILTER.diff = !CAT_FILTER.diff; e.currentTarget.classList.toggle("on", CAT_FILTER.diff); e.currentTarget.setAttribute("aria-pressed", CAT_FILTER.diff); apply(); };
+  byId("catReset").onclick = () => { CAT_FILTER = { model: "", q: "", noCode: false, diff: false }; renderCatalog(host); };
   apply();
 }
 
@@ -531,19 +578,23 @@ function renderCatalog(host) {
    (растровый .ilg) не декодирован — контейнер LinkOne читается, картинка нет (см. «Качество
    данных»), поэтому показывается только состав узла, без изображения. */
 const LO = { book: null, index: null, current: null, filter: "" };
+const loAliasKey = id => String(id || "").toLowerCase().replace(/^\d+-/, "").replace(/^dk/, "k").replace(/a$/, "");
 
 function loBuildIndex(bookCode) {
   const byPageId = new Map(); // нормализованный (lower) id -> {id, title, rows}
+  const aliases = new Map();
   const prefix = bookCode + "|";
   for (const key in D.linkome.pages) {
     if (!key.startsWith(prefix)) continue;
     const p = D.linkome.pages[key];
     byPageId.set(p.id.toLowerCase(), p);
+    const alias = loAliasKey(p.id);
+    if (!aliases.has(alias)) aliases.set(alias, p);
   }
   const referenced = new Set();
-  byPageId.forEach(p => (p.rows || []).forEach(r => { if (r.link) referenced.add(r.link.toLowerCase()); }));
+  byPageId.forEach(p => (p.rows || []).forEach(r => { if (r.link) referenced.add(loAliasKey(r.link)); }));
   const roots = [];
-  byPageId.forEach((p, id) => { if (!referenced.has(id)) roots.push(p); });
+  byPageId.forEach((p, id) => { if (!referenced.has(loAliasKey(id))) roots.push(p); });
   // главный узел книги — корень с самым большим деревом (сумма строк по всем потомкам), а не
   // просто самой длинной собственной таблицей: у страницы-узла в глубине дерева бывает больше
   // прямых строк, чем у корня, но это не делает её книгой. Остальные корни (если есть) —
@@ -553,7 +604,7 @@ function loBuildIndex(bookCode) {
     const walk = id => {
       if (seen.has(id)) return 0;
       seen.add(id);
-      const page = byPageId.get(id);
+      const page = byPageId.get(id) || aliases.get(loAliasKey(id));
       if (!page) return 0;
       let n = (page.rows || []).length;
       for (const r of page.rows || []) if (r.link) n += walk(r.link.toLowerCase());
@@ -562,11 +613,11 @@ function loBuildIndex(bookCode) {
     return walk(p.id.toLowerCase());
   };
   roots.sort((a, b) => subtreeSize(b) - subtreeSize(a));
-  return { byPageId, roots };
+  return { byPageId, aliases, roots };
 }
 
 function loFindPage(id) {
-  return id ? LO.index.byPageId.get(id.toLowerCase()) || null : null;
+  return id ? LO.index.byPageId.get(id.toLowerCase()) || LO.index.aliases.get(loAliasKey(id)) || null : null;
 }
 
 // путь от ближайшего корня до узла (BFS по rows[].link) — для «хлебных крошек»
@@ -612,6 +663,7 @@ function renderLinkone(host) {
     <div id="loBody"></div>
   `;
   qsa(".lo-book", host).forEach(el => el.onclick = () => loSelectBook(el.dataset.book, host));
+  makeActivatable(host, ".lo-book");
   if (LO.book && books.some(([c]) => c === LO.book)) {
     loRenderBody(host);
   } else if (books.length) {
@@ -650,13 +702,14 @@ function loRenderBody(host) {
 
 function loRenderTree() {
   const host = byId("loTree");
-  const q = LO.filter.trim().toLowerCase();
+  const q = normText(LO.filter).trim();
+  const qNum = normArt(LO.filter);
   if (q) {
     const hits = [];
     LO.index.byPageId.forEach(p => {
-      const hay = (p.title || "").toLowerCase();
-      const partHit = (p.rows || []).some(r => (r.part || "").toLowerCase().includes(q) || (r.name || "").toLowerCase().includes(q));
-      if (hay.includes(q) || partHit || p.id.toLowerCase().includes(q)) hits.push(p);
+      const hay = normText(p.title);
+      const partHit = (p.rows || []).some(r => (qNum.length >= 2 && normArt(r.part).includes(qNum)) || normText(r.name).includes(q));
+      if (hay.includes(q) || partHit || (qNum.length >= 2 && normArt(p.id).includes(qNum))) hits.push(p);
     });
     host.innerHTML = hits.length
       ? hits.slice(0, 200).map(p => `
@@ -705,6 +758,7 @@ function loRenderTree() {
     loRenderTree();
     loRenderMain();
   });
+  makeActivatable(host, ".lo-node-head");
   const orphToggle = host.querySelector("[data-toggle-orphans]");
   if (orphToggle) orphToggle.onclick = () => byId("loOrphanKids").classList.toggle("open-orphans");
 }
@@ -777,6 +831,12 @@ function loRenderMain() {
     loSheet = k;
     const img = byId("loDrawImg");
     img.src = s.file;
+    img.onerror = () => {
+      img.hidden = true;
+      const hint = byId("loDrawHint");
+      if (hint) hint.textContent = "Файл чертежа не загрузился. Проверьте целостность папки media/linkome_drawings.";
+    };
+    img.onload = () => { img.hidden = false; };
     img.classList.remove("zoomed");
     const label = byId("loSheetLabel");
     if (label) label.textContent = `Лист ${k + 1} из ${sheets.length}`;
@@ -834,6 +894,7 @@ function loRenderMain() {
   qsa(".lo-crumbs a", host).forEach(el => el.onclick = () => { LO.current = el.dataset.id; loRenderTree(); loRenderMain(); });
   qsa("[data-goto]", host).forEach(el => el.onclick = () => { LO.current = el.dataset.goto; loRenderTree(); loRenderMain(); });
   qsa("[data-art]", host).forEach(el => el.onclick = () => openDetail(el.dataset.art));
+  makeActivatable(host, ".lo-crumbs a,.pn-link,[data-goto],.lo-spot");
   wireCartButtons(host);
 }
 
@@ -1130,7 +1191,7 @@ function renderStock(host) {
     </div>
     ${m.totalRestrictedValue > 0 ? callout("warn", `<b>${num(m.fullyRestrictedCodes)} позиций</b> имеют остаток, весь который ограничен — фактически это дефицит, хотя формально «есть на складе».`) : ""}
     <div class="toolbar">
-      <span class="pill" id="stkRestricted">только ограниченные</span>
+      <button class="pill" id="stkRestricted" type="button" aria-pressed="false">только ограниченные</button>
       <input type="search" id="stkQ" placeholder="Код или наименование…"/>
       <span class="count" id="stkCount"></span>
     </div>
@@ -1166,7 +1227,7 @@ function renderStock(host) {
     wireCartButtons(byId("stkTable"));
   }
   byId("stkQ").oninput = apply;
-  byId("stkRestricted").onclick = e => { restrOnly = !restrOnly; e.target.classList.toggle("on"); apply(); };
+  byId("stkRestricted").onclick = e => { restrOnly = !restrOnly; e.currentTarget.classList.toggle("on", restrOnly); e.currentTarget.setAttribute("aria-pressed", restrOnly); apply(); };
   apply();
 }
 
@@ -1420,7 +1481,7 @@ function renderUpdate(host) {
         <button class="iconbtn on" id="updApplyBtn">Применить в этом сеансе</button>
         <button class="iconbtn" id="updDownloadBtn">Скачать stock.json</button>
       </div>
-      ${UPD.applied ? callout("good", "Применено — разделы «Запасы», «Закупки», «Обеспеченность» и карточки деталей теперь используют новую выгрузку (только в этой вкладке браузера, до перезагрузки страницы).") : ""}
+      ${UPD.applied ? callout("good", "Применено в этом сеансе: разделы «Запасы», «Закупки» и карточки деталей используют новую выгрузку. «Обеспеченность» не пересчитывается в браузере: для неё нужен <code>build/build_provision.py</code>.") : ""}
       <p class="hint" style="margin-top:8px">Чтобы изменения остались навсегда — скачайте файл и замените <code>data/stock.json</code> в репозитории.</p>
     </div>` : ""}
   `;
@@ -1440,28 +1501,34 @@ function renderUpdate(host) {
 }
 
 /* ===================== КАРТОЧКА ДЕТАЛИ (модалка) ===================== */
+let MODAL_RETURN_FOCUS = null;
 function closeModal() {
+  if (byId("modalCard").hidden) return;
   byId("modalBack").hidden = true;
   byId("modalCard").hidden = true;
+  document.body.classList.remove("modal-open");
+  if (MODAL_RETURN_FOCUS && document.contains(MODAL_RETURN_FOCUS)) MODAL_RETURN_FOCUS.focus();
 }
 function openDetail(art) {
   const item = CATALOG_BY_ART.get(art);
   if (!item) return;
   const stock = item.ekmtr ? STOCK_BY_CODE.get(item.ekmtr) : null;
-  const group = INTER_GROUP_OF.get(item.art) ||
-    (item.tree[0] ? INTER_GROUP_OF.get(item.tree[0].num) : null);
+  const group = INTER_GROUP_OF.get(normArt(item.art)) ||
+    (item.tree[0] ? INTER_GROUP_OF.get(normArt(item.tree[0].num)) : null);
   const drawings = D.drawings.byNum[item.art] ||
     (item.tree[0] ? D.drawings.byNum[item.tree[0].num] : null);
   const linkomeRows = linkomeRowsFor(item.art) ||
     (item.tree[0] ? linkomeRowsFor(item.tree[0].num) : null);
 
+  MODAL_RETURN_FOCUS = document.activeElement;
   const back = byId("modalBack"), card = byId("modalCard");
   back.hidden = false; card.hidden = false;
+  document.body.classList.add("modal-open");
   back.onclick = closeModal;
 
   card.innerHTML = `
-    <button class="mclose" id="mCloseBtn">✕</button>
-    <h2 class="mono">${esc(item.art)}</h2>
+    <button class="mclose" id="mCloseBtn" type="button" aria-label="Закрыть карточку">✕</button>
+    <h2 class="mono" id="modalTitle">${esc(item.art)}</h2>
     <p class="sub" style="margin:0">${esc(item.nameRu)} ${item.nameZh ? `· ${esc(item.nameZh)}` : ""}</p>
     <dl class="dl">
       <dt>Модель</dt><dd>${esc(item.model)}</dd>
@@ -1508,20 +1575,20 @@ function openDetail(art) {
       !drawings ? '<p class="hint">Ни чертежа, ни строки в LinkOme для этого номера нет.</p>' : ""}
   `;
   byId("mCloseBtn").onclick = closeModal;
+  byId("mCloseBtn").focus();
 }
 
 /* ===================== БАЗА ЗНАНИЙ ===================== */
 let KB_FILTER = { cls: "", q: "" };
+let KB_SEARCH_QUERY = "";
 let KB_TEXT = null;     // lazy: data/kb_text.json грузится только по первому поиску по содержимому
-let KB_TEXT_LOADING = false;
+let KB_TEXT_PROMISE = null;
 
-function kbEnsureText(onReady) {
-  if (KB_TEXT) { onReady(); return; }
-  if (KB_TEXT_LOADING) return;
-  KB_TEXT_LOADING = true;
-  loadScript("data/kb_text.local.js").then(() => {
-    KB_TEXT = dataFor("kb_text"); KB_TEXT_LOADING = false; onReady();
-  }).catch(() => { KB_TEXT_LOADING = false; onReady(); });
+function kbEnsureText() {
+  if (KB_TEXT) return Promise.resolve(KB_TEXT);
+  if (!KB_TEXT_PROMISE) KB_TEXT_PROMISE = loadScript("data/kb_text.local.js")
+    .then(() => (KB_TEXT = dataFor("kb_text"))).catch(() => null);
+  return KB_TEXT_PROMISE;
 }
 
 function kbSnippet(text, q) {
@@ -1562,7 +1629,6 @@ function kbFindAll(q) {
     if (hitNum(i.art) || hit(i.nameRu) || hit(i.nameZh) || hitNum(i.ekmtr)) out.parts.push(i);
   }
   for (const key in D.linkome.byPart) {
-    if (out.linkome.length > 400) break;
     const rows = D.linkome.byPart[key];
     if (key.includes(num) && hasNum) { out.linkome.push([key, rows]); continue; }
     if (lo.length >= 2 && rows.some(r => hit(r.name))) out.linkome.push([key, rows]);
@@ -1682,7 +1748,7 @@ function renderKB(host) {
     <div class="card">
       <h3>Поиск по всему</h3>
       <p class="hint" id="kbSearchHint">Номер детали, наименование, узел, код ЕКМТР, борт, имя документа — и содержимое документов (индекс — первые ~60 тыс. знаков каждого, грузится при первом запросе). Номера сверяются без учёта точек и дефисов.</p>
-      <input type="search" id="kbSearchQ" placeholder="K1601.30.02, пружина, 1001785, регламент, №02…"/>
+      <input type="search" id="kbSearchQ" placeholder="K1601.30.02, пружина, 1001785, регламент, №02…" value="${esc(KB_SEARCH_QUERY)}"/>
       <div id="kbSearchResults" style="margin-top:10px"></div>
     </div>
 
@@ -1700,8 +1766,10 @@ function renderKB(host) {
 
   const byPath = new Map(D.kb.docs.map(d => [d.path, d]));
   let searchTimer;
+  let searchRequest = 0;
 
   function kbRenderResults(q, box) {
+    const request = ++searchRequest;
     const r = kbFindAll(q);
     const total = r.parts.length + r.linkome.length + r.nodes.length +
                   r.ekmtr.length + r.fleet.length + r.docs.length;
@@ -1766,17 +1834,16 @@ function renderKB(host) {
 
     qsa("[data-art]", box).forEach(el => el.onclick = () => openDetail(el.dataset.art));
     qsa("[data-page]", box).forEach(el => el.onclick = () => {
-      TAB = "linkone";
       LO.book = el.dataset.book;
       LO.index = loBuildIndex(LO.book);
       LO.current = el.dataset.page;
       LO.filter = "";
-      qsa("#tabs button").forEach(x => x.classList.toggle("on", x.dataset.t === "linkone"));
-      renderTab();
+      navigateTo("linkone");
     });
 
     // содержимое документов — отдельно и лениво: индекс на 10 МБ
-    kbEnsureText(() => {
+    kbEnsureText().then(() => {
+      if (request !== searchRequest) return;
       const ft = byId("kbFullText");
       if (!ft) return;
       if (!KB_TEXT) { ft.innerHTML = callout("bad", "Индекс содержимого недоступен."); return; }
@@ -1802,6 +1869,7 @@ function renderKB(host) {
   byId("kbSearchQ").oninput = e => {
     clearTimeout(searchTimer);
     const q = e.target.value.trim();
+    KB_SEARCH_QUERY = q;
     const box = byId("kbSearchResults");
     if (!q || q.length < 2) { box.innerHTML = q ? '<p class="hint">Минимум два символа.</p>' : ""; return; }
     box.innerHTML = '<p class="hint">Поиск…</p>';
@@ -1835,48 +1903,73 @@ function renderKB(host) {
     qsa(".kbclass", host).forEach(x => x.classList.toggle("on", x.dataset.c === KB_FILTER.cls));
     apply();
   });
+  makeActivatable(host, ".kbclass");
   byId("kbQ").oninput = e => { KB_FILTER.q = e.target.value; apply(); };
   byId("kbModel").onchange = apply;
   apply();
+  if (KB_SEARCH_QUERY.length >= 2) kbRenderResults(KB_SEARCH_QUERY, byId("kbSearchResults"));
 }
 
 /* ---------- навигация / поиск / тема ---------- */
-function initNav() {
-  qsa("#tabs button").forEach(b => b.onclick = () => {
-    qsa("#tabs button").forEach(x => x.classList.remove("on"));
-    b.classList.add("on");
-    TAB = b.dataset.t;
-    renderTab();
+const VALID_TABS = new Set(["sum", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
+function navigateTo(tab, { updateHash = true, focusMain = true } = {}) {
+  TAB = VALID_TABS.has(tab) ? tab : "sum";
+  qsa("#tabs button").forEach(x => {
+    const active = x.dataset.t === TAB;
+    x.classList.toggle("on", active); x.setAttribute("aria-selected", active ? "true" : "false"); x.tabIndex = active ? 0 : -1;
   });
-  byId("btnTheme").onclick = () => {
-    const html = document.documentElement;
-    const cur = html.getAttribute("data-theme");
-    const next = cur === "light" ? "dark" : "light";
-    html.setAttribute("data-theme", next);
-    byId("btnTheme").textContent = next === "light" ? "☀" : "☾";
-  };
-  byId("btnCart").onclick = () => {
-    qsa("#tabs button").forEach(x => x.classList.remove("on"));
-    TAB = "cart";
-    renderTab();
-  };
-  cartUpdateBadge();
-  let searchTimer;
-  byId("globalSearch").oninput = e => {
-    clearTimeout(searchTimer);
-    const q = e.target.value.trim();
-    if (!q) return;
-    searchTimer = setTimeout(() => {
-      qsa("#tabs button").forEach(x => x.classList.remove("on"));
-      qs('#tabs button[data-t="catalog"]').classList.add("on");
-      TAB = "catalog";
-      CAT_FILTER.q = q;
-      renderTab();
-    }, 250);
-  };
+  if (updateHash && location.hash !== `#${TAB}`) history.pushState(null, "", `#${TAB}`);
+  renderTab();
+  if (focusMain) byId("main").focus({ preventScroll: true });
 }
 
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+function initNav() {
+  const fromHash = location.hash.slice(1);
+  TAB = VALID_TABS.has(fromHash) ? fromHash : "sum";
+  qsa("#tabs button").forEach(b => {
+    b.onclick = () => navigateTo(b.dataset.t);
+    b.onkeydown = e => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+      e.preventDefault(); const tabs = qsa("#tabs button"); let i = tabs.indexOf(b);
+      i = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+      tabs[i].focus();
+    };
+  });
+  qsa("#tabs button").forEach(x => { const active = x.dataset.t === TAB; x.classList.toggle("on", active); x.setAttribute("aria-selected", active ? "true" : "false"); x.tabIndex = active ? 0 : -1; });
+  let savedTheme = null; try { savedTheme = localStorage.getItem("wkcrm_theme"); } catch (e) { /* unavailable */ }
+  if (savedTheme === "light" || savedTheme === "dark") document.documentElement.setAttribute("data-theme", savedTheme);
+  const syncThemeButton = () => {
+    const actual = document.documentElement.getAttribute("data-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    byId("btnTheme").innerHTML = `<span aria-hidden="true">${actual === "light" ? "☀" : "☾"}</span>`;
+  };
+  syncThemeButton();
+  byId("btnTheme").onclick = () => {
+    const html = document.documentElement;
+    const cur = html.getAttribute("data-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    const next = cur === "light" ? "dark" : "light";
+    html.setAttribute("data-theme", next);
+    try { localStorage.setItem("wkcrm_theme", next); } catch (e) { /* unavailable */ }
+    syncThemeButton();
+  };
+  byId("btnCart").onclick = () => navigateTo("cart");
+  cartUpdateBadge();
+  byId("globalSearch").oninput = debounce(e => {
+    const q = e.target.value.trim();
+    if (!q) return;
+    KB_SEARCH_QUERY = q; navigateTo("kb");
+  }, 250);
+  window.addEventListener("hashchange", () => navigateTo(location.hash.slice(1), { updateHash: false }));
+}
+
+document.addEventListener("keydown", e => {
+  const card = byId("modalCard");
+  if (e.key === "Escape") closeModal();
+  if (e.key !== "Tab" || card.hidden) return;
+  const focusable = qsa('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])', card).filter(el => !el.disabled);
+  if (!focusable.length) return; const first = focusable[0], last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
 
 initNav();
 boot();
