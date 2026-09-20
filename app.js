@@ -297,7 +297,7 @@ function renderTab() {
     case "linkone": return renderLinkone(host);
     case "kb": return renderKB(host);
     case "fleet": return renderFleet(host);
-    case "repairs": return renderRepairs(host);
+    case "repairs": return renderSchedule(host);
     case "provision": return renderProvision(host);
     case "stock": return renderStock(host);
     case "purchase": return renderPurchase(host);
@@ -2017,6 +2017,7 @@ function renderKB(host) {
 const VALID_TABS = new Set(["sum", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
 function navigateTo(tab, { updateHash = true, focusMain = true } = {}) {
   TAB = VALID_TABS.has(tab) ? tab : "sum";
+  if (TAB !== "repairs") SFULL = false;
   if (TAB !== "linkone") {
     LO.fullscreen = false;
     document.body.classList.remove("lo-full-open");
@@ -2071,6 +2072,7 @@ function initNav() {
 document.addEventListener("keydown", e => {
   const card = byId("modalCard");
   if (e.key === "Escape" && !card.hidden) { closeModal(); return; }
+  if (e.key === "Escape" && SFULL) { SFULL = false; renderSchedule(byId("main")); return; }
   if (e.key === "Escape" && LO.fullscreen) {
     LO.fullscreen = false;
     document.body.classList.remove("lo-full-open");

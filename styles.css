@@ -104,7 +104,7 @@ a:hover{text-decoration:underline}
 .tabs button.on{color:var(--ink)}
 .tabs button.on::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;background:var(--accent)}
 
-main{min-width:0;padding:16px 20px 64px;max-width:1400px;margin:0 auto}
+main{min-width:0;padding:16px 20px 64px;max-width:1680px;margin:0 auto}
 h1{font-size:19px;font-weight:600;margin:2px 0 3px;letter-spacing:-.01em}
 h2{font-size:14px;font-weight:600;margin:22px 0 10px}
 .sub{color:var(--ink-3);font-size:12.5px;margin:0 0 16px}

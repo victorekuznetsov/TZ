@@ -1,0 +1,6 @@
+import assert from 'node:assert/strict';import fs from 'node:fs';import vm from 'node:vm';
+const src=fs.readFileSync(new URL('../schedule.js',import.meta.url),'utf8')+';globalThis.h={sDecode,sRows,sOrders,set:(d,f)=>{S=d;SF={...SF,...f}}};';
+const ctx={console,sessionStorage:{getItem:()=>null,setItem:()=>{}},normText:x=>String(x||'').toLowerCase(),esc:String,Number,Date,Map,Set};vm.createContext(ctx);vm.runInContext(src,ctx);
+const d=ctx.h.sDecode({columns:['site','p'],dictionaries:{site:['1100']},rows:[[0,4]]});assert.equal(d[0].site,'1100');assert.equal(d[0].p,4);
+const rows=[{orderId:'1',site:'1100',unit:'WK-20 №1',unitId:'u1',year:'2025',work:'ТО',order:'7',code:'A',name:'Болт',start:'2025-01-01',end:'2025-01-03',badDate:false,p:10,a:5,up:null,uf:null,hasFact:true},{orderId:'1',site:'1100',unit:'WK-20 №1',unitId:'u1',year:'2025',work:'ТО',order:'7',code:'B',name:'Гайка',start:'2025-01-01',end:'2025-01-03',badDate:false,p:20,a:0,up:null,uf:null,hasFact:false}];
+ctx.h.set({rows,meta:{sites:{1100:'Площадка'}}},{site:'1100',unit:'',year:'',work:'',fact:'',q:'болт',from:'',to:''});assert.equal(ctx.h.sRows().length,1);const o=ctx.h.sOrders(rows)[0];assert.equal(o.p,30);assert.equal(o.a,5);assert.equal(o.lines.length,2);console.log('Schedule helpers: OK');
