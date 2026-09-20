@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs>
+    <style>
+      text{font-family:Inter,Arial,sans-serif;fill:#172033}.muted{fill:#738096}.mono{font-family:ui-monospace,Consolas,monospace}.h1{font-size:22px;font-weight:700}.h2{font-size:15px;font-weight:700}.sm{font-size:11px}.xs{font-size:9px}.num{font-weight:700}.line{stroke:#dfe5ec}.card{fill:#fff;stroke:#dfe5ec}.head{fill:#f7f9fc}.green{fill:#19a974}.blue{fill:#4d79f6}.amber{fill:#e9a23b}.red{fill:#e55757}.purple{fill:#8c6ee9}
+    </style>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="3" stdDeviation="6" flood-opacity=".10"/></filter>
+  </defs>
+  <rect width="1600" height="900" fill="#eef2f6"/>
+  <rect x="24" y="22" width="1552" height="42" rx="8" fill="#172033"/>
+  <text x="46" y="49" fill="#fff" class="h2">WK CRM · пример ветки GBT</text>
+  <text x="1550" y="49" fill="#bdc7d8" text-anchor="end" class="sm">чертёж + состав · обеспеченность</text>
+
+  <!-- Полноэкранный каталог -->
+  <g transform="translate(24 82)">
+    <rect width="1552" height="390" rx="12" class="card" filter="url(#shadow)"/>
+    <rect width="1552" height="46" rx="12" class="head"/>
+    <path d="M0 46H1552" class="line"/>
+    <text x="18" y="29" class="h2">K1626.07.00 · Механизм поворота</text>
+    <text x="305" y="29" class="sm muted">36 позиций · лист 1 из 2</text>
+    <rect x="1437" y="10" width="96" height="27" rx="6" fill="#fff" stroke="#dfe5ec"/>
+    <text x="1485" y="28" text-anchor="middle" class="sm">✕ Закрыть</text>
+
+    <rect x="14" y="60" width="617" height="314" rx="9" fill="#fff" stroke="#dfe5ec"/>
+    <text x="28" y="82" class="sm muted">ЧЕРТЁЖ · 42% ЭКРАНА</text>
+    <g transform="translate(56 97)" stroke="#617189" fill="none" stroke-width="2">
+      <circle cx="215" cy="126" r="84"/><circle cx="215" cy="126" r="48"/><circle cx="215" cy="126" r="17"/>
+      <path d="M215 42v168M131 126h168M156 67l118 118M156 185L274 67"/>
+      <rect x="327" y="62" width="158" height="126" rx="12"/><path d="M299 102h28M299 150h28M485 102h42M485 150h42"/>
+      <path d="M42 49h82l41 34M44 220h92l38-37M523 35h-80l-32 28M538 230h-91l-31-42"/>
+    </g>
+    <g font-size="10" font-weight="700" text-anchor="middle">
+      <circle cx="98" cy="146" r="13" fill="#dff7ed" stroke="#19a974"/><text x="98" y="150">1</text>
+      <circle cx="96" cy="317" r="13" fill="#dff7ed" stroke="#19a974"/><text x="96" y="321">7</text>
+      <circle cx="579" cy="132" r="13" fill="#dff7ed" stroke="#19a974"/><text x="579" y="136">12</text>
+      <circle cx="590" cy="327" r="13" fill="#19a974" stroke="#11815a"/><text x="590" y="331" fill="#fff">18</text>
+    </g>
+
+    <rect x="643" y="60" width="895" height="314" rx="9" fill="#fff" stroke="#dfe5ec"/>
+    <rect x="644" y="61" width="893" height="35" rx="8" class="head"/>
+    <g class="sm" font-weight="700"><text x="663" y="83">№</text><text x="707" y="83">Номер</text><text x="872" y="83">Наименование</text><text x="1130" y="83">Кол.</text><text x="1200" y="83">Наличие и заказ</text><text x="1400" y="83">Цена</text></g>
+    <g class="sm">
+      <path d="M644 96H1537M644 140H1537M644 184H1537M644 228H1537M644 272H1537M644 316H1537" class="line"/>
+      <text x="667" y="123" fill="#19a974" font-weight="700">1</text><text x="707" y="123" class="mono">K1626.07.01</text><text x="872" y="123">Корпус механизма</text><text x="1142" y="123">1</text><rect x="1200" y="107" width="75" height="20" rx="10" fill="#dff7ed"/><text x="1238" y="121" text-anchor="middle" fill="#11815a">на складе</text><text x="1400" y="123">286 400 ₽</text>
+      <text x="667" y="167" fill="#19a974" font-weight="700">7</text><text x="707" y="167" class="mono">K1626.07.114</text><text x="872" y="167">Шестерня ведущая</text><text x="1142" y="167">2</text><rect x="1200" y="151" width="88" height="20" rx="10" fill="#fff1d8"/><text x="1244" y="165" text-anchor="middle" fill="#b77513">заказ открыт</text><text x="1400" y="167">94 800 ₽</text>
+      <rect x="644" y="185" width="893" height="43" fill="#eaf2ff"/><text x="667" y="211" fill="#19a974" font-weight="700">18</text><text x="707" y="211" class="mono">K1626.07.224</text><text x="872" y="211">Подшипник роликовый</text><text x="1142" y="211">4</text><rect x="1200" y="195" width="70" height="20" rx="10" fill="#fde5e5"/><text x="1235" y="209" text-anchor="middle" fill="#be3535">дефицит</text><text x="1400" y="211">37 250 ₽</text>
+      <text x="667" y="255" fill="#19a974" font-weight="700">21</text><text x="707" y="255" class="mono">K1626.07.310</text><text x="872" y="255">Кольцо уплотнительное</text><text x="1142" y="255">2</text><rect x="1200" y="239" width="75" height="20" rx="10" fill="#dff7ed"/><text x="1238" y="253" text-anchor="middle" fill="#11815a">на складе</text><text x="1400" y="255">6 720 ₽</text>
+      <text x="667" y="299" fill="#19a974" font-weight="700">26</text><text x="707" y="299" class="mono">K1626.07.408</text><text x="872" y="299">Втулка</text><text x="1142" y="299">3</text><rect x="1200" y="283" width="88" height="20" rx="10" fill="#fff1d8"/><text x="1244" y="297" text-anchor="middle" fill="#b77513">заказ открыт</text><text x="1400" y="299">18 900 ₽</text>
+    </g>
+    <text x="16" y="388" class="xs muted">Независимая прокрутка панелей · липкая шапка · Esc закрывает полноэкранный режим</text>
+  </g>
+
+  <!-- Аудит обеспеченности -->
+  <g transform="translate(24 494)">
+    <text x="0" y="24" class="h1">Обеспеченность плана ТОиР 2026–2027</text>
+    <text x="0" y="45" class="sm muted">Аудит остатков и распределения · данные на 14.09.2026</text>
+    <g transform="translate(0 60)">
+      <rect width="292" height="76" rx="10" class="card"/><text x="16" y="24" class="sm muted">Потребность WK</text><text x="16" y="53" font-size="22" font-weight="700">4 577,5 млн ₽</text>
+      <rect x="307" width="292" height="76" rx="10" class="card"/><text x="323" y="24" class="sm muted">Обеспечено к сроку</text><text x="323" y="53" font-size="22" font-weight="700" fill="#11815a">2 846,3 млн ₽ · 62%</text>
+      <rect x="614" width="292" height="76" rx="10" class="card"/><text x="630" y="24" class="sm muted">Не обеспечено</text><text x="630" y="53" font-size="22" font-weight="700" fill="#be3535">1 731,3 млн ₽ · 38%</text>
+      <rect x="921" width="292" height="76" rx="10" class="card"/><text x="937" y="24" class="sm muted">Ещё можно успеть</text><text x="937" y="53" font-size="22" font-weight="700" fill="#b77513">635,5 млн ₽</text>
+      <rect x="1228" width="324" height="76" rx="10" class="card"/><text x="1244" y="24" class="sm muted">Уже не успеть</text><text x="1244" y="53" font-size="22" font-weight="700" fill="#be3535">1 095,8 млн ₽</text>
+    </g>
+    <g transform="translate(0 152)">
+      <rect width="670" height="214" rx="10" class="card"/>
+      <text x="18" y="29" class="h2">Контроль распределения</text><rect x="535" y="12" width="118" height="23" rx="12" fill="#dff7ed"/><text x="594" y="28" text-anchor="middle" class="sm" fill="#11815a">✓ баланс сходится</text>
+      <g transform="translate(18 51)">
+        <rect width="198" height="55" rx="8" fill="#f7f9fc"/><circle cx="24" cy="27" r="12" fill="#dff7ed"/><text x="24" y="31" text-anchor="middle" fill="#11815a" font-weight="700">✓</text><text x="45" y="24" class="sm" font-weight="700">Количество</text><text x="45" y="41" class="xs muted">расхождение 0 ед.</text>
+        <rect x="208" width="198" height="55" rx="8" fill="#f7f9fc"/><circle cx="232" cy="27" r="12" fill="#dff7ed"/><text x="232" y="31" text-anchor="middle" fill="#11815a" font-weight="700">✓</text><text x="253" y="24" class="sm" font-weight="700">Стоимость</text><text x="253" y="41" class="xs muted">расхождение 0 ₽</text>
+        <rect x="416" width="218" height="55" rx="8" fill="#f7f9fc"/><circle cx="440" cy="27" r="12" fill="#dff7ed"/><text x="440" y="31" text-anchor="middle" fill="#11815a" font-weight="700">✓</text><text x="461" y="24" class="sm" font-weight="700">Лимиты источников</text><text x="461" y="41" class="xs muted">0 превышений</text>
+      </g>
+      <rect x="18" y="122" width="634" height="72" rx="8" fill="#fff1d8" stroke="#f0c879"/><text x="34" y="146" class="sm" font-weight="700" fill="#8d5a0d">⚠ 1 310 ед. по 133 кодам — просроченный плановый приход</text><text x="34" y="166" class="sm" fill="#8d5a0d">Не считается подтверждённым покрытием без актуализации срока.</text><text x="34" y="184" class="xs" fill="#8d5a0d">Исправлено правило сборки; витрина пересобрана из актуального TOPO.</text>
+
+      <rect x="686" width="866" height="214" rx="10" class="card"/>
+      <text x="704" y="29" class="h2">Календарь открытой закупки</text><text x="704" y="47" class="xs muted">красным — месяц поставки уже прошёл</text>
+      <line x1="704" y1="178" x2="1533" y2="178" class="line"/>
+      <g transform="translate(720 62)">
+        <rect x="0" y="91" width="26" height="25" rx="3" class="red"/><text x="13" y="130" text-anchor="middle" class="xs">25.07</text>
+        <rect x="40" y="83" width="26" height="33" rx="3" class="red"/><text x="53" y="130" text-anchor="middle" class="xs">25.10</text>
+        <rect x="80" y="62" width="26" height="54" rx="3" class="red"/><text x="93" y="130" text-anchor="middle" class="xs">26.01</text>
+        <rect x="120" y="33" width="26" height="83" rx="3" class="red"/><text x="133" y="130" text-anchor="middle" class="xs">26.04</text>
+        <rect x="160" y="14" width="26" height="102" rx="3" class="red"/><text x="173" y="130" text-anchor="middle" class="xs">26.07</text>
+        <rect x="215" y="48" width="26" height="68" rx="3" class="blue"/><text x="228" y="130" text-anchor="middle" class="xs">26.09</text>
+        <rect x="270" y="21" width="26" height="95" rx="3" class="blue"/><text x="283" y="130" text-anchor="middle" class="xs">26.12</text>
+        <rect x="325" y="0" width="26" height="116" rx="3" class="blue"/><text x="338" y="130" text-anchor="middle" class="xs">27.03</text>
+        <rect x="380" y="38" width="26" height="78" rx="3" class="blue"/><text x="393" y="130" text-anchor="middle" class="xs">27.06</text>
+        <rect x="435" y="69" width="26" height="47" rx="3" class="blue"/><text x="448" y="130" text-anchor="middle" class="xs">27.09</text>
+        <rect x="490" y="84" width="26" height="32" rx="3" class="blue"/><text x="503" y="130" text-anchor="middle" class="xs">27.12</text>
+        <rect x="545" y="96" width="26" height="20" rx="3" class="blue"/><text x="558" y="130" text-anchor="middle" class="xs">28.03</text>
+        <rect x="600" y="105" width="26" height="11" rx="3" class="blue"/><text x="613" y="130" text-anchor="middle" class="xs">28.06</text>
+        <rect x="655" y="109" width="26" height="7" rx="3" class="blue"/><text x="668" y="130" text-anchor="middle" class="xs">28.09</text>
+        <rect x="710" y="112" width="26" height="4" rx="3" class="blue"/><text x="723" y="130" text-anchor="middle" class="xs">28.12</text>
+      </g>
+    </g>
+  </g>
+</svg>

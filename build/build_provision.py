@@ -101,12 +101,23 @@ def load_need(topo_dir):
     return need, nocode_rows, nocode_v
 
 
-def allocate(need, stock):
-    """Двухпроходное распределение остатка и приходов закупки."""
+def allocate(need, stock, today=None):
+    """Двухпроходное распределение остатка и приходов закупки.
+
+    Открытый приход с плановым месяцем раньше даты снимка уже просрочен.
+    Его дата больше не является надёжным обещанием, поэтому такой объём
+    попадает в корзину ``undated``, а не в «закупка успевает».
+    """
     avail = {c: N(s.get("availQty")) for c, s in stock.items()}
     inflow = {}
+    asof_month = today.strftime("%Y-%m") if today else ""
     for c, s in stock.items():
-        bm = dict(((s.get("purchase") or {}).get("byMonth") or {}))
+        raw = ((s.get("purchase") or {}).get("byMonth") or {})
+        bm = defaultdict(float)
+        for month, qty in raw.items():
+            reliable_month = "" if asof_month and month and month < asof_month else month
+            bm[reliable_month] += N(qty)
+        bm = dict(bm)
         if bm:
             inflow[c] = bm
     need.sort(key=lambda r: (r["date"] or "9999", r["code"]))
@@ -194,7 +205,7 @@ def main():
     lead_default = sj["meta"].get("leadMedianDays") or 0
 
     need, nocode_rows, nocode_v = load_need(topo_dir)
-    need = allocate(need, stock)
+    need = allocate(need, stock, today)
     known = [r for r in need if r["code"] in stock]
     other = [r for r in need if r["code"] not in stock]
 

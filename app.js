@@ -577,7 +577,7 @@ function renderCatalog(host) {
    номеру, сверенному с прайсом ДП, — открывает карточку детали. В отличие от Komatsu, чертёж
    (растровый .ilg) не декодирован — контейнер LinkOne читается, картинка нет (см. «Качество
    данных»), поэтому показывается только состав узла, без изображения. */
-const LO = { book: null, index: null, current: null, filter: "" };
+const LO = { book: null, index: null, current: null, filter: "", fullscreen: false };
 const loAliasKey = id => String(id || "").toLowerCase().replace(/^\d+-/, "").replace(/^dk/, "k").replace(/a$/, "");
 
 function loBuildIndex(bookCode) {
@@ -777,10 +777,14 @@ function loRenderMain() {
   host.innerHTML = `
     <div class="lo-crumbs">${crumbs}</div>
     <div class="lo-head">
-      <h2 class="lo-title">${esc(page.title || page.id)}</h2>
-      <div class="lo-meta"><span class="mono">${esc(page.id)}</span> · позиций: ${num(rows.length)}${sheets.length ? ` · листов: ${sheets.length}` : " · чертежа нет"}</div>
+      <div>
+        <h2 class="lo-title">${esc(page.title || page.id)}</h2>
+        <div class="lo-meta"><span class="mono">${esc(page.id)}</span> · позиций: ${num(rows.length)}${sheets.length ? ` · листов: ${sheets.length}` : " · чертежа нет"}</div>
+      </div>
+      <button class="minibtn lo-full-btn" id="loFullscreen" type="button" aria-pressed="${LO.fullscreen}" title="Развернуть чертёж и таблицу на весь экран">${LO.fullscreen ? "✕ Закрыть полный экран" : "⛶ На весь экран"}</button>
     </div>
-    <div class="lo-body">
+    <div class="lo-body${LO.fullscreen ? " lo-fullscreen" : ""}" id="loBody">
+      <div class="lo-fullbar"><b>${esc(page.title || page.id)}</b><span>${num(rows.length)} позиций</span><button class="minibtn" id="loFullscreenClose" type="button">✕ Закрыть</button></div>
       <div class="lo-pane">
         ${sheets.length ? `
           <div class="lo-draw" id="loDraw">
@@ -891,6 +895,14 @@ function loRenderMain() {
   // Зум — как в Cummins: снимаем ограничение по ширине, выноски остаются на
   // местах, потому что заданы в процентах и масштабируются вместе с картинкой.
   if (dimg) dimg.onclick = () => dimg.classList.toggle("zoomed");
+  const setFullscreen = on => {
+    LO.fullscreen = on;
+    document.body.classList.toggle("lo-full-open", on);
+    loRenderMain();
+  };
+  byId("loFullscreen").onclick = () => setFullscreen(!LO.fullscreen);
+  const fullClose = byId("loFullscreenClose");
+  if (fullClose) fullClose.onclick = () => setFullscreen(false);
   qsa(".lo-crumbs a", host).forEach(el => el.onclick = () => { LO.current = el.dataset.id; loRenderTree(); loRenderMain(); });
   qsa("[data-goto]", host).forEach(el => el.onclick = () => { LO.current = el.dataset.goto; loRenderTree(); loRenderMain(); });
   qsa("[data-art]", host).forEach(el => el.onclick = () => openDetail(el.dataset.art));
@@ -992,7 +1004,7 @@ const PROV_BUCKETS = [
   { key: "fromStock", label: "Есть на складе", color: "var(--c1)" },
   { key: "fromBuy", label: "Закупка успевает", color: "var(--c7)" },
   { key: "late", label: "Закупка опаздывает", color: "var(--c5)" },
-  { key: "undated", label: "Закупка без срока", color: "var(--c6)" },
+  { key: "undated", label: "Закупка просрочена / без срока", color: "var(--c6)" },
   { key: "gap", label: "Не покрыто ничем", color: "var(--c8)" },
 ];
 // Вердикт — по БЛИЖАЙШЕМУ незакрытому сроку позиции. Деньги при этом
@@ -1034,16 +1046,52 @@ function provCut(rows, nameOf) {
   }).join("") + `</tbody></table>`;
 }
 
+function provisionAudit(m, items, stockItems) {
+  const w = m.wk, tol = .01;
+  const qtyBuckets = w.fromStockQty + w.fromBuyQty + w.lateQty + w.undatedQty + w.gapQty;
+  const valueBuckets = w.fromStock + w.fromBuy + w.late + w.undated + w.gap;
+  const badBalance = items.filter(i => Math.abs(i.needQty - i.fromStock - i.fromBuy - i.late - i.undated - i.gap) > tol);
+  const stockOver = items.filter(i => i.fromStock > i.availQty + tol);
+  const buyOver = items.filter(i => i.fromBuy + i.late + i.undated > i.openQty + tol);
+  const asOfMonth = (m.asOf || "").slice(0, 7);
+  let overdueQty = 0, overdueCodes = 0;
+  (stockItems || []).forEach(i => {
+    const byMonth = ((i.purchase || {}).byMonth) || {};
+    const q = Object.entries(byMonth).reduce((s, [month, qty]) => s + (month && month < asOfMonth ? (+qty || 0) : 0), 0);
+    if (q > tol) { overdueQty += q; overdueCodes++; }
+  });
+  return {
+    qtyDelta: w.qty - qtyBuckets, valueDelta: w.value - valueBuckets,
+    badBalance: badBalance.length, stockOver: stockOver.length, buyOver: buyOver.length,
+    overdueQty, overdueCodes,
+  };
+}
+
+function provisionArrivalChart(arrivals, asOf) {
+  const month = (asOf || "").slice(0, 7);
+  const rows = (arrivals || []).filter(r => r.month).map(r => ({ ...r, overdue: r.month < month }));
+  const max = Math.max(1, ...rows.map(r => r.qty || 0));
+  return `<div class="prov-arrivals" role="img" aria-label="Открытые поставки по плановому месяцу">
+    ${rows.map(r => `<div class="prov-arrival${r.overdue ? " overdue" : ""}" title="${esc(r.month)}: ${num(r.qty, 0)} ед.">
+      <span>${esc(r.month.slice(2).replace("-", "."))}</span>
+      <i style="height:${Math.max(3, 100 * r.qty / max)}%"></i>
+      <b>${num(r.qty, 0)}</b>
+    </div>`).join("")}
+  </div>`;
+}
+
 function renderProvision(host) {
   const m = D.provision.meta, w = m.wk;
   const T = w.value || 1;
-  const sites = (D.fleet && D.fleet.meta && D.fleet.meta.sites) || {};
+  const sites = { ...((D.fleet && D.fleet.meta && D.fleet.meta.sites) || {}), "2400": "Сухой Лог" };
   const f = m.feasible || {};
   const fv = k => (f[k] && f[k].value) || 0;
   const gapTotal = w.late + w.undated + w.gap;
   const eta = new Date(m.asOf + "T00:00:00");
   eta.setDate(eta.getDate() + (m.leadMedianDays || 0));
   const etaStr = dmy(eta.toISOString().slice(0, 10));
+  const audit = provisionAudit(m, D.provision.items, D.stock.items);
+  const auditOk = Math.abs(audit.qtyDelta) < .01 && Math.abs(audit.valueDelta) < .1 && !audit.badBalance && !audit.stockOver && !audit.buyOver;
 
   host.innerHTML = `
     <h1>Обеспеченность плана ТОиР 2026–2027</h1>
@@ -1069,6 +1117,23 @@ function renderProvision(host) {
           <td class="n">${num(w[b.key + "Qty"], 0)} ед.</td>
         </tr>`).join("")}
       </tbody></table>
+    </div>
+
+    <div class="prov-audit-grid">
+      <section class="card prov-audit">
+        <div class="prov-card-head"><div><h3>Контроль распределения</h3><p class="hint">Автоматическая сверка потребности, остатка и открытой закупки</p></div><span class="badge ${auditOk ? "good" : "bad"}">${auditOk ? "баланс сходится" : "есть ошибки"}</span></div>
+        <div class="prov-checks">
+          <div><span class="prov-check ${Math.abs(audit.qtyDelta) < .01 ? "ok" : "bad"}">${Math.abs(audit.qtyDelta) < .01 ? "✓" : "!"}</span><b>Количество</b><small>расхождение ${num(audit.qtyDelta, 2)} ед.</small></div>
+          <div><span class="prov-check ${Math.abs(audit.valueDelta) < .1 ? "ok" : "bad"}">${Math.abs(audit.valueDelta) < .1 ? "✓" : "!"}</span><b>Стоимость</b><small>расхождение ${rub(audit.valueDelta)}</small></div>
+          <div><span class="prov-check ${!audit.stockOver && !audit.buyOver ? "ok" : "bad"}">${!audit.stockOver && !audit.buyOver ? "✓" : "!"}</span><b>Лимиты источников</b><small>${audit.stockOver + audit.buyOver} превышений</small></div>
+        </div>
+        ${audit.badBalance ? callout("bad", `${num(audit.badBalance)} позиций не сходятся по количеству.`) : ""}
+        ${audit.overdueQty ? callout("warn", `<b>${num(audit.overdueQty, 0)} ед. по ${num(audit.overdueCodes)} кодам</b> имеют открытый плановый приход раньше даты снимка. Сборщик исключает их из покрытия к сроку и относит использованный объём в корзину «просрочено / без срока».`) : ""}
+      </section>
+      <section class="card prov-arrival-card">
+        <div class="prov-card-head"><div><h3>Календарь открытой закупки</h3><p class="hint">Количество по плановому месяцу; красным — дата уже прошла</p></div></div>
+        ${provisionArrivalChart(m.arrivals, m.asOf)}
+      </section>
     </div>
 
     <h2>Сроки: что ещё можно закрыть заказом сегодня</h2>
@@ -1109,6 +1174,7 @@ function renderProvision(host) {
         <option value="partial">Покрыто частично</option>
         <option value="full">Покрыто полностью</option>
       </select>
+      <input type="search" id="provQ" placeholder="Код или наименование…" aria-label="Поиск позиции"/>
       <span class="count" id="provCount"></span>
     </div>
     <div id="provTable"></div>
@@ -1117,9 +1183,11 @@ function renderProvision(host) {
   const items = D.provision.items;
   function apply() {
     const f2 = byId("provStatus").value;
-    const rows = f2 === "can" ? items.filter(i => i.canOrder > 0)
+    const q = normText(byId("provQ").value).trim();
+    let rows = f2 === "can" ? items.filter(i => i.canOrder > 0)
       : f2 === "too" ? items.filter(i => i.tooLate > 0)
         : f2 ? items.filter(i => i.status === f2) : items;
+    if (q) rows = rows.filter(i => normText(i.code).includes(q) || normText(i.name).includes(q));
     // Считаем ту сумму, по которой отфильтровали, иначе итог в счётчике
     // не сойдётся с цифрой в сводке наверху.
     const sumKey = f2 === "can" ? "canOrder" : f2 === "too" ? "tooLate" : "gapValue";
@@ -1136,6 +1204,14 @@ function renderProvision(host) {
         { key: "needQty", label: "Нужно", numeric: true, fmt: v => num(v, 0) },
         { key: "fromStock", label: "Со склада", numeric: true, fmt: v => num(v, 0) },
         { key: "fromBuy", label: "Закупка к сроку", numeric: true, fmt: v => num(v, 0) },
+        {
+          key: "needQty", label: "Покрытие", numeric: true,
+          plain: (v, r) => v ? Math.round(100 * (r.fromStock + r.fromBuy) / v) : 0,
+          fmt: (v, r) => {
+            const pc = v ? Math.min(100, 100 * (r.fromStock + r.fromBuy) / v) : 0;
+            return `<span class="prov-cover"><i style="width:${pc.toFixed(1)}%"></i></span><small>${num(pc, 0)}%</small>`;
+          }
+        },
         {
           key: "gap", label: "Дефицит", numeric: true,
           plain: (v, r) => num(v + r.late + r.undated, 0),
@@ -1173,6 +1249,7 @@ function renderProvision(host) {
     wireCartButtons(byId("provTable"));
   }
   byId("provStatus").onchange = apply;
+  byId("provQ").oninput = debounce(apply, 150);
   apply();
 }
 
@@ -1367,13 +1444,13 @@ function renderDoc(host) {
     <div class="card"><h3>Обеспеченность: как считается</h3>
       <p class="hint">Потребность — строки плана ТОиР 2026–2027 по технике WK, у которых нет ни факта количества, ни факта суммы. Распределение — как в MRP/ATP, в два прохода.</p>
       <ul>
-        <li><b>Проход 1.</b> Потребность, отсортированная по дате начала работ, забирает доступный остаток, затем — те приходы закупки, чей месяц поставки не позже месяца начала работ («успевает»).</li>
+        <li><b>Проход 1.</b> Потребность, отсортированная по дате начала работ, забирает доступный остаток, затем — те приходы закупки, чей месяц поставки не раньше даты снимка и не позже месяца начала работ («успевает»).</li>
         <li><b>Проход 2.</b> Остатками приходов закрывается то, что не успели, — это «опоздание».</li>
         <li>Два прохода здесь принципиальны: в один проход ранняя потребность забирает поздний приход и помечает его опозданием, хотя тот же приход мог бы вовремя закрыть более позднюю потребность. На этих данных разница почти вдвое по доле «закупка успевает».</li>
         <li><b>Срок поставки</b> — медиана «дата поставки − дата заявки» по той же выгрузке закупки (${num(D.provision.meta.leadMeasurements)} замеров по ${num(D.provision.meta.leadCodes)} кодам). Для позиции со своей статистикой берётся её собственный срок, иначе — медиана по WK (${num(D.provision.meta.leadMedianDays)} дн.).</li>
         <li><b>Дата анализа</b> — самая поздняя из дат выгрузок (${dmy(D.provision.meta.asOf)}), а не дата открытия портала: иначе один и тот же исходник давал бы разный ответ ото дня ко дню.</li>
       </ul>
-      <p class="hint">Чего расчёт сознательно не делает: прочая номенклатура (ГСМ, общий крепёж, общие МТР) в него не входит — витрины остатков по ней нет, и считать её дефицитом было бы неправдой; срок прихода закупки известен только до месяца, внутри месяца приход считается успевающим.</p>
+      <p class="hint">Открытая поставка с плановым месяцем раньше даты снимка считается просроченной: её старый срок ненадёжен, поэтому она не улучшает показатель «обеспечено к сроку». Чего расчёт сознательно не делает: прочая номенклатура (ГСМ, общий крепёж, общие МТР) в него не входит — витрины остатков по ней нет; срок прихода закупки известен только до месяца, внутри месяца приход считается успевающим.</p>
     </div>
   `;
 }
@@ -1963,6 +2040,12 @@ function initNav() {
 
 document.addEventListener("keydown", e => {
   const card = byId("modalCard");
+  if (e.key === "Escape" && LO.fullscreen) {
+    LO.fullscreen = false;
+    document.body.classList.remove("lo-full-open");
+    if (TAB === "linkone") loRenderMain();
+    return;
+  }
   if (e.key === "Escape") closeModal();
   if (e.key !== "Tab" || card.hidden) return;
   const focusable = qsa('button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])', card).filter(el => !el.disabled);
