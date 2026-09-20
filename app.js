@@ -87,7 +87,8 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
   let shownLimit = limit || rows.length;
   function draw() {
     const sorted = [...rows].sort((a, b) => {
-      const va = a[key], vb = b[key];
+      const va = key === "coverage" ? provisionCoverage(a) : a[key];
+      const vb = key === "coverage" ? provisionCoverage(b) : b[key];
       if (va == null && vb == null) return 0;
       if (va == null) return 1;
       if (vb == null) return -1;
@@ -259,6 +260,18 @@ let EKMTR_NAME = new Map();
 let CATALOG_BY_ART = new Map();
 let CATALOG_BY_NORMART = new Map(); // нормализованный номер -> позиция каталога (для кросс-линковки из LinkOne)
 let INTER_GROUP_OF = new Map(); // каталожный номер -> группа взаимозаменяемости (массив)
+// Exact identity: punctuation and dimensional suffixes are significant.
+function interKey(value) { return String(value || "").trim().toUpperCase().replace(/\s+/g, " "); }
+function provisionCoverage(row) { return row.needQty > 0 ? 100 * (row.fromStock + row.fromBuy) / row.needQty : 0; }
+function interPartLink(part) {
+  return CATALOG_BY_ART.has(part) ? `<button type="button" class="minibtn mono" data-inter-part="${esc(part)}">${esc(part)}</button>` : esc(part);
+}
+function wireInterLinks(container) {
+  container.onclick = e => {
+    const button = e.target.closest("[data-inter-part]");
+    if (button) { e.stopPropagation(); openDetail(button.dataset.interPart); }
+  };
+}
 function linkomeRowsFor(art) {
   // data/linkome_catalog.json.byPart уже ключуется нормализованным номером
   return (art && D.linkome.byPart[normArt(art)]) || null;
@@ -269,7 +282,10 @@ function buildIndexes() {
   CATALOG_BY_ART = new Map(D.catalog.items.map(i => [i.art, i]));
   CATALOG_BY_NORMART = new Map(D.catalog.items.map(i => [normArt(i.art), i]));
   INTER_GROUP_OF = new Map();
-  D.interchange.groups.forEach(g => g.forEach(part => INTER_GROUP_OF.set(normArt(part), g)));
+  D.interchange.groups.forEach(g => g.forEach(part => {
+    const key = interKey(part);
+    INTER_GROUP_OF.set(key, [...new Set([...(INTER_GROUP_OF.get(key) || []), ...g])]);
+  }));
 }
 
 /* ---------- вкладки ---------- */
@@ -1205,10 +1221,10 @@ function renderProvision(host) {
         { key: "fromStock", label: "Со склада", numeric: true, fmt: v => num(v, 0) },
         { key: "fromBuy", label: "Закупка к сроку", numeric: true, fmt: v => num(v, 0) },
         {
-          key: "needQty", label: "Покрытие", numeric: true,
-          plain: (v, r) => v ? Math.round(100 * (r.fromStock + r.fromBuy) / v) : 0,
+          key: "coverage", label: "Покрытие", numeric: true,
+          plain: (v, r) => Math.round(provisionCoverage(r)),
           fmt: (v, r) => {
-            const pc = v ? Math.min(100, 100 * (r.fromStock + r.fromBuy) / v) : 0;
+            const pc = Math.min(100, provisionCoverage(r));
             return `<span class="prov-cover"><i style="width:${pc.toFixed(1)}%"></i></span><small>${num(pc, 0)}%</small>`;
           }
         },
@@ -1377,7 +1393,7 @@ function renderInter(host) {
   const m = D.interchange.meta;
   host.innerHTML = `
     <h1>Взаимозаменяемость</h1>
-    <p class="sub">Группы номеров, взаимозаменяемых между комплектациями (из ведомости WK4.7). Строки без явной отметки — кандидаты на ручную проверку.</p>
+    <p class="sub">Замены из Excel приняты как правильные. Показаны прямые связи в пределах строки и указанных комплектаций, без транзитивного объединения. Примечания сохраняются. Пустая отметка не означает запрет или разрешение замены.</p>
     <div class="kpis">
       ${kpi("Групп", num(m.groups))}
       ${kpi("Номеров в группах", num(m.partsInGroups))}
@@ -1385,18 +1401,25 @@ function renderInter(host) {
     </div>
     <div class="grid2">
       <div class="card"><h3>Группы взаимозаменяемости</h3><div id="interGroups"></div></div>
-      <div class="card"><h3>Кандидаты — с примечанием</h3><div id="interCand"></div></div>
+      <div class="card"><h3>Строки без общей отметки</h3><div id="interCand"></div></div>
     </div>
   `;
   renderTable(byId("interGroups"), {
-    rows: D.interchange.groups.map((g, i) => ({ i, n: g.length, parts: g.join(", ") })),
+    rows: (D.interchange.evidence || []).map(g => ({ ...g,
+      n: g.parts.length, sourceParts: g.parts, parts: g.parts.map(p => p.book + ": " + p.num).join(", "),
+      source: g.sheet + " · строка " + g.row, flags: g.flags.join(", ") })),
     limit: 100,
-    cols: [{ key: "n", label: "Номеров", numeric: true }, { key: "parts", label: "Каталожные номера", cls: "wrap mono" }],
+    csv: true, csvName: "interchange_evidence.csv",
+    cols: [{ key: "source", label: "Источник" }, { key: "parts", label: "Комплектации и номера", cls: "wrap mono",
+      fmt: (_, r) => r.sourceParts.map(p => esc(p.book) + ": " + interPartLink(p.num)).join("<br>") },
+      { key: "flags", label: "Отметка Excel" }, { key: "note", label: "Примечание", cls: "wrap" }],
   });
+  wireInterLinks(byId("interGroups"));
   renderTable(byId("interCand"), {
     rows: D.interchange.candidates, limit: 100,
     cols: [
-      { key: "parts", label: "Номера", cls: "mono wrap", fmt: v => v.join(", ") },
+      { key: "sheet", label: "Лист" }, { key: "row", label: "Строка", numeric: true },
+      { key: "parts", label: "Номера", cls: "mono wrap", fmt: v => esc(v.join(", ")) },
       { key: "note", label: "Примечание", cls: "wrap" },
     ],
   });
@@ -1590,8 +1613,7 @@ function openDetail(art) {
   const item = CATALOG_BY_ART.get(art);
   if (!item) return;
   const stock = item.ekmtr ? STOCK_BY_CODE.get(item.ekmtr) : null;
-  const group = INTER_GROUP_OF.get(normArt(item.art)) ||
-    (item.tree[0] ? INTER_GROUP_OF.get(normArt(item.tree[0].num)) : null);
+  const group = INTER_GROUP_OF.get(interKey(item.art));
   const drawings = D.drawings.byNum[item.art] ||
     (item.tree[0] ? D.drawings.byNum[item.tree[0].num] : null);
   const linkomeRows = linkomeRowsFor(item.art) ||
@@ -1637,7 +1659,10 @@ function openDetail(art) {
 
     ${group ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Взаимозаменяемые номера</h3>
-      <p class="mono" style="font-size:12px">${group.map(esc).join(", ")}</p>` : ""}
+      <p class="mono" style="font-size:12px">${group.map(interPartLink).join(", ")}</p>
+      <p class="hint">Прямые связи Excel. Перед выбором сверяйте комплектацию и примечание строки:</p>
+      ${(D.interchange.evidence || []).filter(g => g.parts.some(p => interKey(p.num) === interKey(item.art))).map(g =>
+        `<p class="hint">${esc(g.sheet)} · строка ${g.row} · ${esc(g.parts.map(p => p.book + ": " + p.num).join(" ↔ "))}<br>${esc(g.note || "Без примечания")}</p>`).join("")}` : ""}
 
     ${drawings ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Чертежи (реестр)</h3>
@@ -1652,6 +1677,7 @@ function openDetail(art) {
       !drawings ? '<p class="hint">Ни чертежа, ни строки в LinkOme для этого номера нет.</p>' : ""}
   `;
   byId("mCloseBtn").onclick = closeModal;
+  wireInterLinks(card);
   byId("mCloseBtn").focus();
 }
 
@@ -1991,6 +2017,10 @@ function renderKB(host) {
 const VALID_TABS = new Set(["sum", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
 function navigateTo(tab, { updateHash = true, focusMain = true } = {}) {
   TAB = VALID_TABS.has(tab) ? tab : "sum";
+  if (TAB !== "linkone") {
+    LO.fullscreen = false;
+    document.body.classList.remove("lo-full-open");
+  }
   qsa("#tabs button").forEach(x => {
     const active = x.dataset.t === TAB;
     x.classList.toggle("on", active); x.setAttribute("aria-selected", active ? "true" : "false"); x.tabIndex = active ? 0 : -1;
@@ -2040,6 +2070,7 @@ function initNav() {
 
 document.addEventListener("keydown", e => {
   const card = byId("modalCard");
+  if (e.key === "Escape" && !card.hidden) { closeModal(); return; }
   if (e.key === "Escape" && LO.fullscreen) {
     LO.fullscreen = false;
     document.body.classList.remove("lo-full-open");

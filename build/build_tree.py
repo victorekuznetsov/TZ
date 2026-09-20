@@ -60,7 +60,7 @@ def parse_sheet(ws, sheet_name, nodes, groups_raw):
         if h and "Примечание" in str(h):
             note_col = i
     n_new = 0
-    for r in rows[1:]:
+    for source_row, r in enumerate(rows[1:], 2):
         if r is None or all(v is None for v in r):
             continue
         row_entries = []  # (book, num, nameZh, nameRu, qty, mechNum, mechName, top)
@@ -109,18 +109,33 @@ def parse_sheet(ws, sheet_name, nodes, groups_raw):
         if note_col is not None and note_col < len(r) and r[note_col]:
             note = str(r[note_col]).strip()
         nums = sorted({n for _, n in row_entries})
-        if len(nums) < 2:
+        if len(row_entries) < 2:
             continue
-        interchangeable = any(v in ("Да", "Идентичны") for v in flag_vals)
-        # тривиальный случай: номера буквально совпадают — тоже взаимозаменяемы
-        if len(set(nums)) == 1:
-            interchangeable = True
+        # Generic flag concerns the row; a book-specific flag must not leak
+        # to other configurations. Retain evidence, including identical IDs.
+        confirmed = []
+        for fc in flags:
+            value = str(r[fc] or "").strip()
+            if value not in ("Да", "Идентичны"):
+                continue
+            scoped = re.findall(r"\d{4}", str(hdr[fc]))
+            entries = [(b, n) for b, n in row_entries if not scoped or b[1:] in scoped]
+            if len(entries) >= 2:
+                confirmed.append({
+                    "sheet": sheet_name, "row": source_row,
+                    "parts": [{"book": b, "num": n} for b, n in entries],
+                    "interchangeable": True, "flags": [value],
+                    "scope": str(hdr[fc]).replace("\n", " "), "note": note,
+                })
+        groups_raw.extend(confirmed)
         groups_raw.append({
             "sheet": sheet_name,
+            "row": source_row,
             "parts": [{"book": b, "num": n} for b, n in row_entries],
-            "interchangeable": interchangeable,
+            "interchangeable": False,
             "flags": flag_vals,
             "note": note,
+            "sourceOnly": bool(confirmed),
         })
     return n_new
 
@@ -159,35 +174,12 @@ def parse_fleet_books(ws):
 
 
 def build_interchange_groups(groups_raw):
-    """Union-find по помеченным взаимозаменяемым парам номеров."""
-    parent = {}
-
-    def find(x):
-        parent.setdefault(x, x)
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[ra] = rb
-
-    candidates = []  # неотмеченные строки — на ручной разбор
-    for g in groups_raw:
-        nums = sorted({p["num"] for p in g["parts"]})
-        if g["interchangeable"]:
-            for n in nums[1:]:
-                union(nums[0], n)
-        else:
-            candidates.append(g)
-
-    groups = defaultdict(set)
-    for n in parent:
-        groups[find(n)].add(n)
-    result = [sorted(v) for v in groups.values() if len(v) > 1]
-    return result, candidates
+    """Прямые связи с сохранением границ строк исходного Excel."""
+    # Only explicit row-local sets. No transitive closure across sizes/books.
+    groups = sorted({tuple(sorted({p["num"] for p in g["parts"]}))
+                     for g in groups_raw if g["interchangeable"]})
+    return [list(g) for g in groups], [g for g in groups_raw
+        if not g["interchangeable"] and not g.get("sourceOnly")]
 
 
 def main():
@@ -226,13 +218,16 @@ def main():
     interchange = {
         "meta": {
             "groups": len(groups),
-            "partsInGroups": sum(len(g) for g in groups),
+            "partsInGroups": len({p for g in groups for p in g}),
             "unmarkedRows": len(candidates),
         },
         "groups": groups,
+        "evidence": [g for g in groups_raw if g["interchangeable"]],
+        "sourceRows": [g for g in groups_raw if not g["interchangeable"]],
         "candidates": [
-            {"parts": [p["num"] for p in c["parts"]], "note": c["note"]}
-            for c in candidates if c["note"]
+            {"parts": [p["num"] for p in c["parts"]], "note": c["note"],
+             "sheet": c["sheet"], "row": c["row"]}
+            for c in candidates
         ],
     }
     fleet = {"meta": {"rows": len(fleet_books)}, "rows": fleet_books}

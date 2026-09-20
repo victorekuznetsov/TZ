@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 const source = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
-const safe = source.split('document.addEventListener("keydown"', 1)[0] + ";globalThis.__h={normArt,loAliasKey,csvCell};";
+const safe = source.split('document.addEventListener("keydown"', 1)[0] + ";globalThis.__h={normArt,loAliasKey,csvCell,interKey,provisionCoverage};";
 const context = {console,setTimeout,clearTimeout,document:{querySelector:()=>null,querySelectorAll:()=>[]},window:{}};
 vm.createContext(context); vm.runInContext(safe, context);
-const {normArt,loAliasKey,csvCell}=context.__h;
+const {normArt,loAliasKey,csvCell,interKey,provisionCoverage}=context.__h;
+assert.notEqual(interKey('GB/T91 6.3X45'), interKey('GB/T91 63X45'));
+assert.equal(provisionCoverage({needQty:10,fromStock:2,fromBuy:3}),50);
+assert.equal(provisionCoverage({needQty:0,fromStock:0,fromBuy:0}),0);
 assert.equal(normArt("K-1801.03.00"),"K18010300");
 assert.equal(loAliasKey("1-DK1626.01.00A"),"k1626.01.00");
 assert.equal(csvCell("=2+2"),"'=2+2");
 console.log("Helper tests: OK");
-

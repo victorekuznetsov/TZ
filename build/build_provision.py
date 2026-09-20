@@ -276,7 +276,7 @@ def main():
         fo = first_open.get(code) or ""
         eta = today + timedelta(days=lead)
         verdict, slip = "covered", None
-        if a["gap"] + a["late"] > 0:
+        if a["gap"] + a["late"] + a["undated"] > 1e-9:
             if not fo:
                 verdict = "nodate"
             else:

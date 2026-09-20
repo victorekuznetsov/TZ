@@ -12,6 +12,12 @@ SPEC.loader.exec_module(BP)
 
 
 class ProvisionAllocationTest(unittest.TestCase):
+    def test_covered_verdict_has_no_uncovered_quantity(self):
+        payload = json.loads((ROOT / "data" / "provision.json").read_text(encoding="utf-8"))
+        for item in payload["items"]:
+            if item["verdict"] == "covered":
+                self.assertLessEqual(sum(item[k] for k in ("gap", "late", "undated")), 1e-9, item["code"])
+
     def test_overdue_open_purchase_is_not_on_time(self):
         need = [{"date": "2026-12-01", "code": "A", "qty": 5, "value": 500}]
         stock = {"A": {"availQty": 0, "purchase": {"byMonth": {"2026-07": 5}}}}
