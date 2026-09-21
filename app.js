@@ -407,8 +407,8 @@ function sparkline(values, color) {
   });
   return `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" style="display:block"><path d="${d}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
-function kpi(label, value, kind) {
-  return `<div class="kpi ${kind || ""}"><div class="l">${esc(label)}</div><div class="v">${value}</div></div>`;
+function kpi(label, value, kind, extra) {
+  return `<div class="kpi ${kind || ""}"${extra || ""}><div class="l">${esc(label)}</div><div class="v">${value}</div></div>`;
 }
 
 /* ---------- загрузка ---------- */
@@ -709,32 +709,274 @@ function renderCart(host) {
 }
 
 /* ===================== СВОДКА ===================== */
+let SUM_DRILL = null;
+
+const SUM_DRILL_KEYS = {
+  fromStock: ["fromStock"],
+  fromBuy: ["fromBuy"],
+  late: ["late"],
+  undated: ["undated"],
+  gap: ["gap"],
+  covered: ["fromStock", "fromBuy"],
+  uncovered: ["late", "undated", "gap"],
+};
+const SUM_DRILL_LABEL = {
+  fromStock: "Есть на складе",
+  fromBuy: "Закупка успевает к сроку",
+  late: "Закупка опаздывает",
+  undated: "Закупка просрочена / без срока",
+  gap: "Не покрыто ничем",
+  covered: "Обеспечено к сроку работ",
+  uncovered: "Не обеспечено к сроку",
+  inTime: "Ещё можно успеть заказом",
+  tooLate: "Заказывать уже поздно",
+};
+
+function sumLineBucket(line, keys) {
+  let qty = 0, value = 0;
+  keys.forEach(k => {
+    qty += line[k] || 0;
+    value += line[k + "Value"] || 0;
+  });
+  return { qty, value };
+}
+
+function sumBucketPositions(keys) {
+  const map = new Map();
+  (D.provision.orders || []).forEach(o => (o.lines || []).forEach(l => {
+    const b = sumLineBucket(l, keys);
+    if (b.qty <= 1e-9 && b.value <= 1e-9) return;
+    const cur = map.get(String(l.code)) || { code: l.code, name: l.name, qty: 0, value: 0, orders: new Set(), sites: new Set() };
+    cur.qty += b.qty; cur.value += b.value;
+    cur.orders.add(o.order); cur.sites.add(o.site);
+    map.set(String(l.code), cur);
+  }));
+  return [...map.values()].map(r => ({ ...r, orders: r.orders.size, sites: [...r.sites].join(", ") }))
+    .sort((a, b) => b.value - a.value);
+}
+
+function sumBucketLines(keys, code) {
+  const rows = [];
+  (D.provision.orders || []).forEach(o => (o.lines || []).forEach(l => {
+    if (code && String(l.code) !== String(code)) return;
+    const b = sumLineBucket(l, keys);
+    if (b.qty <= 1e-9 && b.value <= 1e-9) return;
+    rows.push({
+      date: l.date || o.date, site: o.site, unit: o.unit, order: o.order,
+      work: l.work, code: l.code, name: l.name, method: l.method || o.method,
+      qty: b.qty, value: b.value, need: l.qty,
+    });
+  }));
+  return rows.sort((a, b) => b.value - a.value);
+}
+
+function sumFeasibleItems(kind) {
+  const items = D.provision.items || [];
+  if (kind === "inTime") return items.filter(i => (i.canOrder || 0) > 0).sort((a, b) => (b.canOrder || 0) - (a.canOrder || 0));
+  if (kind === "tooLate") return items.filter(i => (i.tooLate || 0) > 0).sort((a, b) => (b.tooLate || 0) - (a.tooLate || 0));
+  return [];
+}
+
+function sumSetDrill(next) {
+  if (!next) {
+    SUM_DRILL = null;
+  } else if (next.keep) {
+    SUM_DRILL = { kind: next.kind, key: next.key, code: next.code || null };
+  } else if (SUM_DRILL && SUM_DRILL.kind === next.kind && SUM_DRILL.key === next.key && !next.code && !SUM_DRILL.code) {
+    SUM_DRILL = null;
+  } else {
+    SUM_DRILL = { kind: next.kind, key: next.key, code: next.code || null };
+  }
+  const box = byId("sumDrill");
+  if (box) {
+    box.innerHTML = sumDrillHtml();
+    wireSumDrill(box);
+    if (SUM_DRILL) box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+  qsa("[data-sum-bucket],[data-sum-drill]").forEach(el => {
+    const keys = SUM_DRILL ? (SUM_DRILL_KEYS[SUM_DRILL.key] || [SUM_DRILL.key]) : [];
+    const hit = SUM_DRILL && (
+      el.dataset.sumBucket === SUM_DRILL.key ||
+      el.dataset.sumDrill === SUM_DRILL.key ||
+      keys.includes(el.dataset.sumBucket)
+    );
+    el.classList.toggle("on", !!hit);
+  });
+}
+
+function sumDrillHtml() {
+  if (!SUM_DRILL) {
+    return `<p class="hint">Нажмите сегмент графика, легенду или карточку — здесь раскроется состав.</p>`;
+  }
+  const sites = (D.fleet && D.fleet.meta && D.fleet.meta.sites) || {};
+  if (SUM_DRILL.kind === "fleet") {
+    const units = (D.fleet.units || []).filter(u => u.model === SUM_DRILL.key);
+    return `<div class="sum-drill-head"><h3>${esc(SUM_DRILL.key)} · ${num(units.length)} машин</h3>
+      <button class="minibtn" type="button" data-sum-close>Скрыть</button></div>
+      <div id="sumDrillTable"></div>`;
+  }
+  if (SUM_DRILL.kind === "work") {
+    return `<div class="sum-drill-head"><h3>${esc(SUM_DRILL.key)}</h3>
+      <button class="minibtn" type="button" data-sum-close>Скрыть</button></div>
+      <p class="hint">Факт ремонта 2022–2027 по этой статье — крупнейшие машины. Клик по строке откроет график план-факт.</p>
+      <div id="sumDrillTable"></div>`;
+  }
+  const label = SUM_DRILL_LABEL[SUM_DRILL.key] || SUM_DRILL.key;
+  if (SUM_DRILL.kind === "feasible") {
+    const rows = sumFeasibleItems(SUM_DRILL.key);
+    const money = rows.reduce((s, r) => s + (SUM_DRILL.key === "inTime" ? (r.canOrder || 0) : (r.tooLate || 0)), 0);
+    return `<div class="sum-drill-head"><h3>${esc(label)}</h3>
+      <button class="minibtn" type="button" data-sum-close>Скрыть</button></div>
+      <p class="hint">${num(rows.length)} позиций · ${mrub(money)}. Клик по строке — карточка кода.</p>
+      <div id="sumDrillTable"></div>`;
+  }
+  const keys = SUM_DRILL_KEYS[SUM_DRILL.key] || [SUM_DRILL.key];
+  if (SUM_DRILL.code) {
+    const lines = sumBucketLines(keys, SUM_DRILL.code);
+    const pos = lines[0];
+    const money = lines.reduce((s, r) => s + r.value, 0);
+    return `<div class="sum-drill-head"><h3><button class="minibtn" type="button" data-sum-back>← К позициям</button> ${esc(SUM_DRILL.code)} · ${esc(pos && pos.name || "")}</h3>
+      <button class="minibtn" type="button" data-sum-close>Скрыть</button></div>
+      <p class="hint">${num(lines.length)} строк заказов · ${mrub(money)} в корзине «${esc(label)}». Клик — заказ на вкладке обеспеченности.</p>
+      <div id="sumDrillTable"></div>`;
+  }
+  const rows = sumBucketPositions(keys);
+  const money = rows.reduce((s, r) => s + r.value, 0);
+  return `<div class="sum-drill-head"><h3>${esc(label)}</h3>
+    <button class="minibtn" type="button" data-sum-close>Скрыть</button></div>
+    <p class="hint">${num(rows.length)} позиций · ${mrub(money)}. Клик по коду — строки заказов этой корзины.</p>
+    <div id="sumDrillTable"></div>`;
+}
+
+function wireSumDrill(box) {
+  const close = qs("[data-sum-close]", box);
+  if (close) close.onclick = () => sumSetDrill(null);
+  const back = qs("[data-sum-back]", box);
+  if (back) back.onclick = () => sumSetDrill({ kind: SUM_DRILL.kind, key: SUM_DRILL.key, keep: true });
+  const table = byId("sumDrillTable");
+  if (!table || !SUM_DRILL) return;
+  const sites = (D.fleet && D.fleet.meta && D.fleet.meta.sites) || {};
+  if (SUM_DRILL.kind === "fleet") {
+    const units = (D.fleet.units || []).filter(u => u.model === SUM_DRILL.key);
+    renderTable(table, {
+      rows: units, sortKey: "name", sortDir: 1, csv: true, csvName: `wk_fleet_${SUM_DRILL.key}.csv`,
+      onRowClick: u => { G.model = u.model; G.unit = u.name; G.site = u.site; TAB = "fleet"; writeHash(); renderGlobalFilters(); renderTab(); },
+      cols: [
+        { key: "siteName", label: "Площадка" },
+        { key: "name", label: "Борт", cls: "wrap" },
+        { key: "garage", label: "Гар. №" },
+        { key: "serial", label: "Зав. №", cls: "mono" },
+        { key: "ktg", label: "КТГ факт", numeric: true, fmt: v => v != null ? num(v * 100, 1) + "%" : "—" },
+        { key: "book", label: "Книга", cls: "mono" },
+      ],
+    });
+    return;
+  }
+  if (SUM_DRILL.kind === "work") {
+    renderTable(table, {
+      rows: (D.repairs.byUnit || []).slice(0, 40), sortKey: "total",
+      csv: true, csvName: "wk_repairs_units.csv",
+      onRowClick: u => { G.unit = u.unit; TAB = "repairs"; writeHash(); renderGlobalFilters(); renderTab(); },
+      cols: [
+        { key: "unit", label: "Машина", cls: "wrap" },
+        { key: "total", label: "Факт 22–27", numeric: true, fmt: mrub },
+      ],
+    });
+    return;
+  }
+  if (SUM_DRILL.kind === "feasible") {
+    const moneyKey = SUM_DRILL.key === "inTime" ? "canOrder" : "tooLate";
+    const rows = sumFeasibleItems(SUM_DRILL.key);
+    renderTable(table, {
+      rows, sortKey: moneyKey, limit: 80, csv: true, csvName: `wk_sum_${SUM_DRILL.key}.csv`,
+      onRowClick: r => openCodeDetail(r.code),
+      cols: [
+        { key: "code", label: "ЕКМТР", cls: "mono", fmt: v => codeLink(v) },
+        { key: "name", label: "Деталь", cls: "wrap" },
+        { key: moneyKey, label: "Сумма", numeric: true, fmt: rub },
+        { key: "leadDays", label: "Срок, дн.", numeric: true },
+        { key: "orderBy", label: "Заказать до", fmt: v => v ? dmy(v) : "—" },
+        { key: "firstOpen", label: "Ближайшая потребность", fmt: v => v ? dmy(v) : "—" },
+      ],
+    });
+    wireCodeLinks(table);
+    return;
+  }
+  const keys = SUM_DRILL_KEYS[SUM_DRILL.key] || [SUM_DRILL.key];
+  if (SUM_DRILL.code) {
+    const lines = sumBucketLines(keys, SUM_DRILL.code);
+    renderTable(table, {
+      rows: lines, sortKey: "value", limit: 120, csv: true, csvName: `wk_sum_${SUM_DRILL.key}_${SUM_DRILL.code}.csv`,
+      onRowClick: r => { G.order = r.order; G.unit = r.unit; G.site = r.site; TAB = "provision"; writeHash(); renderGlobalFilters(); renderTab(); },
+      cols: [
+        { key: "date", label: "Начало", fmt: dmy },
+        { key: "site", label: "Площадка", fmt: v => esc(sites[v] || v) },
+        { key: "unit", label: "Машина", cls: "wrap" },
+        { key: "order", label: "Заказ", cls: "mono" },
+        { key: "work", label: "Вид работ", cls: "wrap" },
+        { key: "qty", label: "В корзине, ед.", numeric: true, fmt: v => num(v, 3) },
+        { key: "value", label: "В корзине ₽", numeric: true, fmt: rub },
+      ],
+    });
+    return;
+  }
+  const rows = sumBucketPositions(keys);
+  renderTable(table, {
+    rows, sortKey: "value", limit: 80, csv: true, csvName: `wk_sum_${SUM_DRILL.key}.csv`,
+    onRowClick: r => sumSetDrill({ kind: "bucket", key: SUM_DRILL.key, code: r.code }),
+    cols: [
+      { key: "code", label: "ЕКМТР", cls: "mono", fmt: v => codeLink(v) },
+      { key: "name", label: "Деталь", cls: "wrap" },
+      { key: "qty", label: "Кол-во", numeric: true, fmt: v => num(v, 1) },
+      { key: "value", label: "Сумма", numeric: true, fmt: rub },
+      { key: "orders", label: "Заказов", numeric: true },
+      { key: "sites", label: "Площадки" },
+    ],
+  });
+  wireCodeLinks(table);
+}
+
+function wireSumClicks(host) {
+  const go = (next) => (e) => { e.preventDefault(); e.stopPropagation(); sumSetDrill(next); };
+  qsa("[data-sum-bucket]", host).forEach(el => {
+    el.onclick = go({ kind: "bucket", key: el.dataset.sumBucket });
+  });
+  qsa("[data-sum-drill]", host).forEach(el => {
+    el.onclick = go({
+      kind: el.dataset.sumKind || (SUM_DRILL_KEYS[el.dataset.sumDrill] ? "bucket" : "feasible"),
+      key: el.dataset.sumDrill,
+    });
+  });
+  makeActivatable(host, "[data-sum-bucket],[data-sum-drill]");
+}
+
 function renderSum(host) {
   const c = D.catalog.meta, s = D.stock.meta, p = D.provision.meta, r = D.repairs.meta, f = D.fleet.meta;
   host.innerHTML = `
     <h1>WK CRM</h1>
     <p class="sub">Каталог запчастей, база знаний, запасы, обеспеченность, закупки и ремонты экскаваторов WK. Taiyuan Heavy Industry, ${f.units} единиц.</p>
     <div class="kpis">
-      ${kpi("Парк", f.units + " ед.")}
-      ${kpi("Позиций в прайсе", num(c.items))}
-      ${kpi("Кодифицировано", pct(c.matchedEkmtr / c.items), c.matchedEkmtr / c.items < 0.5 ? "warn" : "")}
-      ${kpi("Остаток WK доступно", mrub(s.totalAvailValue), "good")}
-      ${kpi("Запас ограничен", mrub(s.totalRestrictedValue), s.totalRestrictedValue > 0 ? "bad" : "")}
-      ${kpi("Закупка план", mrub(s.totalPurchasePlanValue))}
-      ${kpi("Ремонт факт 22-27", mrub(r.factTotal))}
-      ${kpi("Не обеспечено 26-27", mrub(p.wk.late + p.wk.undated + p.wk.gap), "bad")}
+      ${kpi("Парк", f.units + " ед.", "", ` data-sum-tab="fleet" tabindex="0"`)}
+      ${kpi("Позиций в прайсе", num(c.items), "", ` data-sum-tab="catalog" tabindex="0"`)}
+      ${kpi("Кодифицировано", pct(c.matchedEkmtr / c.items), c.matchedEkmtr / c.items < 0.5 ? "warn" : "", ` data-sum-tab="catalog" tabindex="0"`)}
+      ${kpi("Остаток WK доступно", mrub(s.totalAvailValue), "good", ` data-sum-tab="stock" tabindex="0"`)}
+      ${kpi("Запас ограничен", mrub(s.totalRestrictedValue), s.totalRestrictedValue > 0 ? "bad" : "", ` data-sum-tab="stock" tabindex="0"`)}
+      ${kpi("Закупка план", mrub(s.totalPurchasePlanValue), "", ` data-sum-tab="purchase" tabindex="0"`)}
+      ${kpi("Ремонт факт 22-27", mrub(r.factTotal), "", ` data-sum-tab="repairs" tabindex="0"`)}
+      ${kpi("Не обеспечено 26-27", mrub(p.wk.late + p.wk.undated + p.wk.gap), "bad", ` data-sum-drill="uncovered" tabindex="0"`)}
     </div>
 
     ${callout("info", `<b>Ограниченный запас</b> — позиции, которые физически есть на складе, но SAP запрещает их использовать в ремонте (брак, резерв, спорное качество). Такой запас <b>вычитается</b> из доступного остатка везде в этом портале и подсвечивается статусом «ограничено» — не путайте с обычным наличием.`)}
 
     <h2>Обеспеченность плана 2026–2027 (номенклатура WK)</h2>
-    <p class="sub">Потребность ${mrub(p.wk.value)} закрывается остатком и уже размещённой закупкой с учётом сроков поставки. Данные на ${dmy(p.asOf)}.</p>
-    ${provBar(p.wk, p.wk.value, 14)}
-    ${provLegend(p.wk)}
+    <p class="sub">Потребность ${mrub(p.wk.value)} закрывается остатком и уже размещённой закупкой с учётом сроков поставки. Данные на ${dmy(p.asOf)}. Нажмите сегмент графика или подпись — откроется состав корзины.</p>
+    ${provBar(p.wk, p.wk.value, 14, true)}
+    ${provLegend(p.wk, true)}
+    <div id="sumDrill" class="sum-drill">${sumDrillHtml()}</div>
     <div class="grid3" style="margin-top:14px">
-      <div class="card"><h3>Обеспечено к сроку работ</h3><div class="kpi good" style="border:0;padding:0"><div class="v">${mrub(p.wk.fromStock + p.wk.fromBuy)}</div></div><p class="hint">${num(100 * (p.wk.fromStock + p.wk.fromBuy) / (p.wk.value || 1), 0)}% потребности</p></div>
-      <div class="card"><h3>Ещё можно успеть заказом</h3><div class="kpi warn" style="border:0;padding:0"><div class="v">${mrub((p.feasible.inTime || {}).value || 0)}</div></div><p class="hint">при сроке поставки ${num(p.leadMedianDays)} дн.</p></div>
-      <div class="card"><h3>Заказывать уже поздно</h3><div class="kpi bad" style="border:0;padding:0"><div class="v">${mrub(["late3", "lateMore", "past"].reduce((a, k) => a + ((p.feasible[k] || {}).value || 0), 0))}</div></div><p class="hint">срок работ наступит раньше поставки</p></div>
+      <div class="card sum-hit" data-sum-drill="covered" tabindex="0"><h3>Обеспечено к сроку работ</h3><div class="kpi good" style="border:0;padding:0"><div class="v">${mrub(p.wk.fromStock + p.wk.fromBuy)}</div></div><p class="hint">${num(100 * (p.wk.fromStock + p.wk.fromBuy) / (p.wk.value || 1), 0)}% потребности · нажмите, чтобы раскрыть</p></div>
+      <div class="card sum-hit" data-sum-drill="inTime" tabindex="0"><h3>Ещё можно успеть заказом</h3><div class="kpi warn" style="border:0;padding:0"><div class="v">${mrub((p.feasible.inTime || {}).value || 0)}</div></div><p class="hint">при сроке поставки ${num(p.leadMedianDays)} дн. · нажмите, чтобы раскрыть</p></div>
+      <div class="card sum-hit" data-sum-drill="tooLate" tabindex="0"><h3>Заказывать уже поздно</h3><div class="kpi bad" style="border:0;padding:0"><div class="v">${mrub(["late3", "lateMore", "past"].reduce((a, k) => a + ((p.feasible[k] || {}).value || 0), 0))}</div></div><p class="hint">срок работ наступит раньше поставки · нажмите, чтобы раскрыть</p></div>
     </div>
 
     <h2>Заказать сегодня</h2>
@@ -761,6 +1003,7 @@ function renderSum(host) {
     renderTable(byId("sumOrderTable"), {
       rows: today, sortKey: "gapValue",
       csv: true, csvName: "wk_order_today.csv",
+      onRowClick: r => openCodeDetail(r.code),
       cols: [
         { key: "code", label: "ЕКМТР", cls: "mono" },
         { key: "name", label: "Наименование", cls: "wrap" },
@@ -783,11 +1026,19 @@ function renderSum(host) {
   renderTable(byId("sumFleet"), {
     rows: Object.entries(byModel).map(([model, n]) => ({ model, n })),
     cols: [{ key: "model", label: "Модель" }, { key: "n", label: "Единиц", numeric: true }],
+    onRowClick: r => sumSetDrill({ kind: "fleet", key: r.model, keep: true }),
   });
   renderTable(byId("sumWork"), {
     rows: D.repairs.byWork.slice(0, 10),
     cols: [{ key: "work", label: "Вид работ" }, { key: "value", label: "Факт", numeric: true, fmt: mrub }],
+    onRowClick: r => sumSetDrill({ kind: "work", key: r.work, keep: true }),
   });
+  qsa("[data-sum-tab]", host).forEach(el => {
+    el.onclick = () => { TAB = el.dataset.sumTab; writeHash(); renderGlobalFilters(); renderTab(); };
+  });
+  makeActivatable(host, "[data-sum-tab],.sum-hit");
+  wireSumClicks(host);
+  if (SUM_DRILL) wireSumDrill(byId("sumDrill"));
 }
 
 /* ===================== КАТАЛОГ ===================== */
@@ -1391,17 +1642,17 @@ const dmy = s => s && s.length >= 10 ? s.slice(8, 10) + "." + s.slice(5, 7) + ".
 
 // Горизонтальная доля: один прямоугольник = одна корзина, между заливками
 // зазор цветом фона, чтобы соседние сегменты не сливались.
-function provBar(t, total, h) {
+function provBar(t, total, h, clickable) {
   const T = total || 1;
   const seg = PROV_BUCKETS.filter(b => t[b.key] > 0).map(b =>
-    `<i style="width:${(100 * t[b.key] / T).toFixed(2)}%;background:${b.color}" title="${esc(b.label)}: ${mrub(t[b.key])}"></i>`).join("");
-  return `<div class="prov-bar" style="height:${h || 10}px">${seg}</div>`;
+    `<i${clickable ? ` data-sum-bucket="${b.key}" tabindex="0" role="button"` : ""} style="width:${(100 * t[b.key] / T).toFixed(2)}%;background:${b.color}" title="${esc(b.label)}: ${mrub(t[b.key])}"></i>`).join("");
+  return `<div class="prov-bar${clickable ? " prov-bar-click" : ""}" style="height:${h || 10}px">${seg}</div>`;
 }
 // Пустые корзины в легенду и разбивку не попадают: строка «0,0 млн ₽»
 // ничего не сообщает, а место занимает.
-function provLegend(t) {
+function provLegend(t, clickable) {
   return `<div class="prov-legend">` + PROV_BUCKETS.filter(b => !t || t[b.key] > 0).map(b =>
-    `<span><i style="background:${b.color}"></i>${esc(b.label)}</span>`).join("") + `</div>`;
+    `<span${clickable ? ` data-sum-bucket="${b.key}" tabindex="0" role="button" class="prov-leg-hit"` : ""}><i style="background:${b.color}"></i>${esc(b.label)}</span>`).join("") + `</div>`;
 }
 // Разрез: строка = группа, слева подпись, справа доля и обеспеченность.
 function provCut(rows, nameOf) {
