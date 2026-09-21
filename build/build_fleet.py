@@ -24,9 +24,10 @@ WK_RE = re.compile(r"WK-?\d", re.I)
 # ktg.json, чтобы не править чужую витрину.
 SITES = {
     "1100": "Красноярск / Еруда",
-    "1200": "Вернинское / Сухой Лог",
+    "1200": "Вернинское",
     "1300": "Алдан",
     "1400": "Магадан",
+    "2400": "Сухой Лог",
 }
 
 
@@ -69,15 +70,25 @@ def main():
             by_key[key] = e
 
     book_by_key = {}
+    book_candidates = defaultdict(list)
     for r in books:
         if r.get("site") and r.get("garage"):
             book_by_key[(r["site"], garage_key(r["garage"]))] = r
+        if r.get("model") and r.get("garage"):
+            book_candidates[(r["model"], garage_key(r["garage"]))].append(r)
 
     units = []
     matched_books = 0
     for (site, name), e in by_key.items():
         garage = garage_no(name)
         b = book_by_key.get((site, garage_key(garage))) if garage else None
+        # Для СЛ/Вернинского площадку берём из ТОРО (текущая карточка e),
+        # а Excel используем только для книги/заводского номера. Fallback
+        # разрешён лишь при единственном совпадении модель+гаражный номер.
+        if not b and garage:
+            candidates = book_candidates.get((e.get("md"), garage_key(garage)), [])
+            if len(candidates) == 1:
+                b = candidates[0]
         if b:
             matched_books += 1
         units.append({
@@ -88,6 +99,7 @@ def main():
             "ktgByMonth": e.get("pm"), "kioByMonth": e.get("am"),
             "book": b["book"] if b else None,
             "serial": b["serial"] if b else None,
+            "siteAuthority": "TOPO/ТОРО",
         })
 
     result = {
@@ -98,6 +110,7 @@ def main():
             "units": len(units),
             "matchedToBook": matched_books,
             "unmatchedToBook": len(units) - matched_books,
+            "siteAuthority": "TOPO/ТОРО; Excel «Тех парк» используется для книги, заводского и гаражного номера",
         },
         "units": sorted(units, key=lambda u: (u["model"], u["site"], u["garage"])),
     }

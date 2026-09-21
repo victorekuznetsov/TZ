@@ -26,7 +26,10 @@ BOOK_MODEL = {
     "K1839": "WK-35", "K1849": "WK-35", "K1853": "WK-35", "K1866": "WK-35",
 }
 
-SITE_NAME = {"ПК": "1100", "ПМ": "1400", "СЛ": "1200"}  # уточняется на этапе связки с fleet
+# ПК/ПМ однозначно кодируются в исходнике. Для СЛ/Вернинского пользователь
+# назначил заказы ТОРО авторитетным источником площадки, поэтому «СЛ» здесь
+# остаётся только текстовой подсказкой и не превращается в код площадки.
+SITE_NAME = {"ПК": "1100", "ПМ": "1400"}
 
 
 def find_blocks(hdr):
@@ -99,7 +102,10 @@ def parse_sheet(ws, sheet_name, nodes, groups_raw):
                 }
                 n_new += 1
             row_entries.append((book, num))
-        # статус взаимозаменяемости для этой строки
+        # Пользователь подтвердил семантику источника: сама строка Excel —
+        # прямая связь взаимозаменяемости. Колонки «Да/Идентичны» и
+        # примечание уточняют связь, но не создают её. Поэтому не теряем
+        # строки без флага и не строим транзитивное замыкание между строками.
         flag_vals = []
         for fc in flags:
             v = r[fc] if fc < len(r) else None
@@ -108,34 +114,16 @@ def parse_sheet(ws, sheet_name, nodes, groups_raw):
         note = None
         if note_col is not None and note_col < len(r) and r[note_col]:
             note = str(r[note_col]).strip()
-        nums = sorted({n for _, n in row_entries})
         if len(row_entries) < 2:
             continue
-        # Generic flag concerns the row; a book-specific flag must not leak
-        # to other configurations. Retain evidence, including identical IDs.
-        confirmed = []
-        for fc in flags:
-            value = str(r[fc] or "").strip()
-            if value not in ("Да", "Идентичны"):
-                continue
-            scoped = re.findall(r"\d{4}", str(hdr[fc]))
-            entries = [(b, n) for b, n in row_entries if not scoped or b[1:] in scoped]
-            if len(entries) >= 2:
-                confirmed.append({
-                    "sheet": sheet_name, "row": source_row,
-                    "parts": [{"book": b, "num": n} for b, n in entries],
-                    "interchangeable": True, "flags": [value],
-                    "scope": str(hdr[fc]).replace("\n", " "), "note": note,
-                })
-        groups_raw.extend(confirmed)
         groups_raw.append({
             "sheet": sheet_name,
             "row": source_row,
             "parts": [{"book": b, "num": n} for b, n in row_entries],
-            "interchangeable": False,
+            "interchangeable": True,
             "flags": flag_vals,
             "note": note,
-            "sourceOnly": bool(confirmed),
+            "relation": "identity" if len({n for _, n in row_entries}) == 1 else "row",
         })
     return n_new
 
@@ -175,11 +163,10 @@ def parse_fleet_books(ws):
 
 def build_interchange_groups(groups_raw):
     """Прямые связи с сохранением границ строк исходного Excel."""
-    # Only explicit row-local sets. No transitive closure across sizes/books.
+    # Only row-local sets. No transitive closure across sizes/books.
     groups = sorted({tuple(sorted({p["num"] for p in g["parts"]}))
                      for g in groups_raw if g["interchangeable"]})
-    return [list(g) for g in groups], [g for g in groups_raw
-        if not g["interchangeable"] and not g.get("sourceOnly")]
+    return [list(g) for g in groups], []
 
 
 def main():
@@ -219,7 +206,10 @@ def main():
         "meta": {
             "groups": len(groups),
             "partsInGroups": len({p for g in groups for p in g}),
-            "unmarkedRows": len(candidates),
+            "rowRelations": len(groups_raw),
+            "identityRows": sum(g.get("relation") == "identity" for g in groups_raw),
+            "commentedRows": sum(bool(g.get("note")) for g in groups_raw),
+            "unmarkedRows": 0,
         },
         "groups": groups,
         "evidence": [g for g in groups_raw if g["interchangeable"]],

@@ -36,7 +36,7 @@ build_stock.py) и сравнивается с датой начала рабо�
   python3 build/build_provision.py <topo_data_dir> <ekmtr_wk.json> \
       <stock.json> <out_dir>
 """
-import sys, os, re, glob, json
+import sys, os, re, glob, json, hashlib
 from datetime import datetime, timedelta
 from collections import defaultdict
 
@@ -71,7 +71,8 @@ def load_need(topo_dir):
     nocode_rows = 0
     nocode_v = 0.0
     for fp in sorted(glob.glob(os.path.join(topo_dir, "*_202[67].json"))):
-        d = json.load(open(fp, encoding="utf-8"))
+        with open(fp, encoding="utf-8") as source:
+            d = json.load(source)
         wk_idx = {i for i, n in enumerate(d["e"]) if WK_RE.search(n)}
         if not wk_idx:
             continue
@@ -79,10 +80,9 @@ def load_need(topo_dir):
         for i in range(d["n"]):
             if d["ei"][i] not in wk_idx:
                 continue
-            if N(d["a"][i]) > 0 or N(d["qf"][i]) > 0:
-                continue  # уже исполнено — не потребность
-            qp, pv = N(d["qp"][i]), N(d["p"][i])
-            if qp <= 0:
+            qp, qf, pv = N(d["qp"][i]), N(d["qf"][i]), N(d["p"][i])
+            remaining = max(qp - qf, 0)
+            if remaining <= 0:
                 continue  # без количества распределять нечего
             ci = d["ci"][i]
             code = d["cek"][ci] if ci < len(d["cek"]) else ""
@@ -91,11 +91,17 @@ def load_need(topo_dir):
                 nocode_v += pv
                 continue
             order = d["o"][i]
+            ei = d["ei"][i]
+            wi = d.get("wi", [None] * d["n"])[i]
+            unit = d["e"][ei] if isinstance(ei, int) and ei < len(d["e"]) else ""
+            work = d.get("w", [])[wi] if isinstance(wi, int) and wi < len(d.get("w", [])) else ""
             need.append({
                 "date": (od.get(order) or [""])[0] or "",
-                "code": code, "qty": qp, "value": pv, "order": order,
+                "code": code, "qty": remaining,
+                "value": pv * remaining / qp if qp else 0,
+                "planQty": qp, "factQty": qf, "order": order,
                 "kind": orr.get(order, ""), "site": d["s"], "year": d["y"],
-                "mat": d["c"][ci],
+                "mat": d["c"][ci], "unit": unit, "work": work,
             })
         del d
     return need, nocode_rows, nocode_v
@@ -188,6 +194,44 @@ def cut(rows, keyfn, sort_by_value=False, limit=None):
     out = [dict(key=k, **totals(v)) for k, v in g.items()]
     out.sort(key=(lambda x: -x["value"]) if sort_by_value else (lambda x: str(x["key"])))
     return out[:limit] if limit else out
+
+
+def order_id(site, unit, order):
+    raw = json.dumps((site, unit, str(order)), ensure_ascii=False).encode()
+    return hashlib.sha256(raw).hexdigest()[:18]
+
+
+def build_orders(rows, names):
+    grouped = defaultdict(list)
+    for r in rows:
+        grouped[(r["site"], r["unit"], str(r["order"]))].append(r)
+    out = []
+    for (site, unit, order), lines in grouped.items():
+        t = totals(lines)
+        on_time = t["fromStock"] + t["fromBuy"]
+        status = "full" if t["gapQty"] + t["lateQty"] + t["undatedQty"] <= 1e-9 \
+            else ("none" if t["fromStockQty"] + t["fromBuyQty"] <= 1e-9 else "partial")
+        detail = []
+        for r in sorted(lines, key=lambda x: (x["date"] or "9999", x["work"], x["code"])):
+            detail.append({
+                "date": r["date"], "work": r["work"], "code": r["code"],
+                "name": names.get(r["code"], "") or r["mat"],
+                "qty": round(r["qty"], 3), "value": round(r["value"], 2),
+                **{k: round(r[k], 3) for k in KEYS},
+                **{k + "Value": round(val(r, k), 2) for k in KEYS},
+            })
+        years = sorted({str(r["year"]) for r in lines})
+        dates = sorted(r["date"] for r in lines if r["date"])
+        model_match = re.search(r"WK-?(\d+C?)", unit or "", re.I)
+        out.append({
+            "id": order_id(site, unit, order), "site": site, "unit": unit,
+            "model": "WK-" + model_match.group(1).upper() if model_match else "",
+            "order": order, "years": years, "date": dates[0] if dates else "",
+            "kind": next((r["kind"] for r in lines if r["kind"]), ""),
+            "status": status, "coverage": round(100 * on_time / t["value"], 1) if t["value"] else 0,
+            **t, "lines": detail,
+        })
+    return sorted(out, key=lambda r: (r["date"] or "9999", r["site"], r["unit"], r["order"]))
 
 
 def main():
@@ -317,6 +361,7 @@ def main():
         for m, q in (((stock[code].get("purchase") or {}).get("byMonth")) or {}).items():
             bym[m or ""] += q
 
+    orders = build_orders(known, wk_names)
     result = {
         "meta": {
             "src": "TOPO data/<площадка>_<год>.json, годы 2026-2027",
@@ -326,7 +371,7 @@ def main():
             "leadMedianDays": sj["meta"].get("leadMedianDays"),
             "leadMeasurements": sj["meta"].get("leadMeasurements"),
             "leadCodes": sj["meta"].get("leadCodes"),
-            "orders": len({r["order"] for r in need}),
+            "orders": len(orders),
             "lines": len(need),
             "positions": len(agg),
             "noCodeRows": nocode_rows, "noCodeValue": round(nocode_v, 2),
@@ -342,6 +387,7 @@ def main():
                          for m, q in sorted(bym.items(), key=lambda kv: kv[0] or "9999")],
         },
         "items": items,
+        "orders": orders,
     }
     with open(os.path.join(out_dir, "provision.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, separators=(",", ":"))

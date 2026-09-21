@@ -79,6 +79,33 @@ function downloadCSV(filename, rows, cols) {
 /* ---------- состояние ---------- */
 const D = {}; // сюда лягут все витрины после загрузки
 let TAB = "sum";
+let G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "" };
+
+function globalUnits() {
+  return D.fleet ? D.fleet.units.filter(u => (!G.site || u.site === G.site) && (!G.model || u.model === G.model)) : [];
+}
+function renderGlobalFilters() {
+  const host = byId("globalFilters");
+  if (!host || !D.fleet) return;
+  const sites = [...new Map(D.fleet.units.map(u => [u.site, u.siteName || u.site]))].sort((a,b) => a[1].localeCompare(b[1], "ru"));
+  const models = [...new Set(D.fleet.units.map(u => u.model).filter(Boolean))].sort();
+  const units = globalUnits();
+  if (G.unit && !units.some(u => u.name === G.unit)) G.unit = "";
+  host.innerHTML = `<div class="gf-title"><b>Контекст отчёта</b><span>применяется ко всем доступным разрезам</span></div>
+    <label>Площадка<select id="gfSite"><option value="">Все</option>${sites.map(([v,l])=>`<option value="${esc(v)}"${G.site===v?' selected':''}>${esc(l)} · ${esc(v)}</option>`).join('')}</select></label>
+    <label>Модель<select id="gfModel"><option value="">Все</option>${models.map(v=>`<option${G.model===v?' selected':''}>${esc(v)}</option>`).join('')}</select></label>
+    <label>Машина<select id="gfUnit"><option value="">Все</option>${units.map(u=>`<option value="${esc(u.name)}"${G.unit===u.name?' selected':''}>${esc(u.name)}</option>`).join('')}</select></label>
+    <label>Заказ<input id="gfOrder" value="${esc(G.order)}" placeholder="номер"/></label>
+    <label>ЕКМТР<input id="gfEkmtr" value="${esc(G.ekmtr)}" placeholder="код"/></label>
+    <label>Каталожный №<input id="gfPart" value="${esc(G.part)}" placeholder="K…"/></label>
+    <button class="minibtn" id="gfReset" type="button">Сбросить</button>`;
+  const apply = (k,v) => { G[k]=v; if(k==='site'||k==='model') G.unit=''; renderGlobalFilters(); renderTab(); };
+  byId('gfSite').onchange=e=>apply('site',e.target.value);
+  byId('gfModel').onchange=e=>apply('model',e.target.value);
+  byId('gfUnit').onchange=e=>apply('unit',e.target.value);
+  for (const [id,k] of [['gfOrder','order'],['gfEkmtr','ekmtr'],['gfPart','part']]) byId(id).oninput=debounce(e=>{G[k]=e.target.value.trim();renderTab()},180);
+  byId('gfReset').onclick=()=>{G={site:'',model:'',unit:'',order:'',ekmtr:'',part:''};renderGlobalFilters();renderTab()};
+}
 
 /* ---------- generic sortable table ---------- */
 function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, limit, onRowClick, csv, csvName }) {
@@ -245,6 +272,7 @@ function boot() {
     .then(() => {
       keys.forEach(k => { D[k] = dataFor(FILES[k]); });
       buildIndexes();
+      renderGlobalFilters();
       renderTab();
     })
     .catch(e => {
@@ -260,6 +288,7 @@ let EKMTR_NAME = new Map();
 let CATALOG_BY_ART = new Map();
 let CATALOG_BY_NORMART = new Map(); // нормализованный номер -> позиция каталога (для кросс-линковки из LinkOne)
 let INTER_GROUP_OF = new Map(); // каталожный номер -> группа взаимозаменяемости (массив)
+let PROVISION_ORDER_BY_ID = new Map();
 // Exact identity: punctuation and dimensional suffixes are significant.
 function interKey(value) { return String(value || "").trim().toUpperCase().replace(/\s+/g, " "); }
 function provisionCoverage(row) { return row.needQty > 0 ? 100 * (row.fromStock + row.fromBuy) / row.needQty : 0; }
@@ -286,6 +315,7 @@ function buildIndexes() {
     const key = interKey(part);
     INTER_GROUP_OF.set(key, [...new Set([...(INTER_GROUP_OF.get(key) || []), ...g])]);
   }));
+  PROVISION_ORDER_BY_ID = new Map((D.provision.orders || []).map(o => [o.id, o]));
 }
 
 /* ---------- вкладки ---------- */
@@ -532,6 +562,12 @@ function renderCatalog(host) {
     const qText = normText(CAT_FILTER.q).trim();
     const qNum = normArt(CAT_FILTER.q);
     let rows = items.filter(i => {
+      const selectedUnit = G.unit ? D.fleet.units.find(u => u.name === G.unit) : null;
+      const selectedBook = selectedUnit && selectedUnit.book;
+      if (G.model && i.model !== G.model && i.model !== "WK-20&WK-35") return false;
+      if (G.ekmtr && !normText(i.ekmtr).includes(normText(G.ekmtr))) return false;
+      if (G.part && ![i.art, i.artNew].some(v => normArt(v).includes(normArt(G.part)))) return false;
+      if (selectedBook && !(i.tree || []).some(t => t.book === selectedBook)) return false;
       if (CAT_FILTER.model && i.model !== CAT_FILTER.model) return false;
       if (CAT_FILTER.noCode && i.ekmtr) return false;
       if (CAT_FILTER.diff && i.priceDiffCNY == null) return false;
@@ -663,10 +699,29 @@ function loPathTo(targetId) {
   return p ? [p] : [];
 }
 
+function kbDocsForNode(page) {
+  const model = (D.tree.bookModel || {})[LO.book] || "";
+  const id = normArt(page.id);
+  const tokens = normText(page.title || page.name || "").split(/[^a-zа-я0-9]+/i).filter(x => x.length >= 5);
+  return D.kb.docs.map(d => {
+    const hay = normText(`${d.name} ${d.path} ${d.class}`), compact = normArt(`${d.name} ${d.path}`);
+    let score = 0;
+    if (id.length >= 5 && compact.includes(id)) score += 20;
+    score += tokens.filter(t => hay.includes(t)).length * 3;
+    if (model && d.model === model) score += 2;
+    if (model && d.model && d.model !== model) score -= 20;
+    return { d, score };
+  }).filter(x => x.score >= 3).sort((a,b) => b.score-a.score || a.d.name.localeCompare(b.d.name,"ru")).slice(0,8).map(x=>x.d);
+}
+
 function renderLinkone(host) {
   const books = Object.entries(D.linkome.books).sort((a, b) => a[0].localeCompare(b[0]));
+  const selectedUnit = G.unit ? D.fleet.units.find(u => u.name === G.unit) : null;
+  if (selectedUnit && selectedUnit.book && D.linkome.books[selectedUnit.book] && LO.book !== selectedUnit.book) {
+    LO.book = selectedUnit.book; LO.index = loBuildIndex(LO.book); LO.current = LO.index.roots[0]?.id || null;
+  }
   host.innerHTML = `
-    <h1>Каталог LinkOne</h1>
+    <div class="lo-screen"><h1>Каталог LinkOne</h1>
     <p class="sub">${D.linkome.meta.books} книг, ${num(D.linkome.meta.pagesTotal)} страниц, ${num(D.linkome.meta.rowsTotal)} строк состава — разбор заводской выгрузки LinkOne, формат тот же, что у каталогов Komatsu/Cat/Cummins: дерево узлов книги, таблица позиций узла, карточка детали. ${D.linkome.meta.pagesFailed} страниц не разобрались (см. «Качество данных»).</p>
     ${callout("good", `Чертежи распакованы из самих книг: ${num(D.linkomeDraw.meta.sheets)} листов на ${num(D.linkomeDraw.meta.pages)} узлов — формат .ilg разобран (палитра + построчный RLE, см. «Методика»). Чертёж открывается рядом с составом узла, клик — в полный размер.`)}
     <div class="lo-books" id="loBooks">
@@ -676,7 +731,7 @@ function renderLinkone(host) {
           <span class="s">${esc(b.model || "")} · ${num(b.pageCount)} стр.</span>
         </div>`).join("")}
     </div>
-    <div id="loBody"></div>
+    <div id="loBody"></div></div>
   `;
   qsa(".lo-book", host).forEach(el => el.onclick = () => loSelectBook(el.dataset.book, host));
   makeActivatable(host, ".lo-book");
@@ -745,7 +800,7 @@ function loRenderTree() {
     const cycle = seenGlobal.has(id);
     seenGlobal.add(id);
     const kids = cycle ? [] : (p.rows || []).map(r => r.link && loFindPage(r.link)).filter(Boolean);
-    const isOpen = openIds.has(id);
+    const isOpen = depth < 2 || openIds.has(id);
     const isActive = LO.current && LO.current.toLowerCase() === id;
     return `<div class="lo-node${isOpen ? " open" : ""}${isActive ? " active" : ""}">
       <div class="lo-node-head" data-id="${esc(p.id)}">
@@ -787,6 +842,7 @@ function loRenderMain() {
   const crumbs = path.map(p => `<a data-id="${esc(p.id)}">${esc(p.title || p.id)}</a>`).join(" › ") || esc(page.title || page.id);
   const rows = page.rows || [];
   const sheets = (D.linkomeDraw.byPage[`${LO.book}|${page.id.toUpperCase()}`]) || [];
+  const relatedDocs = kbDocsForNode(page);
   // Раскладка узла — как в каталоге Cummins: чертёж слева «липким» столбцом,
   // таблица позиций справа, листы переключаются каруселью, клик по чертежу
   // разворачивает его в натуральную величину.
@@ -818,6 +874,7 @@ function loRenderMain() {
         : `<div class="lo-nodraw">Для этого узла в книге нет чертежа — состав приведён справа.</div>`}
       </div>
       <div class="lo-tablepane">
+        ${relatedDocs.length ? `<details class="lo-kb" open><summary>База знаний по узлу · ${relatedDocs.length}</summary>${relatedDocs.map(d=>`<a href="${esc(kbFileUrl(d.path))}" target="_blank" rel="noopener"><b>${esc(d.name)}</b><span>${esc(d.class)}${d.model?' · '+esc(d.model):''}</span></a>`).join('')}</details>` : ''}
         <div class="twrap"><table class="lo-parts">
           <thead><tr><th class="c-pos">№</th><th>Номер</th><th>Наименование</th><th class="n">Кол.</th>
             <th>ЕКМТР</th><th>Наличие<br>и заказ</th><th class="n">Цена</th><th></th></tr></thead>
@@ -834,7 +891,7 @@ function loRenderMain() {
               <td>${sup.ekmtr}</td>
               <td class="c-stock">${sup.stock}${sup.order ? " " + sup.order : ""}</td>
               <td class="n c-price">${sup.price}</td>
-              <td class="c-act">${kid ? `<span class="badge info" data-goto="${esc(kid.id)}" style="cursor:pointer">узел ▸</span>` : ""}${sup.art ? ` ${cartAddBtn(sup.cart)}` : ""}</td>
+              <td class="c-act">${kid ? `<span class="badge info" data-goto="${esc(kid.id)}" style="cursor:pointer">узел ▸</span>` : ""}${r.part ? ` ${cartAddBtn(sup.art ? sup.cart : {code:r.part,name:r.name,value:null,source:'LinkOne'})}` : ""}</td>
             </tr>`;
           }).join("") || `<tr><td colspan="8" class="dim">Состав пуст</td></tr>`}</tbody>
         </table></div>
@@ -930,19 +987,29 @@ function loRenderMain() {
 const MODEL_COLOR = { "WK-20": "var(--c1)", "WK-35": "var(--c2)", "WK-20C": "var(--c3)" };
 
 function renderFleet(host) {
+  const all = D.fleet.units;
+  const rows = all.filter(u => (!G.site || u.site === G.site) && (!G.model || u.model === G.model) && (!G.unit || u.name === G.unit));
+  const avg = (a,k) => { const v=a.map(x=>x[k]).filter(Number.isFinite); return v.length?v.reduce((s,x)=>s+x,0)/v.length:null };
+  const level = !G.site ? "site" : !G.model ? "model" : "unit";
+  const groups = new Map();
+  rows.forEach(u => { const key=level==='site'?u.site:level==='model'?u.model:u.name; if(!groups.has(key))groups.set(key,[]);groups.get(key).push(u) });
+  const agg = [...groups].map(([key,a])=>({key,label:level==='site'?(a[0].siteName||key):key,site:a[0].site,model:a[0].model,n:a.length,ktg:avg(a,'ktg'),kio:avg(a,'kio'),book:[...new Set(a.map(x=>x.book).filter(Boolean))].join(', ')}));
   host.innerHTML = `
     <h1>Парк WK</h1>
-    <p class="sub">${D.fleet.meta.units} единиц (карточки-дубли в КТГ схлопнуты). ${D.fleet.meta.matchedToBook} связаны с книгой комплектации.</p>
+    <p class="sub">${num(rows.length)} из ${D.fleet.meta.units} единиц. Иерархия агрегации: площадка → модель → гаражный номер. Нажмите строку, чтобы перейти на следующий уровень.</p>
+    <div class="kpis">${kpi('Единиц',num(rows.length))}${kpi('Средний КТГ',pct(avg(rows,'ktg')))}${kpi('Средний КИО',pct(avg(rows,'kio')))}${kpi('Связано с каталогом',num(rows.filter(x=>x.book).length)+' из '+num(rows.length),rows.some(x=>!x.book)?'warn':'good')}</div>
+    <div class="card"><h3>${level==='site'?'По площадкам':level==='model'?'Модели на выбранной площадке':'Единицы выбранной модели'}</h3><div id="fleetAgg"></div></div>
     <div class="card"><h3>КТГ по моделям, среднее по месяцам</h3>
       <p class="hint">Месяцы, где у модели ещё не было бортов в парке, из среднего исключены — не занижают график нулями.</p>
       <div id="fleetChart"></div>
     </div>
     <div id="fleetTable"></div>
   `;
+  renderTable(byId('fleetAgg'),{rows:agg,sortKey:'label',sortDir:1,onRowClick:r=>{if(level==='site')G.site=r.site;else if(level==='model')G.model=r.model;else G.unit=r.key;renderGlobalFilters();renderTab()},cols:[{key:'label',label:level==='site'?'Площадка':level==='model'?'Модель':'Единица',cls:'wrap'},{key:'n',label:'Единиц',numeric:true},{key:'book',label:'Книги',cls:'mono wrap'},{key:'ktg',label:'КТГ',numeric:true,fmt:pct},{key:'kio',label:'КИО',numeric:true,fmt:pct}]});
   const months = D.fleet.meta.months;
   const models = ["WK-20", "WK-35", "WK-20C"];
   const series = models.map(model => {
-    const units = D.fleet.units.filter(u => u.model === model && u.ktgByMonth);
+    const units = rows.filter(u => u.model === model && u.ktgByMonth);
     const values = months.map((_, i) => {
       const vals = units.map(u => u.ktgByMonth[i]).filter(v => v > 0);
       return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
@@ -952,7 +1019,7 @@ function renderFleet(host) {
   renderLineChart(byId("fleetChart"), { months, series, yDomain: [0.5, 1] });
 
   renderTable(byId("fleetTable"), {
-    rows: D.fleet.units, sortKey: "ktg", sortDir: 1,
+    rows, sortKey: "ktg", sortDir: 1,
     csv: true, csvName: "wk_fleet.csv",
     cols: [
       { key: "name", label: "Единица", cls: "wrap" },
@@ -1096,13 +1163,29 @@ function provisionArrivalChart(arrivals, asOf) {
   </div>`;
 }
 
+let PROV_FILTER = { year: "", from: "", to: "", status: "", q: "" };
+let PROV_SELECTED = null;
+function provisionOrderRows() {
+  const partCodes = new Set();
+  if (G.part) D.catalog.items.filter(i => normArt(i.art).includes(normArt(G.part)) || normArt(i.artNew).includes(normArt(G.part))).forEach(i => i.ekmtr && partCodes.add(String(i.ekmtr)));
+  const q = normText(PROV_FILTER.q), ge = normText(G.ekmtr), go = normText(G.order);
+  return (D.provision.orders || []).filter(o => (!G.site || o.site===G.site) && (!G.model || o.model===G.model) && (!G.unit || o.unit===G.unit) && (!go || normText(o.order).includes(go)) && (!PROV_FILTER.year || o.years.includes(PROV_FILTER.year)) && (!PROV_FILTER.status || o.status===PROV_FILTER.status) && (!PROV_FILTER.from || !o.date || o.date>=PROV_FILTER.from) && (!PROV_FILTER.to || !o.date || o.date<=PROV_FILTER.to) && (!ge || o.lines.some(l=>normText(l.code).includes(ge))) && (!G.part || o.lines.some(l=>partCodes.has(String(l.code)))) && (!q || normText([o.order,o.unit,o.kind,...o.lines.flatMap(l=>[l.code,l.name,l.work])].join(' ')).includes(q)));
+}
+function provisionOrderTotals(orders) {
+  const t={value:0,qty:0,lines:0}; for(const k of ['fromStock','fromBuy','late','undated','gap']){t[k]=0;t[k+'Qty']=0}
+  orders.forEach(o=>{t.value+=o.value;t.qty+=o.qty;t.lines+=o.lines.length;for(const k of ['fromStock','fromBuy','late','undated','gap']){t[k]+=o[k];t[k+'Qty']+=o[k+'Qty']}}); return t;
+}
+function provisionOrderCut(orders,keyfn){const m=new Map;orders.forEach(o=>{const k=keyfn(o);if(!m.has(k))m.set(k,[]);m.get(k).push(o)});return [...m].map(([key,a])=>({key,...provisionOrderTotals(a)})).sort((a,b)=>String(a.key).localeCompare(String(b.key),'ru'))}
+function provisionMonthChart(orders){const by=new Map;orders.forEach(o=>{const k=o.date?o.date.slice(0,7):'без даты';if(!by.has(k))by.set(k,[]);by.get(k).push(o)});const rows=[...by].map(([month,a])=>({month,...provisionOrderTotals(a),orders:a.length})).sort((a,b)=>a.month.localeCompare(b.month)),max=Math.max(1,...rows.map(r=>r.value));return `<div class="prov-months">${rows.map(r=>`<button data-prov-month="${esc(r.month)}" title="${esc(r.month)} · ${num(r.orders)} заказов · ${mrub(r.value)}"><b>${esc(r.month.replace(/^20/,''))}</b><i style="height:${Math.max(3,100*r.value/max)}%"></i><span>${num(r.orders)}</span></button>`).join('')}</div>`}
+
 function renderProvision(host) {
-  const m = D.provision.meta, w = m.wk;
+  const m = D.provision.meta, orders = provisionOrderRows(), w = provisionOrderTotals(orders);
   const T = w.value || 1;
   const sites = { ...((D.fleet && D.fleet.meta && D.fleet.meta.sites) || {}), "2400": "Сухой Лог" };
   const f = m.feasible || {};
   const fv = k => (f[k] && f[k].value) || 0;
   const gapTotal = w.late + w.undated + w.gap;
+  const feasibilityGap = m.wk.late + m.wk.undated + m.wk.gap;
   const eta = new Date(m.asOf + "T00:00:00");
   eta.setDate(eta.getDate() + (m.leadMedianDays || 0));
   const etaStr = dmy(eta.toISOString().slice(0, 10));
@@ -1111,15 +1194,23 @@ function renderProvision(host) {
 
   host.innerHTML = `
     <h1>Обеспеченность плана ТОиР 2026–2027</h1>
-    <p class="sub">${num(m.orders)} открытых заказов, ${num(m.lines)} строк плана без факта.
+    <p class="sub">${num(orders.length)} заказов в текущем контексте, ${num(w.lines)} открытых строк потребности.
       Потребность закрывается <b>доступным остатком</b> (за вычетом ограниченного) и <b>уже размещённой закупкой</b>,
       приход которой сопоставлен с датой начала работ помесячно. Данные на ${dmy(m.asOf)}.</p>
     <div class="kpis">
+      ${kpi("Заказов", num(orders.length))}
       ${kpi("Потребность WK", mrub(w.value))}
       ${kpi("Обеспечено к сроку", mrub(w.fromStock + w.fromBuy) + ` <span class="kpi-sub">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}%</span>`, "good")}
       ${kpi("Не обеспечено", mrub(gapTotal) + ` <span class="kpi-sub">${num(100 * gapTotal / T, 0)}%</span>`, "bad")}
-      ${kpi("Ещё можно успеть", mrub(fv("inTime")), "warn")}
-      ${kpi("Уже не успеть", mrub(fv("late3") + fv("lateMore") + fv("past")), "bad")}
+    </div>
+
+    <div class="prov-order-filters">
+      <label>Год<select id="provYear"><option value="">Все</option>${['2026','2027'].map(y=>`<option${PROV_FILTER.year===y?' selected':''}>${y}</option>`).join('')}</select></label>
+      <label>Период с<input id="provFrom" type="date" value="${esc(PROV_FILTER.from)}"></label>
+      <label>по<input id="provTo" type="date" value="${esc(PROV_FILTER.to)}"></label>
+      <label>Статус<select id="provOrderStatus"><option value="">Все</option><option value="full"${PROV_FILTER.status==='full'?' selected':''}>Полностью</option><option value="partial"${PROV_FILTER.status==='partial'?' selected':''}>Частично</option><option value="none"${PROV_FILTER.status==='none'?' selected':''}>Не обеспечен</option></select></label>
+      <label class="wide">Поиск<input id="provOrderQ" value="${esc(PROV_FILTER.q)}" placeholder="заказ, машина, ЕКМТР, деталь"></label>
+      <button class="minibtn" id="provOrderReset">Сбросить период</button>
     </div>
 
     <div class="prov-main">
@@ -1134,6 +1225,9 @@ function renderProvision(host) {
         </tr>`).join("")}
       </tbody></table>
     </div>
+
+    <section class="card"><div class="prov-card-head"><div><h3>Обеспеченность заказов по месяцу начала работ</h3><p class="hint">Столбцы кликабельны: нажатие отбирает месяц и открывает реестр заказов.</p></div></div>${provisionMonthChart(orders)}</section>
+    <section class="card"><h3>Плановые заказы</h3><div id="provOrders"></div><div id="provOrderDetail"></div></section>
 
     <div class="prov-audit-grid">
       <section class="card prov-audit">
@@ -1153,6 +1247,7 @@ function renderProvision(host) {
     </div>
 
     <h2>Сроки: что ещё можно закрыть заказом сегодня</h2>
+    <p class="hint">Этот прогноз срока поставки рассчитан по полной витрине WK; фильтры заказов выше применяются к обеспеченности и реестру.</p>
     <p class="sub">Медианный фактический срок поставки по номенклатуре WK — <b>${num(m.leadMedianDays)} дн.</b>
       (${num(m.leadMeasurements)} замеров «дата поставки − дата заявки» по ${num(m.leadCodes)} кодам той же выгрузки закупки).
       Заказ, размещённый на дату выгрузки, приходит около <b>${etaStr}</b>. Для позиции со своей статистикой берётся её собственный срок.</p>
@@ -1165,17 +1260,17 @@ function renderProvision(host) {
         .filter(([k]) => f[k]).map(([k, label, cls]) => `<tr>
           <th><span class="badge ${cls}">${esc(label)}</span></th>
           <td class="n">${mrub(f[k].value)}</td>
-          <td class="n">${num(100 * f[k].value / (gapTotal || 1), 0)}% дефицита</td>
+          <td class="n">${num(100 * f[k].value / (feasibilityGap || 1), 0)}% дефицита</td>
           <td class="n">${num(f[k].lines)} строк</td>
         </tr>`).join("")}
     </tbody></table>
 
     <h2>Разрезы</h2>
     <div class="prov-cuts">
-      <div><h3>По году плана</h3>${provCut(m.byYear)}</div>
-      <div><h3>По сроку начала работ</h3>${provCut(m.byHalf, k => k.replace(/ (I+)$/, (_, r) => ", " + r + " полугодие"))}</div>
-      <div><h3>По площадкам</h3>${provCut(m.bySite, k => sites[k] ? k + " " + sites[k] : k)}</div>
-      <div><h3>По виду затрат</h3>${provCut(m.byKind)}</div>
+      <div><h3>По году плана</h3>${provCut(provisionOrderCut(orders,o=>o.years.join(', ')))}</div>
+      <div><h3>По сроку начала работ</h3>${provCut(provisionOrderCut(orders,o=>o.date?o.date.slice(0,7):'без срока'))}</div>
+      <div><h3>По площадкам</h3>${provCut(provisionOrderCut(orders,o=>o.site), k => sites[k] ? k + " " + sites[k] : k)}</div>
+      <div><h3>По виду затрат</h3>${provCut(provisionOrderCut(orders,o=>o.kind||'не присвоено'))}</div>
     </div>
 
     <h2>Позиции</h2>
@@ -1196,13 +1291,41 @@ function renderProvision(host) {
     <div id="provTable"></div>
   `;
 
+  const rerenderProvision = () => renderProvision(host);
+  for (const [id,key] of [['provYear','year'],['provFrom','from'],['provTo','to'],['provOrderStatus','status']]) byId(id).onchange=e=>{PROV_FILTER[key]=e.target.value;PROV_SELECTED=null;rerenderProvision()};
+  byId('provOrderQ').oninput=debounce(e=>{PROV_FILTER.q=e.target.value;PROV_SELECTED=null;rerenderProvision()},180);
+  byId('provOrderReset').onclick=()=>{PROV_FILTER={year:'',from:'',to:'',status:'',q:''};PROV_SELECTED=null;rerenderProvision()};
+  qsa('[data-prov-month]',host).forEach(b=>b.onclick=()=>{const month=b.dataset.provMonth;if(month==='без даты'){PROV_FILTER.from='';PROV_FILTER.to=''}else{const [y,mn]=month.split('-').map(Number),last=new Date(Date.UTC(y,mn,0)).getUTCDate();PROV_FILTER.year=String(y);PROV_FILTER.from=`${month}-01`;PROV_FILTER.to=`${month}-${String(last).padStart(2,'0')}`}PROV_SELECTED=null;rerenderProvision()});
+  renderTable(byId('provOrders'),{rows:orders,limit:100,sortKey:'date',sortDir:1,csv:true,csvName:'wk_provision_orders.csv',onRowClick:o=>{PROV_SELECTED=o.id;showOrder(o)},cols:[
+    {key:'date',label:'Начало'},{key:'site',label:'Площадка',fmt:v=>esc(sites[v]||v)},{key:'unit',label:'Машина',cls:'wrap'},{key:'order',label:'Заказ'},{key:'kind',label:'Вид затрат',cls:'wrap'},{key:'value',label:'Потребность',numeric:true,fmt:rub},{key:'coverage',label:'Обеспеченность',numeric:true,fmt:(v,r)=>`<span class="prov-cover"><i style="width:${Math.min(100,v)}%"></i></span><small>${num(v,0)}%</small>`},{key:'gap',label:'Не покрыто',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>mrub(r.late+r.undated+r.gap)}
+  ]});
+  function showOrder(o){const box=byId('provOrderDetail');if(!box)return;box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${num(o.lines.length)} строк</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>${provBar(o,o.value||1,11)}${provLegend(o)}<div id="provOrderLines"></div></div>`;renderTable(byId('provOrderLines'),{rows:o.lines,limit:200,sortKey:'value',csv:true,csvName:`order_${o.order}_provision.csv`,onRowClick:l=>{const item=D.catalog.items.find(i=>i.ekmtr===l.code);if(item)openDetail(item.art)},cols:[{key:'work',label:'Вид работ',cls:'wrap'},{key:'code',label:'ЕКМТР',cls:'mono'},{key:'name',label:'Деталь',cls:'wrap'},{key:'qty',label:'Нужно',numeric:true,fmt:v=>num(v,3)},{key:'fromStock',label:'Склад',numeric:true,fmt:v=>num(v,3)},{key:'fromBuy',label:'Закупка к сроку',numeric:true,fmt:v=>num(v,3)},{key:'gap',label:'Дефицит',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>num(r.late+r.undated+r.gap,3)},{key:'code',label:'',plain:()=>'',fmt:(v,r)=>cartAddBtn({code:v,name:r.name,value:null,source:`Заказ ${o.order}`})}]});wireCartButtons(byId('provOrderLines'));qs('[data-close-prov]',box).onclick=()=>{PROV_SELECTED=null;box.innerHTML=''};box.scrollIntoView({behavior:'smooth',block:'nearest'})}
+  if(PROV_SELECTED){const selected=orders.find(o=>o.id===PROV_SELECTED);if(selected)showOrder(selected)}
+
   const items = D.provision.items;
+  const provisionItemByCode = new Map(items.map(i => [String(i.code), i]));
   function apply() {
     const f2 = byId("provStatus").value;
     const q = normText(byId("provQ").value).trim();
-    let rows = f2 === "can" ? items.filter(i => i.canOrder > 0)
-      : f2 === "too" ? items.filter(i => i.tooLate > 0)
-        : f2 ? items.filter(i => i.status === f2) : items;
+    const scoped = new Map(), asOfDate = new Date(m.asOf + 'T00:00:00');
+    orders.flatMap(o=>o.lines).forEach(l=>{
+      const k=String(l.code), item=provisionItemByCode.get(k)||{}, lead=item.leadDays||m.leadMedianDays||0;
+      const a=scoped.get(k)||{needQty:0,needValue:0,fromStock:0,fromBuy:0,late:0,undated:0,gap:0,gapValue:0,canOrder:0,tooLate:0,orderBy:''};
+      a.needQty+=l.qty; a.needValue+=l.value;
+      for(const x of ['fromStock','fromBuy','late','undated','gap']) a[x]+=l[x];
+      const openValue=l.lateValue+l.undatedValue+l.gapValue;
+      a.gapValue+=openValue;
+      if(openValue>0){
+        const start=l.date?new Date(l.date+'T00:00:00'):null, eta=new Date(asOfDate); eta.setDate(eta.getDate()+lead);
+        if(start&&start>=asOfDate&&eta<=start) a.canOrder+=openValue; else a.tooLate+=openValue;
+        if(start){const deadline=new Date(start);deadline.setDate(deadline.getDate()-lead);const ds=deadline.toISOString().slice(0,10);if(!a.orderBy||ds<a.orderBy)a.orderBy=ds}
+      }
+      scoped.set(k,a)
+    });
+    const scopedItems=items.filter(i=>scoped.has(String(i.code))).map(i=>{const a=scoped.get(String(i.code)),status=a.late+a.undated+a.gap<=1e-9?'full':a.fromStock+a.fromBuy<=1e-9?'none':'partial',verdict=status==='full'?'covered':a.canOrder>0?'inTime':'late';return {...i,...a,status,verdict,slipDays:0}});
+    let rows = f2 === "can" ? scopedItems.filter(i => i.canOrder > 0)
+      : f2 === "too" ? scopedItems.filter(i => i.tooLate > 0)
+        : f2 ? scopedItems.filter(i => i.status === f2) : scopedItems;
     if (q) rows = rows.filter(i => normText(i.code).includes(q) || normText(i.name).includes(q));
     // Считаем ту сумму, по которой отфильтровали, иначе итог в счётчике
     // не сойдётся с цифрой в сводке наверху.
@@ -1285,7 +1408,7 @@ function renderStock(host) {
     ${m.totalRestrictedValue > 0 ? callout("warn", `<b>${num(m.fullyRestrictedCodes)} позиций</b> имеют остаток, весь который ограничен — фактически это дефицит, хотя формально «есть на складе».`) : ""}
     <div class="toolbar">
       <button class="pill" id="stkRestricted" type="button" aria-pressed="false">только ограниченные</button>
-      <input type="search" id="stkQ" placeholder="Код или наименование…"/>
+      <input type="search" id="stkQ" placeholder="Код или наименование…" value="${esc(G.ekmtr)}"/>
       <span class="count" id="stkCount"></span>
     </div>
     <div id="stkTable"></div>
@@ -1293,7 +1416,9 @@ function renderStock(host) {
   let restrOnly = false;
   function apply() {
     const q = (byId("stkQ").value || "").trim().toLowerCase();
+    const partCodes = new Set(G.part ? D.catalog.items.filter(x=>normArt(x.art).includes(normArt(G.part))).map(x=>String(x.ekmtr||'')) : []);
     let rows = D.stock.items.filter(i => {
+      if (G.part && !partCodes.has(String(i.code))) return false;
       if (restrOnly && i.restrictedValue <= 0) return false;
       if (q && !i.code.includes(q) && !(i.name || "").toLowerCase().includes(q)) return false;
       return true;
@@ -1326,7 +1451,8 @@ function renderStock(host) {
 
 /* ===================== ЗАКУПКИ ===================== */
 function renderPurchase(host) {
-  const rows = D.stock.items.filter(i => i.purchase).map(i => ({ ...i.purchase, code: i.code, name: i.name }));
+  const partCodes = new Set(G.part ? D.catalog.items.filter(x=>normArt(x.art).includes(normArt(G.part))).map(x=>String(x.ekmtr||'')) : []);
+  const rows = D.stock.items.filter(i => i.purchase && (!G.ekmtr || String(i.code).includes(G.ekmtr)) && (!G.part || partCodes.has(String(i.code)))).map(i => ({ ...i.purchase, code: i.code, name: i.name }));
   const total = rows.reduce((s, r) => s + r.planV, 0);
   const openQty = rows.reduce((s, r) => s + r.openQty, 0);
   host.innerHTML = `
@@ -1357,7 +1483,7 @@ function renderPurchase(host) {
 /* ===================== КОДИФИКАЦИЯ ===================== */
 function renderCodif(host) {
   const items = D.catalog.items;
-  const uncoded = items.filter(i => !i.ekmtr);
+  const uncoded = items.filter(i => !i.ekmtr && (!G.model || i.model===G.model || i.model==='WK-20&WK-35') && (!G.part || normArt(i.art).includes(normArt(G.part))));
   const ambiguous = items.filter(i => i.ekmtrAmbiguous);
   const value = uncoded.reduce((s, i) => s + (i.priceCNY || 0), 0);
   host.innerHTML = `
@@ -1391,38 +1517,31 @@ function renderCodif(host) {
 /* ===================== ВЗАИМОЗАМЕНЯЕМОСТЬ ===================== */
 function renderInter(host) {
   const m = D.interchange.meta;
+  const filter = normArt(G.part);
+  const evidence = (D.interchange.evidence || []).filter(g => !filter || g.parts.some(p => normArt(p.num).includes(filter)));
   host.innerHTML = `
     <h1>Взаимозаменяемость</h1>
-    <p class="sub">Замены из Excel приняты как правильные. Показаны прямые связи в пределах строки и указанных комплектаций, без транзитивного объединения. Примечания сохраняются. Пустая отметка не означает запрет или разрешение замены.</p>
+    <p class="sub">Каждая строка Excel принята как прямая связь замены. Признак «Да» не обязателен; комментарий сохраняется. Одинаковый номер в разных комплектациях считается той же деталью. Связи разных строк транзитивно не объединяются.</p>
     <div class="kpis">
-      ${kpi("Групп", num(m.groups))}
+      ${kpi("Строк-связей", num(m.rowRelations))}
       ${kpi("Номеров в группах", num(m.partsInGroups))}
-      ${kpi("На разбор", num(m.unmarkedRows), "warn")}
+      ${kpi("Одинаковые номера", num(m.identityRows), "good")}
+      ${kpi("С комментарием", num(m.commentedRows))}
     </div>
-    <div class="grid2">
-      <div class="card"><h3>Группы взаимозаменяемости</h3><div id="interGroups"></div></div>
-      <div class="card"><h3>Строки без общей отметки</h3><div id="interCand"></div></div>
-    </div>
+    <div class="card"><h3>Таблица взаимозаменяемости</h3><p class="hint">Показано ${num(evidence.length)} строк. Фильтр «Каталожный №» находится в сквозной панели выше.</p><div id="interGroups"></div></div>
   `;
   renderTable(byId("interGroups"), {
-    rows: (D.interchange.evidence || []).map(g => ({ ...g,
+    rows: evidence.map(g => ({ ...g,
       n: g.parts.length, sourceParts: g.parts, parts: g.parts.map(p => p.book + ": " + p.num).join(", "),
-      source: g.sheet + " · строка " + g.row, flags: g.flags.join(", ") })),
-    limit: 100,
+      source: g.sheet + " · строка " + g.row, flags: (g.flags || []).join(", ") })),
+    limit: 300,
     csv: true, csvName: "interchange_evidence.csv",
     cols: [{ key: "source", label: "Источник" }, { key: "parts", label: "Комплектации и номера", cls: "wrap mono",
       fmt: (_, r) => r.sourceParts.map(p => esc(p.book) + ": " + interPartLink(p.num)).join("<br>") },
-      { key: "flags", label: "Отметка Excel" }, { key: "note", label: "Примечание", cls: "wrap" }],
+      { key: "relation", label: "Тип", fmt:v=>v==='identity'?'<span class="badge good">тот же номер</span>':'<span class="badge info">замена по строке</span>' },
+      { key: "flags", label: "Отметка Excel" }, { key: "note", label: "Комментарий", cls: "wrap" }],
   });
   wireInterLinks(byId("interGroups"));
-  renderTable(byId("interCand"), {
-    rows: D.interchange.candidates, limit: 100,
-    cols: [
-      { key: "sheet", label: "Лист" }, { key: "row", label: "Строка", numeric: true },
-      { key: "parts", label: "Номера", cls: "mono wrap", fmt: v => esc(v.join(", ")) },
-      { key: "note", label: "Примечание", cls: "wrap" },
-    ],
-  });
 }
 
 /* ===================== КАЧЕСТВО ДАННЫХ ===================== */
@@ -1841,6 +1960,7 @@ function kbSection(title, n, bodyHtml, shown) {
 
 function renderKB(host) {
   const m = D.kb.meta;
+  const contextQuery = G.part || G.ekmtr || G.order || G.unit || KB_SEARCH_QUERY;
   const classes = Object.entries(m.byClass).sort((a, b) => b[1] - a[1]);
   host.innerHTML = `
     <h1>База знаний</h1>
@@ -1851,7 +1971,7 @@ function renderKB(host) {
     <div class="card">
       <h3>Поиск по всему</h3>
       <p class="hint" id="kbSearchHint">Номер детали, наименование, узел, код ЕКМТР, борт, имя документа — и содержимое документов (индекс — первые ~60 тыс. знаков каждого, грузится при первом запросе). Номера сверяются без учёта точек и дефисов.</p>
-      <input type="search" id="kbSearchQ" placeholder="K1601.30.02, пружина, 1001785, регламент, №02…" value="${esc(KB_SEARCH_QUERY)}"/>
+      <input type="search" id="kbSearchQ" placeholder="K1601.30.02, пружина, 1001785, регламент, №02…" value="${esc(contextQuery)}"/>
       <div id="kbSearchResults" style="margin-top:10px"></div>
     </div>
 
@@ -1900,7 +2020,7 @@ function renderKB(host) {
     if (r.nodes.length) {
       h.push(kbSection("Узлы дерева", r.nodes.length, `<div class="twrap"><table>
         <thead><tr><th>Номер</th><th>Наименование</th><th>Механизм</th><th>Книга</th><th>Модель</th></tr></thead>
-        <tbody>${r.nodes.slice(0, KB_LIMIT).map(n => `<tr>
+        <tbody>${r.nodes.slice(0, KB_LIMIT).map(n => `<tr class="mrow" data-book="${esc(n.book)}" data-page="${esc(n.num)}">
           <td class="mono">${kbMark(n.num, q)}</td><td class="wrap">${kbMark(n.nameRu || "", q)}</td>
           <td class="wrap">${esc(n.mech || "")}</td><td>${esc(n.book || "")}</td><td>${esc(n.model || "")}</td></tr>`).join("")}</tbody>
         </table></div>`, KB_LIMIT));
@@ -2010,7 +2130,7 @@ function renderKB(host) {
   byId("kbQ").oninput = e => { KB_FILTER.q = e.target.value; apply(); };
   byId("kbModel").onchange = apply;
   apply();
-  if (KB_SEARCH_QUERY.length >= 2) kbRenderResults(KB_SEARCH_QUERY, byId("kbSearchResults"));
+  if (contextQuery.length >= 2) kbRenderResults(contextQuery, byId("kbSearchResults"));
 }
 
 /* ---------- навигация / поиск / тема ---------- */
