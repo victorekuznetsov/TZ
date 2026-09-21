@@ -2670,6 +2670,16 @@ function closeModal() {
   document.body.classList.remove("modal-open");
   if (MODAL_RETURN_FOCUS && document.contains(MODAL_RETURN_FOCUS)) MODAL_RETURN_FOCUS.focus();
 }
+function jumpToCodeTab(tab, code, extra) {
+  closeModal();
+  G.ekmtr = String(code || "");
+  if (extra && extra.order) G.order = String(extra.order);
+  if (extra && extra.unit) G.unit = String(extra.unit);
+  TAB = tab;
+  writeHash();
+  renderGlobalFilters();
+  renderTab();
+}
 function openCodeDetail(code, needDate) {
   const c = String(code || "");
   if (!c) return;
@@ -2771,9 +2781,12 @@ function openDetail(art) {
       <dt>Код ЕКМТР</dt><dd class="mono">${item.ekmtr ? esc(item.ekmtr) + (item.ekmtrAmbiguous ? ' <span class="badge warn">неоднозначно</span>' : "") : '<span class="badge bad">не кодифицировано</span>'}</dd>
       ${item.artNew ? `<dt>Артикул обн.</dt><dd class="mono">${esc(item.artNew)}</dd>` : ""}
     </dl>
-    ${item.ekmtr ? `<p class="hint">🔗 <a href="https://victorekuznetsov.github.io/TOPO/?ekmtr=${encodeURIComponent(item.ekmtr)}#mtr" target="_blank" rel="noopener">Открыть в TOPO по коду ЕКМТР ${esc(item.ekmtr)} →</a> — КТГ, история и план ремонтов, закупки по этой позиции.</p>` : ""}
-
-    ${item.ekmtr ? `<p><button class="minibtn" type="button" data-open-code="${esc(item.ekmtr)}">Полная карточка снабжения ${esc(item.ekmtr)}</button></p>` : ""}
+    ${item.ekmtr ? `<p class="hint">Локально по коду ${esc(item.ekmtr)}: склад и закупка, обеспеченность, график план-факт.</p>
+    <p class="sactions" style="display:flex;flex-wrap:wrap;gap:6px">
+      <button class="minibtn" type="button" data-open-code="${esc(item.ekmtr)}">Склад и закупка</button>
+      <button class="minibtn" type="button" data-jump-provision="${esc(item.ekmtr)}">Обеспеченность</button>
+      <button class="minibtn" type="button" data-jump-repairs="${esc(item.ekmtr)}">График план-факт</button>
+    </p>` : ""}
     ${stock ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Остаток и закупка</h3>
       <dl class="dl">
@@ -2814,6 +2827,10 @@ function openDetail(art) {
   wireInterLinks(card);
   const codeBtn = qs("[data-open-code]", card);
   if (codeBtn) codeBtn.onclick = () => openCodeDetail(codeBtn.dataset.openCode);
+  const jp = qs("[data-jump-provision]", card);
+  if (jp) jp.onclick = () => jumpToCodeTab("provision", jp.dataset.jumpProvision);
+  const jr = qs("[data-jump-repairs]", card);
+  if (jr) jr.onclick = () => jumpToCodeTab("repairs", jr.dataset.jumpRepairs);
   byId("mCloseBtn").focus();
 }
 
