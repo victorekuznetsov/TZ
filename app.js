@@ -158,17 +158,65 @@ function siteNameOf(code) {
   const u = D.fleet.units.find(x => x.site === code);
   return (u && (u.siteName || u.site)) || code;
 }
+function warehouseSite(name) {
+  const raw = String(name || "").trim();
+  const w = raw.toLowerCase();
+  if (/консигнац/.test(w)) return { site: "", kind: "consign", label: "консигнация" };
+  if (/^1400\b|магадан|янтарь/.test(w)) return { site: "1400", kind: "site", label: "Магадан" };
+  if (/^2400\b|сухой\s*лог/.test(w)) return { site: "2400", kind: "site", label: "Сухой Лог" };
+  if (/^1200\b|вернин/.test(w)) return { site: "1200", kind: "site", label: "Вернинское" };
+  if (/^1300\b|алдан/.test(w)) return { site: "1300", kind: "site", label: "Алдан" };
+  if (/^1100\b|еруда|благодат|ожок|бгок|карьер|восточн|вост\.?\s*техн|бывш/.test(w))
+    return { site: "1100", kind: "site", label: "Красноярск / Еруда" };
+  if (/ат\s*майнинг/.test(w)) return { site: "", kind: "vendor", label: "поставщик" };
+  if (/^710\d/.test(w)) return { site: "", kind: "plant", label: "код " + raw.split("/")[0] };
+  return { site: "", kind: "unknown", label: "площадка не подписана" };
+}
+function warehouseBreakdown(byWh) {
+  return Object.entries(byWh || {}).map(([name, qty]) => {
+    const meta = warehouseSite(name);
+    return { name, qty: Number(qty) || 0, site: meta.site, kind: meta.kind, label: meta.label };
+  }).sort((a, b) => b.qty - a.qty);
+}
 function stockAtSite(item, site, siteName) {
   const byWh = (item && item.byWarehouse) || {};
   const total = item ? (item.availQty != null ? item.availQty : item.qty) : 0;
-  if (!site) return { siteQty: null, total, matched: false, warehouses: [] };
-  const needle = [site, siteName].filter(Boolean).map(x => String(x).toLowerCase());
-  const warehouses = Object.keys(byWh).filter(w => {
-    const lw = w.toLowerCase();
-    return needle.some(n => n && lw.includes(n));
+  const rows = warehouseBreakdown(byWh);
+  if (!site) return { siteQty: null, total, matched: false, warehouses: rows.map(r => r.name), rows };
+  const needle = String(siteName || "").toLowerCase();
+  const hit = rows.filter(r => r.site === site || (needle && r.name.toLowerCase().includes(needle)) || r.name.includes(site));
+  const siteQty = hit.reduce((s, r) => s + r.qty, 0);
+  return { siteQty, total, matched: hit.length > 0, warehouses: hit.map(r => r.name), rows, others: rows.filter(r => !hit.includes(r)) };
+}
+function purchaseAgainstDate(purchase, needDate) {
+  const empty = { status: "none", label: "не заказано", onTime: 0, late: 0, undated: 0, months: [], supplier: "", transit: 0, openQty: 0 };
+  if (!purchase || !(purchase.openQty > 0)) return empty;
+  const needMonth = (needDate || "").slice(0, 7);
+  let onTime = 0, late = 0, undated = 0;
+  const months = Object.entries(purchase.byMonth || {}).sort().map(([month, qty]) => {
+    const q = Number(qty) || 0;
+    let kind = "undated";
+    if (!month) { undated += q; kind = "undated"; }
+    else if (!needMonth || month <= needMonth) { onTime += q; kind = "onTime"; }
+    else { late += q; kind = "late"; }
+    return { month, qty: q, kind };
   });
-  const siteQty = warehouses.reduce((s, w) => s + (Number(byWh[w]) || 0), 0);
-  return { siteQty, total, matched: warehouses.length > 0, warehouses };
+  let status = "onTime", label = "к сроку";
+  const firstLate = (months.find(x => x.kind === "late") || {}).month || "";
+  if (!months.length) { status = "none"; label = "не заказано"; }
+  else if (onTime <= 0 && late <= 0) { status = "undated"; label = "в закупке, срок не проставлен"; }
+  else if (onTime <= 0 && late > 0) { status = "late"; label = "приход " + firstLate + (needMonth ? " после начала " + needMonth : ""); }
+  else if (late > 0) { status = "mixed"; label = "часть к сроку, часть с " + firstLate; }
+  else { status = "onTime"; label = months.filter(x => x.month).map(x => x.month + ": " + x.qty).join(", "); }
+  return {
+    status, label, onTime, late, undated, months,
+    supplier: purchase.topSupplier || "", transit: purchase.transitQty || 0, openQty: purchase.openQty || 0,
+  };
+}
+function codeLink(code) {
+  if (code == null || code === "") return "";
+  const v = String(code);
+  return `<button type="button" class="pn-link mono" data-code="${esc(v)}">${esc(v)}</button>`;
 }
 function orderTodayItems(items) {
   return (items || [])
@@ -411,6 +459,7 @@ function boot() {
 let STOCK_BY_CODE = new Map();
 let EKMTR_NAME = new Map();
 let CATALOG_BY_ART = new Map();
+let CATALOG_BY_EKMTR = new Map();
 let CATALOG_BY_NORMART = new Map(); // нормализованный номер -> позиция каталога (для кросс-линковки из LinkOne)
 let INTER_GROUP_OF = new Map(); // каталожный номер -> группа взаимозаменяемости (массив)
 let PROVISION_ORDER_BY_ID = new Map();
@@ -431,16 +480,42 @@ function linkomeRowsFor(art) {
   return (art && D.linkome.byPart[normArt(art)]) || null;
 }
 function buildIndexes() {
-  STOCK_BY_CODE = new Map(D.stock.items.map(i => [String(i.code), i]));
-  EKMTR_NAME = new Map(D.ekmtrWk.items.map(i => [String(i.code), i.name]));
-  CATALOG_BY_ART = new Map(D.catalog.items.map(i => [i.art, i]));
-  CATALOG_BY_NORMART = new Map(D.catalog.items.map(i => [normArt(i.art), i]));
+  STOCK_BY_CODE = new Map((D.stock && D.stock.items || []).map(i => [String(i.code), i]));
+  EKMTR_NAME = new Map((D.ekmtrWk && D.ekmtrWk.items || []).map(i => [String(i.code), i.name]));
+  CATALOG_BY_ART = new Map((D.catalog && D.catalog.items || []).map(i => [i.art, i]));
+  CATALOG_BY_NORMART = new Map((D.catalog && D.catalog.items || []).map(i => [normArt(i.art), i]));
+  CATALOG_BY_EKMTR = new Map();
+  (D.catalog && D.catalog.items || []).forEach(i => { if (i.ekmtr && !CATALOG_BY_EKMTR.has(String(i.ekmtr))) CATALOG_BY_EKMTR.set(String(i.ekmtr), i); });
   INTER_GROUP_OF = new Map();
-  D.interchange.groups.forEach(g => g.forEach(part => {
+  ((D.interchange && D.interchange.groups) || []).forEach(g => g.forEach(part => {
     const key = interKey(part);
     INTER_GROUP_OF.set(key, [...new Set([...(INTER_GROUP_OF.get(key) || []), ...g])]);
   }));
-  PROVISION_ORDER_BY_ID = new Map((D.provision.orders || []).map(o => [o.id, o]));
+  PROVISION_ORDER_BY_ID = new Map((D.provision && D.provision.orders || []).map(o => [o.id, o]));
+}
+function catalogByEkmtr(code) {
+  return CATALOG_BY_EKMTR.get(String(code || "")) || null;
+}
+function wireCodeLinks(host) {
+  if (!host) return;
+  qsa("[data-code]", host).forEach(el => {
+    el.onclick = e => { e.stopPropagation(); openCodeDetail(el.dataset.code); };
+  });
+}
+function purchaseMonthsHtml(purchase) {
+  const months = Object.entries((purchase && purchase.byMonth) || {}).sort();
+  if (!months.length) return '<span class="dim">нет открытой поставки</span>';
+  return months.map(([m, q]) => `<span class="sup-pill order">${esc(m || "без даты")}: ${num(q, 1)}</span>`).join(" ");
+}
+function warehouseHtml(byWh, site) {
+  const rows = warehouseBreakdown(byWh);
+  if (!rows.length) return '<span class="dim">складов нет</span>';
+  return rows.map(r => {
+    const here = site && r.site === site;
+    const tag = r.kind === "consign" ? "consign" : here ? "ok" : r.site ? "info" : "";
+    const where = r.site ? `${r.site} ${r.label}` : r.label;
+    return `<span class="sup-pill ${tag}" title="${esc(where)}">${esc(r.name)} · ${num(r.qty, 1)}</span>`;
+  }).join(" ");
 }
 
 /* ---------- вкладки ---------- */
@@ -1202,26 +1277,26 @@ function renderFleet(host) {
   host.innerHTML = `
     <h1>Парк WK</h1>
     <p class="sub">${num(rows.length)} из ${D.fleet.meta.units} единиц. Иерархия агрегации: площадка → модель → гаражный номер. Нажмите строку, чтобы перейти на следующий уровень.</p>
-    <div class="kpis">${kpi('Единиц',num(rows.length))}${kpi('Средний КТГ',pct(avg(rows,'ktg')))}${kpi('Средний КИО',pct(avg(rows,'kio')))}${kpi('Связано с каталогом',num(rows.filter(x=>x.book).length)+' из '+num(rows.length),rows.some(x=>!x.book)?'warn':'good')}</div>
+    <div class="kpis">${kpi('Единиц',num(rows.length))}${kpi('КТГ план',pct(avg(rows,'ktg')))}${kpi('КТГ факт',pct(avg(rows,'kio')), avg(rows,'kio') < avg(rows,'ktg') ? 'warn' : 'good')}${kpi('Связано с каталогом',num(rows.filter(x=>x.book).length)+' из '+num(rows.length),rows.some(x=>!x.book)?'warn':'good')}</div>
+    ${callout("info", "В витрине TOPO <code>ktg.json</code> поле <b>p/pm — план КТГ</b>, <b>a/am — факт КТГ</b>. Это не КИО: коэффициент использования в этой выгрузке отдельно не приходит.")}
     ${rows.some(x=>!x.book) ? callout("warn", `<b>Без подтверждённой книги:</b> ${rows.filter(x=>!x.book).map(x=>esc(x.name)).join(", ")}. Книга не подставляется наугад — нужна связка заводской № → комплектация от АТ-Майнинг.`) : ""}
     <div class="card"><h3>${level==='site'?'По площадкам':level==='model'?'Модели на выбранной площадке':'Единицы выбранной модели'}</h3><div id="fleetAgg"></div></div>
-    <div class="card"><h3>КТГ по моделям, среднее по месяцам</h3>
-      <p class="hint">Месяцы, где у модели ещё не было бортов в парке, из среднего исключены — не занижают график нулями.</p>
+    <div class="card"><h3>КТГ план и факт по месяцам</h3>
+      <p class="hint">${rows.length===1 ? "Один борт: две линии — план и факт." : "Среднее по выбранным бортам. Месяцы без значения исключены, нулями график не занижается."}</p>
       <div id="fleetChart"></div>
     </div>
     <div id="fleetTable"></div>
   `;
-  renderTable(byId('fleetAgg'),{rows:agg,sortKey:'label',sortDir:1,onRowClick:r=>{if(level==='site')G.site=r.site;else if(level==='model')G.model=r.model;else G.unit=r.key;renderGlobalFilters();renderTab()},cols:[{key:'label',label:level==='site'?'Площадка':level==='model'?'Модель':'Единица',cls:'wrap'},{key:'n',label:'Единиц',numeric:true},{key:'book',label:'Книги',cls:'mono wrap'},{key:'ktg',label:'КТГ',numeric:true,fmt:pct},{key:'kio',label:'КИО',numeric:true,fmt:pct}]});
+  renderTable(byId('fleetAgg'),{rows:agg,sortKey:'label',sortDir:1,onRowClick:r=>{if(level==='site')G.site=r.site;else if(level==='model')G.model=r.model;else G.unit=r.key;renderGlobalFilters();renderTab()},cols:[{key:'label',label:level==='site'?'Площадка':level==='model'?'Модель':'Единица',cls:'wrap'},{key:'n',label:'Единиц',numeric:true},{key:'book',label:'Книги',cls:'mono wrap'},{key:'ktg',label:'КТГ план',numeric:true,fmt:pct},{key:'kio',label:'КТГ факт',numeric:true,fmt:pct}]});
   const months = D.fleet.meta.months;
-  const models = ["WK-20", "WK-35", "WK-20C"];
-  const series = models.map(model => {
-    const units = rows.filter(u => u.model === model && u.ktgByMonth);
-    const values = months.map((_, i) => {
-      const vals = units.map(u => u.ktgByMonth[i]).filter(v => v > 0);
-      return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
-    });
-    return { label: model, values, color: MODEL_COLOR[model] };
-  });
+  const avgMonth = (key, i) => {
+    const vals = rows.map(u => u[key] && u[key][i]).filter(v => v > 0);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  };
+  const series = [
+    { label: "КТГ план", values: months.map((_, i) => avgMonth("ktgByMonth", i)), color: "var(--c1)" },
+    { label: "КТГ факт", values: months.map((_, i) => avgMonth("kioByMonth", i)), color: "var(--c5)" },
+  ];
   renderLineChart(byId("fleetChart"), { months, series, yDomain: [0.5, 1] });
 
   renderTable(byId("fleetTable"), {
@@ -1239,11 +1314,15 @@ function renderFleet(host) {
       { key: "serial", label: "Заводской №", cls: "mono", fmt: v => v || '<span class="dim">—</span>' },
       { key: "book", label: "Книга", cls: "mono", fmt: v => v || '<span class="dim">—</span>' },
       {
-        key: "ktgByMonth", label: "КТГ, тренд", plain: () => "",
-        fmt: (v, r) => v ? sparkline(v.map(x => x > 0 ? x : null), MODEL_COLOR[r.model] || "var(--accent)") : ""
+        key: "ktgByMonth", label: "План, тренд", plain: () => "",
+        fmt: (v) => v ? sparkline(v.map(x => x > 0 ? x : null), "var(--c1)") : ""
       },
-      { key: "ktg", label: "КТГ", numeric: true, fmt: v => v == null ? "—" : pct(v), plain: v => v == null ? "" : Math.round(v * 1000) / 1000 },
-      { key: "kio", label: "КИО", numeric: true, fmt: v => v == null ? "—" : pct(v), plain: v => v == null ? "" : Math.round(v * 1000) / 1000 },
+      {
+        key: "kioByMonth", label: "Факт, тренд", plain: () => "",
+        fmt: (v) => v ? sparkline(v.map(x => x > 0 ? x : null), "var(--c5)") : ""
+      },
+      { key: "ktg", label: "КТГ план", numeric: true, fmt: v => v == null ? "—" : pct(v), plain: v => v == null ? "" : Math.round(v * 1000) / 1000 },
+      { key: "kio", label: "КТГ факт", numeric: true, fmt: v => v == null ? "—" : pct(v), plain: v => v == null ? "" : Math.round(v * 1000) / 1000 },
     ],
   });
 }
@@ -1505,7 +1584,34 @@ function renderProvision(host) {
   renderTable(byId('provOrders'),{rows:orders,limit:100,sortKey:'date',sortDir:1,csv:true,csvName:'wk_provision_orders.csv',onRowClick:o=>{PROV_SELECTED=o.id;showOrder(o)},cols:[
     {key:'date',label:'Начало'},{key:'site',label:'Площадка',fmt:v=>esc(sites[v]||v)},{key:'unit',label:'Машина',cls:'wrap'},{key:'order',label:'Заказ'},{key:'kind',label:'Вид затрат',cls:'wrap'},{key:'value',label:'Потребность',numeric:true,fmt:rub},{key:'coverage',label:'Обеспеченность',numeric:true,fmt:(v,r)=>`<span class="prov-cover"><i style="width:${Math.min(100,v)}%"></i></span><small>${num(v,0)}%</small>`},{key:'gap',label:'Не покрыто',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>mrub(r.late+r.undated+r.gap)}
   ]});
-  function showOrder(o){const box=byId('provOrderDetail');if(!box)return;box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${num(o.lines.length)} строк</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>${provBar(o,o.value||1,11)}${provLegend(o)}<div id="provOrderLines"></div></div>`;renderTable(byId('provOrderLines'),{rows:o.lines,limit:200,sortKey:'value',csv:true,csvName:`order_${o.order}_provision.csv`,onRowClick:l=>{const item=D.catalog.items.find(i=>i.ekmtr===l.code);if(item)openDetail(item.art)},cols:[{key:'work',label:'Вид работ',cls:'wrap'},{key:'code',label:'ЕКМТР',cls:'mono'},{key:'name',label:'Деталь',cls:'wrap'},{key:'qty',label:'Нужно',numeric:true,fmt:v=>num(v,3)},{key:'fromStock',label:'Склад',numeric:true,fmt:v=>num(v,3)},{key:'fromBuy',label:'Закупка к сроку',numeric:true,fmt:v=>num(v,3)},{key:'gap',label:'Дефицит',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>num(r.late+r.undated+r.gap,3)},{key:'code',label:'',plain:()=>'',fmt:(v,r)=>cartAddBtn({code:v,name:r.name,value:null,source:`Заказ ${o.order}`})}]});wireCartButtons(byId('provOrderLines'));qs('[data-close-prov]',box).onclick=()=>{PROV_SELECTED=null;box.innerHTML=''};box.scrollIntoView({behavior:'smooth',block:'nearest'})}
+  function showOrder(o){
+    const box=byId('provOrderDetail'); if(!box) return;
+    G.order = o.order; G.unit = o.unit || G.unit; G.site = o.site || G.site;
+    writeHash(false);
+    box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${num(o.lines.length)} строк. Цена — прайс ДП; график закупки — открытые заявки и заказы SAP, не дефицит ATP.</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>${provBar(o,o.value||1,11)}${provLegend(o)}<div id="provOrderLines"></div></div>`;
+    renderTable(byId('provOrderLines'),{rows:o.lines,limit:200,sortKey:'value',csv:true,csvName:`order_${o.order}_provision.csv`,onRowClick:l=>openCodeDetail(l.code, o.date),cols:[
+      {key:'work',label:'Вид работ',cls:'wrap'},
+      {key:'code',label:'ЕКМТР',cls:'mono',fmt:v=>codeLink(v)},
+      {key:'name',label:'Деталь',cls:'wrap'},
+      {key:'code',label:'Цена ДП',numeric:true,plain:(v)=>{const c=catalogByEkmtr(v);return c&&c.priceCNY||"";},fmt:(v)=>{const c=catalogByEkmtr(v);return c&&c.priceCNY!=null?cny(c.priceCNY)+ (getRate()?`<span class="sup-sub">${rub(c.priceCNY*getRate())}</span>`:""):'<span class="dim">нет в прайсе</span>';}},
+      {key:'value',label:'Сумма заказа',numeric:true,fmt:rub},
+      {key:'qty',label:'Нужно',numeric:true,fmt:v=>num(v,3)},
+      {key:'fromStock',label:'Склад',numeric:true,fmt:(v,r)=>{const st=STOCK_BY_CODE.get(String(r.code)); return `${num(v,3)}${st?`<div class="sup-sub">${warehouseHtml(st.byWarehouse,o.site)}</div>`:""}`;}},
+      {key:'code',label:'Закупка',cls:'wrap',plain:(v,r)=>{const st=STOCK_BY_CODE.get(String(v)); const vs=purchaseAgainstDate(st&&st.purchase, r.date||o.date); return vs.label;},fmt:(v,r)=>{
+        const st=STOCK_BY_CODE.get(String(v)); const vs=purchaseAgainstDate(st&&st.purchase, r.date||o.date);
+        if(vs.status==='none') return '<span class="badge bad">не заказано</span>';
+        const cls=vs.status==='onTime'?'good':vs.status==='late'?'warn':'info';
+        return `<span class="badge ${cls}">${esc(vs.label)}</span><div class="sup-sub">${purchaseMonthsHtml(st&&st.purchase)}${vs.supplier? " · "+esc(vs.supplier):""}</div>`;
+      }},
+      {key:'fromBuy',label:'К сроку ATP',numeric:true,fmt:v=>num(v,3)},
+      {key:'gap',label:'Не покрыто ATP',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>{const g=r.late+r.undated+r.gap; return g>0?`<b style="color:var(--bad)">${num(g,3)}</b>`:"—";}},
+      {key:'code',label:'',plain:()=>'',fmt:(v,r)=>cartAddBtn({code:v,name:r.name,value:r.value,source:`Заказ ${o.order}`,order:o.order,unit:o.unit,site:o.site})}
+    ]});
+    wireCartButtons(byId('provOrderLines'));
+    wireCodeLinks(byId('provOrderLines'));
+    qs('[data-close-prov]',box).onclick=()=>{PROV_SELECTED=null;box.innerHTML=''};
+    box.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }
   if(PROV_SELECTED){const selected=orders.find(o=>o.id===PROV_SELECTED);if(selected)showOrder(selected)}
 
   const items = D.provision.items;
@@ -1647,23 +1753,32 @@ function renderStock(host) {
     renderTable(byId("stkTable"), {
       rows, limit: 300, sortKey: "value",
       rowClass: r => r.fullyRestricted ? "restricted-row" : "",
+      onRowClick: r => openCodeDetail(r.code),
       csv: true, csvName: "wk_stock.csv",
       cols: [
-        { key: "code", label: "Код", cls: "mono" },
-        { key: "name", label: "Наименование", cls: "wrap" },
+        { key: "code", label: "Код", cls: "mono", fmt: v => codeLink(v) },
+        { key: "name", label: "Наименование", cls: "wrap",
+          fmt: (v, r) => {
+            const cat = catalogByEkmtr(r.code);
+            return cat ? `<button type="button" class="pn-link" data-code="${esc(r.code)}">${esc(v || "")}</button>` : esc(v || "");
+          } },
         { key: "qty", label: "Остаток, ед.", numeric: true, fmt: v => num(v, 1) },
         { key: "qty", label: "На выбранной площадке", numeric: true,
           plain: (v, r) => { const a = stockAtSite(r, G.site, siteNameOf(G.site)); return a.siteQty == null ? "" : a.siteQty; },
           fmt: (v, r) => {
             const a = stockAtSite(r, G.site, siteNameOf(G.site));
-            if (!G.site) return '<span class="dim">выберите площадку</span>';
-            if (!a.matched) return '<span class="dim" title="В разбивке складов нет названия этой площадки">нет в разрезе</span>';
+            if (!G.site) return '<span class="dim">все площадки</span>';
+            if (!a.matched) return `<span class="badge warn">0 здесь</span>`;
             return a.siteQty ? `<b>${num(a.siteQty, 1)}</b> <span class="dim">из ${num(a.total, 1)}</span>` : '<span class="badge warn">0 на площадке</span>';
           } },
+        { key: "byWarehouse", label: "Где лежит", cls: "wrap",
+          plain: v => Object.entries(v || {}).map(([w, q]) => w + ": " + q).join("; "),
+          fmt: (v) => warehouseHtml(v, G.site) },
         { key: "value", label: "Стоимость", numeric: true, fmt: rub },
         { key: "restrictedValue", label: "Ограничено", numeric: true, fmt: v => v > 0 ? `<span class="badge restricted">${rub(v)}</span>` : "" },
         { key: "availValue", label: "Доступно", numeric: true, fmt: rub },
-        { key: "purchase", label: "В закупке", numeric: true, plain: v => v ? v.planV : "", fmt: v => v ? rub(v.planV) : "" },
+        { key: "purchase", label: "В закупке", numeric: true, plain: v => v ? v.planV : "",
+          fmt: v => v ? `${rub(v.planV)}<div class="sup-sub">${purchaseMonthsHtml(v)}</div>` : '<span class="dim">не заказано</span>' },
         {
           key: "code", label: "", plain: () => "",
           fmt: (v, r) => cartAddBtn({ code: v, name: r.name, value: r.availValue, source: "Запасы" })
@@ -1671,6 +1786,7 @@ function renderStock(host) {
       ],
     });
     wireCartButtons(byId("stkTable"));
+    wireCodeLinks(byId("stkTable"));
   }
   byId("stkQ").oninput = apply;
   byId("stkRestricted").onclick = e => { restrOnly = !restrOnly; e.currentTarget.classList.toggle("on", restrOnly); e.currentTarget.setAttribute("aria-pressed", restrOnly); apply(); };
@@ -1696,16 +1812,21 @@ function renderPurchase(host) {
   renderTable(byId("purTable"), {
     rows, limit: 300, sortKey: "planV",
     csv: true, csvName: "wk_purchase.csv",
+    onRowClick: r => openCodeDetail(r.code),
     cols: [
-      { key: "code", label: "Код", cls: "mono" },
+      { key: "code", label: "Код", cls: "mono", fmt: v => codeLink(v) },
       { key: "name", label: "Наименование", cls: "wrap" },
       { key: "planV", label: "Плановая ст-ть", numeric: true, fmt: rub },
       { key: "openQty", label: "Ещё поставить", numeric: true, fmt: v => num(v, 1) },
       { key: "transitQty", label: "В пути", numeric: true, fmt: v => num(v, 1) },
+      { key: "byMonth", label: "График поставки", cls: "wrap",
+        plain: v => Object.entries(v || {}).map(([m, q]) => (m || "без даты") + ": " + q).join("; "),
+        fmt: (v, r) => purchaseMonthsHtml(r) },
       { key: "lines", label: "Строк", numeric: true },
       { key: "topSupplier", label: "Поставщик", cls: "wrap" },
     ],
   });
+  wireCodeLinks(byId("purTable"));
 }
 
 /* ===================== КОДИФИКАЦИЯ ===================== */
@@ -1807,7 +1928,7 @@ function renderDoc(host) {
           <tr><td>${esc(D.stock.meta.srcStock)}</td><td>Остатки по складам (SAP BW MM-M03)</td></tr>
           <tr><td>${esc(D.stock.meta.srcRestricted)}</td><td>Ограниченный и блокированный запас</td></tr>
           <tr><td>${esc(D.stock.meta.srcPurchase)}</td><td>Открытые заявки и заказы на поставку</td></tr>
-          <tr><td>TOPO: mtr.json, ktg.json, детализация PM-06</td><td>Код ЕКМТР, КТГ/КИО, история и план ремонтов</td></tr>
+          <tr><td>TOPO: mtr.json, ktg.json, детализация PM-06</td><td>Код ЕКМТР, КТГ план/факт (p/pm и a/am), история и план ремонтов</td></tr>
         </tbody>
       </table></div>
     </div>
@@ -1816,7 +1937,9 @@ function renderDoc(host) {
         <li>Цена в юанях — только в разделе «Каталог». Везде далее — рубли, как в выгрузках SAP.</li>
         <li>Ограниченный и блокированный запас вычитается из остатка: доступно = остаток − ограничено − блокировано − на контроле качества.</li>
         <li>Обеспеченность считается только по номенклатуре WK (код входит в ППЗ 3.1.2.7 «Запчасти к экскаваторам WK»).</li>
-        <li>Дубли карточек КТГ схлопываются по паре (площадка, точное имя борта) — берётся запись с непустым КТГ.</li>
+        <li>Дубли карточек КТГ схлопываются по паре (площадка, точное имя борта) — берётся запись с непустым планом КТГ.</li>
+        <li>КТГ план = поля p/pm витрины TOPO, КТГ факт = a/am. Это не КИО: коэффициент использования в ktg.json отдельно не приходит.</li>
+        <li>Склад в MM-M03 приходит именем, без кода площадки. Подпись площадки — эвристика по названию (Еруда/Благодатный/ОГОК → 1100, Янтарь/Магадан → 1400). Неподписанный склад показывается как есть, не прячется.</li>
       </ul>
     </div>
     <div class="card"><h3>Обеспеченность: как считается</h3>
@@ -1964,6 +2087,77 @@ function closeModal() {
   document.body.classList.remove("modal-open");
   if (MODAL_RETURN_FOCUS && document.contains(MODAL_RETURN_FOCUS)) MODAL_RETURN_FOCUS.focus();
 }
+function openCodeDetail(code, needDate) {
+  const c = String(code || "");
+  if (!c) return;
+  const stock = STOCK_BY_CODE.get(c);
+  const cat = catalogByEkmtr(c);
+  const prov = ((D.provision && D.provision.items) || []).find(i => String(i.code) === c);
+  const need = needDate || (prov && prov.firstNeed) || "";
+  const vs = purchaseAgainstDate(stock && stock.purchase, need);
+  const rate = getRate();
+  MODAL_RETURN_FOCUS = document.activeElement;
+  const back = byId("modalBack"), card = byId("modalCard");
+  back.hidden = false; card.hidden = false;
+  document.body.classList.add("modal-open");
+  back.onclick = closeModal;
+  const wh = warehouseBreakdown(stock && stock.byWarehouse);
+  const purch = stock && stock.purchase;
+  card.innerHTML = `
+    <button class="mclose" id="mCloseBtn" type="button" aria-label="Закрыть карточку">✕</button>
+    <h2 class="mono" id="modalTitle">${esc(c)}</h2>
+    <p class="sub" style="margin:0">${esc((cat && cat.nameRu) || (stock && stock.name) || (prov && prov.name) || "")}</p>
+    <dl class="dl">
+      ${cat ? `<dt>Каталожный №</dt><dd class="mono">${esc(cat.art)} · ${esc(cat.model || "")}</dd>
+      <dt>Цена ДП</dt><dd>${cny(cat.priceCNY)}${rate && cat.priceCNY != null ? ` · ${rub(cat.priceCNY * rate)}` : ""}</dd>
+      <dt>Цена УСО</dt><dd>${cny(cat.priceUsoCNY)}</dd>` : `<dt>Прайс</dt><dd class="dim">нет в прайсе ДП</dd>`}
+      <dt>ЕКМТР</dt><dd class="mono">${esc(c)}</dd>
+    </dl>
+    <h3 style="font-size:12.5px;margin:16px 0 6px">Наличие по складам</h3>
+    ${stock ? `
+      <dl class="dl">
+        <dt>Остаток</dt><dd>${num(stock.qty, 1)} ед. · ${rub(stock.value)}</dd>
+        <dt>Доступно</dt><dd>${num(stock.availQty, 1)} ед. · ${rub(stock.availValue)}</dd>
+        ${stock.restrictedValue > 0 ? `<dt>Ограничено</dt><dd><span class="badge restricted">${rub(stock.restrictedValue)}</span></dd>` : ""}
+      </dl>
+      <p class="hint">Склад в выгрузке MM-M03 — имя, не код площадки. Площадка подписана по названию склада, где это однозначно.</p>
+      <div class="toolbar" style="flex-wrap:wrap">${warehouseHtml(stock.byWarehouse, G.site) || '<span class="dim">разбивки нет</span>'}</div>
+      ${wh.length ? `<div class="twrap" style="margin-top:8px"><table><thead><tr><th>Склад</th><th>Площадка</th><th class="n">Кол-во</th></tr></thead><tbody>
+        ${wh.map(r => `<tr${G.site && r.site === G.site ? ' class="lo-pin"' : ""}><td>${esc(r.name)}</td><td>${esc(r.site ? r.site + " · " + r.label : r.label)}</td><td class="n">${num(r.qty, 1)}</td></tr>`).join("")}
+      </tbody></table></div>` : ""}
+    ` : '<p class="hint">Остатка по этому коду в витрине WK нет.</p>'}
+    <h3 style="font-size:12.5px;margin:16px 0 6px">Закупка: заявки и заказы</h3>
+    ${purch && purch.openQty > 0 ? `
+      <dl class="dl">
+        <dt>Ещё поставить</dt><dd>${num(purch.openQty, 1)} ед. · ${rub(purch.planV)}</dd>
+        <dt>В пути</dt><dd>${num(purch.transitQty, 1)}</dd>
+        <dt>Поставщик</dt><dd>${esc(purch.topSupplier || "—")}</dd>
+        <dt>Срок (медиана)</dt><dd>${purch.leadDays ? num(purch.leadDays) + " дн." : "—"}</dd>
+        ${need ? `<dt>Начало работ</dt><dd>${dmy(need)}</dd>` : ""}
+        <dt>К дате работ</dt><dd><span class="badge ${vs.status === "onTime" ? "good" : vs.status === "none" ? "bad" : "warn"}">${esc(vs.label)}</span></dd>
+      </dl>
+      <p class="hint">График — открытое количество «ещё поставить» по месяцу даты поставки из выгрузки закупки, не корзина ATP.</p>
+      <div class="toolbar" style="flex-wrap:wrap">${purchaseMonthsHtml(purch)}</div>
+    ` : callout("warn", "<b>Не заказано.</b> В открытых заявках и заказах закупки этой позиции нет — это не то же самое, что «дефицит ATP»: ATP мог закрыть строку складом или чужим приходом.")}
+    ${prov ? `<h3 style="font-size:12.5px;margin:16px 0 6px">Обеспеченность плана</h3>
+      <dl class="dl">
+        <dt>Нужно</dt><dd>${num(prov.needQty, 1)} · ${rub(prov.needValue)}</dd>
+        <dt>Со склада</dt><dd>${num(prov.fromStock, 1)}</dd>
+        <dt>Закупка к сроку</dt><dd>${num(prov.fromBuy, 1)}</dd>
+        <dt>Не покрыто</dt><dd>${num(prov.late + prov.undated + prov.gap, 1)} · ${rub(prov.gapValue)}</dd>
+      </dl>` : ""}
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+      ${cartAddBtn({ code: c, name: (cat && cat.nameRu) || (stock && stock.name) || c, value: (stock && stock.availValue) || null, source: "Карточка позиции" })}
+      ${cat ? `<button class="minibtn" type="button" id="mOpenArt">Карточка каталога ${esc(cat.art)}</button>` : ""}
+    </div>
+  `;
+  byId("mCloseBtn").onclick = closeModal;
+  wireCartButtons(card);
+  const artBtn = byId("mOpenArt");
+  if (artBtn) artBtn.onclick = () => openDetail(cat.art);
+  byId("mCloseBtn").focus();
+}
+
 function openDetail(art) {
   const item = CATALOG_BY_ART.get(art);
   if (!item) return;
@@ -1996,14 +2190,16 @@ function openDetail(art) {
     </dl>
     ${item.ekmtr ? `<p class="hint">🔗 <a href="https://victorekuznetsov.github.io/TOPO/?ekmtr=${encodeURIComponent(item.ekmtr)}#mtr" target="_blank" rel="noopener">Открыть в TOPO по коду ЕКМТР ${esc(item.ekmtr)} →</a> — КТГ, история и план ремонтов, закупки по этой позиции.</p>` : ""}
 
+    ${item.ekmtr ? `<p><button class="minibtn" type="button" data-open-code="${esc(item.ekmtr)}">Полная карточка снабжения ${esc(item.ekmtr)}</button></p>` : ""}
     ${stock ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Остаток и закупка</h3>
       <dl class="dl">
         <dt>Остаток</dt><dd>${num(stock.qty, 1)} ед. · ${rub(stock.value)}</dd>
         <dt>Доступно</dt><dd>${rub(stock.availValue)}</dd>
         ${stock.restrictedValue > 0 ? `<dt>Ограничено</dt><dd><span class="badge restricted">${rub(stock.restrictedValue)}</span>${stock.fullyRestricted ? " — весь остаток" : ""}</dd>` : ""}
-        ${stock.purchase ? `<dt>В закупке</dt><dd>${rub(stock.purchase.planV)} · ещё поставить ${num(stock.purchase.openQty, 1)} ед.</dd>` : ""}
-      </dl>` : (item.ekmtr ? '<p class="hint">Остатка по этому коду нет.</p>' : "")}
+        ${stock.purchase && stock.purchase.openQty ? `<dt>В закупке</dt><dd>${rub(stock.purchase.planV)} · ещё поставить ${num(stock.purchase.openQty, 1)} ед.<div class="sup-sub">${purchaseMonthsHtml(stock.purchase)}</div></dd>` : `<dt>Закупка</dt><dd><span class="badge bad">не заказано</span></dd>`}
+      </dl>
+      <div class="toolbar" style="flex-wrap:wrap">${warehouseHtml(stock.byWarehouse, G.site)}</div>` : (item.ekmtr ? '<p class="hint">Остатка по этому коду нет.</p>' : "")}
 
     ${item.tree.length ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">В узлах${item.treeMethod === "parent" ? ' <span class="badge info">через родителя</span>' : ""}</h3>
@@ -2033,6 +2229,8 @@ function openDetail(art) {
   `;
   byId("mCloseBtn").onclick = closeModal;
   wireInterLinks(card);
+  const codeBtn = qs("[data-open-code]", card);
+  if (codeBtn) codeBtn.onclick = () => openCodeDetail(codeBtn.dataset.openCode);
   byId("mCloseBtn").focus();
 }
 

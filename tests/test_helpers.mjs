@@ -3,7 +3,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 const source = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const safe = source.split('document.addEventListener("keydown"', 1)[0] +
-  ";globalThis.__h={normArt,loAliasKey,csvCell,interKey,provisionCoverage,parseHash,serializeHash,cartNormalize,tabAllowed,orderTodayItems,issueText,stockAtSite,ROLES};";
+  ";globalThis.__h={normArt,loAliasKey,csvCell,interKey,provisionCoverage,parseHash,serializeHash,cartNormalize,tabAllowed,orderTodayItems,issueText,stockAtSite,warehouseSite,purchaseAgainstDate,ROLES};";
 const context = {
   console, setTimeout, clearTimeout,
   document: { querySelector: () => null, querySelectorAll: () => [], getElementById: () => null },
@@ -16,7 +16,7 @@ vm.createContext(context); vm.runInContext(safe, context);
 const {
   normArt, loAliasKey, csvCell, interKey, provisionCoverage,
   parseHash, serializeHash, cartNormalize, tabAllowed, orderTodayItems,
-  issueText, stockAtSite, ROLES,
+  issueText, stockAtSite, warehouseSite, purchaseAgainstDate, ROLES,
 } = context.__h;
 
 assert.notEqual(interKey('GB/T91 6.3X45'), interKey('GB/T91 63X45'));
@@ -63,5 +63,14 @@ const at = stockAtSite({ availQty: 10, byWarehouse: { "2400 СЛ": 2, "1100": 8 
 assert.equal(at.matched, true);
 assert.equal(at.siteQty, 2);
 assert.equal(stockAtSite({ availQty: 10, byWarehouse: { "1100": 10 } }, "", "").siteQty, null);
+assert.equal(warehouseSite("Бывш. Вост. Техн").site, "1100");
+assert.equal(warehouseSite("Склад Янтарь").site, "1400");
+assert.equal(warehouseSite("Консигнация").kind, "consign");
+const mag = stockAtSite({ availQty: 2, byWarehouse: { "Бывш. Вост. Техн": 2 } }, "1400", "Магадан");
+assert.equal(mag.matched, false);
+assert.equal(mag.siteQty, 0);
+assert.equal(purchaseAgainstDate(null, "2026-10-04").status, "none");
+assert.equal(purchaseAgainstDate({ openQty: 1, byMonth: { "2027-03": 1 } }, "2026-10-04").status, "late");
+assert.equal(purchaseAgainstDate({ openQty: 1, byMonth: { "2026-09": 1 } }, "2026-10-04").status, "onTime");
 
 console.log("Helper tests: OK");
