@@ -80,6 +80,113 @@ function downloadCSV(filename, rows, cols) {
 const D = {}; // сюда лягут все витрины после загрузки
 let TAB = "sum";
 let G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "" };
+let ROLE = "all";
+let NAV_SEQ = 0;
+let CART_MEM = null;
+const ROLES = {
+  all:     { label: "Все разделы", tabs: null },
+  supply:  { label: "Снабжение",   tabs: ["sum", "provision", "stock", "purchase", "codif", "inter", "cart"] },
+  toir:    { label: "ТОиР",        tabs: ["sum", "fleet", "repairs", "provision", "linkone", "kb", "catalog"] },
+  catalog: { label: "Справочник",  tabs: ["catalog", "linkone", "kb", "inter", "fleet"] },
+};
+const TAB_NEEDS = {
+  sum: [],
+  catalog: ["tree", "drawings"],
+  linkone: ["linkome", "linkomeDraw", "kb"],
+  kb: ["kb", "tree", "linkome"],
+  fleet: [],
+  repairs: [],
+  provision: ["interchange"],
+  stock: [],
+  purchase: [],
+  codif: ["tree"],
+  inter: ["interchange"],
+  dq: [],
+  doc: [],
+  upd: [],
+  cart: [],
+};
+function parseHash(raw) {
+  const text = String(raw == null ? "" : raw).replace(/^#/, "");
+  const out = { tab: "sum", role: "all", g: { site: "", model: "", unit: "", order: "", ekmtr: "", part: "" } };
+  if (!text) return out;
+  const parts = text.split("&").filter(Boolean);
+  for (const part of parts) {
+    if (!part.includes("=")) {
+      if (VALID_TABS && VALID_TABS.has(part)) out.tab = part;
+      else if (!VALID_TABS) out.tab = part;
+      continue;
+    }
+    const eq = part.indexOf("=");
+    const k = part.slice(0, eq);
+    const v = decodeURIComponent(part.slice(eq + 1) || "");
+    if (k === "role" && ROLES[v]) out.role = v;
+    else if (k === "tab" && (!VALID_TABS || VALID_TABS.has(v))) out.tab = v;
+    else if (k in out.g) out.g[k] = v;
+  }
+  return out;
+}
+function serializeHash(tab, role, g) {
+  const parts = [tab || "sum"];
+  if (role && role !== "all") parts.push("role=" + encodeURIComponent(role));
+  for (const k of ["site", "model", "unit", "order", "ekmtr", "part"]) {
+    if (g && g[k]) parts.push(k + "=" + encodeURIComponent(g[k]));
+  }
+  return "#" + parts.join("&");
+}
+function writeHash(push) {
+  const next = serializeHash(TAB, ROLE, G);
+  if (location.hash === next) return;
+  if (push) history.pushState(null, "", next);
+  else history.replaceState(null, "", next);
+}
+function tabAllowed(tab, role) {
+  const spec = ROLES[role || ROLE] || ROLES.all;
+  return !spec.tabs || spec.tabs.includes(tab);
+}
+function applyRoleChrome() {
+  qsa("#tabs button").forEach(b => {
+    const on = tabAllowed(b.dataset.t);
+    b.hidden = !on;
+    b.style.display = on ? "" : "none";
+  });
+  const roleSel = byId("roleSelect");
+  if (roleSel && roleSel.value !== ROLE) roleSel.value = ROLE;
+}
+function siteNameOf(code) {
+  if (!code || !D.fleet) return "";
+  const u = D.fleet.units.find(x => x.site === code);
+  return (u && (u.siteName || u.site)) || code;
+}
+function stockAtSite(item, site, siteName) {
+  const byWh = (item && item.byWarehouse) || {};
+  const total = item ? (item.availQty != null ? item.availQty : item.qty) : 0;
+  if (!site) return { siteQty: null, total, matched: false, warehouses: [] };
+  const needle = [site, siteName].filter(Boolean).map(x => String(x).toLowerCase());
+  const warehouses = Object.keys(byWh).filter(w => {
+    const lw = w.toLowerCase();
+    return needle.some(n => n && lw.includes(n));
+  });
+  const siteQty = warehouses.reduce((s, w) => s + (Number(byWh[w]) || 0), 0);
+  return { siteQty, total, matched: warehouses.length > 0, warehouses };
+}
+function orderTodayItems(items) {
+  return (items || [])
+    .filter(i => i && (i.verdict === "inTime" || (i.canOrder || 0) > 0))
+    .slice()
+    .sort((a, b) => (b.canOrder || b.gapValue || 0) - (a.canOrder || a.gapValue || 0))
+    .slice(0, 15);
+}
+function issueText(issue) {
+  if (Array.isArray(issue)) return issue.filter(Boolean).join(" ");
+  return issue == null ? "" : String(issue);
+}
+function directSubs(art) {
+  const key = interKey(art);
+  const group = INTER_GROUP_OF.get(key);
+  if (!group) return [];
+  return group.filter(p => interKey(p) !== key);
+}
 
 function globalUnits() {
   return D.fleet ? D.fleet.units.filter(u => (!G.site || u.site === G.site) && (!G.model || u.model === G.model)) : [];
@@ -99,12 +206,12 @@ function renderGlobalFilters() {
     <label>ЕКМТР<input id="gfEkmtr" value="${esc(G.ekmtr)}" placeholder="код"/></label>
     <label>Каталожный №<input id="gfPart" value="${esc(G.part)}" placeholder="K…"/></label>
     <button class="minibtn" id="gfReset" type="button">Сбросить</button>`;
-  const apply = (k,v) => { G[k]=v; if(k==='site'||k==='model') G.unit=''; renderGlobalFilters(); renderTab(); };
+  const apply = (k,v) => { G[k]=v; if(k==='site'||k==='model') G.unit=''; writeHash(false); renderGlobalFilters(); renderTab(); };
   byId('gfSite').onchange=e=>apply('site',e.target.value);
   byId('gfModel').onchange=e=>apply('model',e.target.value);
   byId('gfUnit').onchange=e=>apply('unit',e.target.value);
-  for (const [id,k] of [['gfOrder','order'],['gfEkmtr','ekmtr'],['gfPart','part']]) byId(id).oninput=debounce(e=>{G[k]=e.target.value.trim();renderTab()},180);
-  byId('gfReset').onclick=()=>{G={site:'',model:'',unit:'',order:'',ekmtr:'',part:''};renderGlobalFilters();renderTab()};
+  for (const [id,k] of [['gfOrder','order'],['gfEkmtr','ekmtr'],['gfPart','part']]) byId(id).oninput=debounce(e=>{G[k]=e.target.value.trim();writeHash(false);renderTab()},180);
+  byId('gfReset').onclick=()=>{G={site:'',model:'',unit:'',order:'',ekmtr:'',part:''};writeHash(false);renderGlobalFilters();renderTab()};
 }
 
 /* ---------- generic sortable table ---------- */
@@ -265,18 +372,36 @@ const FILES = {
   drawings: "drawings", linkome: "linkome_catalog",
   linkomeDraw: "linkome_drawings",
 };
+const CORE_KEYS = ["catalog", "ekmtrWk", "fleetBooks", "fleet", "repairs", "provision", "stock", "quality"];
+
+async function ensureData(keys) {
+  const missing = [...new Set(keys)].filter(k => k && D[k] === undefined && FILES[k]);
+  if (!missing.length) return;
+  await Promise.all(missing.map(async k => {
+    await loadScript(`data/${FILES[k]}.local.js`);
+    D[k] = dataFor(FILES[k]);
+  }));
+  buildIndexes();
+}
 
 function boot() {
-  const keys = Object.keys(FILES);
-  Promise.all(keys.map(k => loadScript(`data/${FILES[k]}.local.js`)))
+  const host = byId("main");
+  let done = 0;
+  const tick = () => {
+    done++;
+    host.innerHTML = callout("info", `Загрузка данных… ${done} / ${CORE_KEYS.length}`);
+  };
+  host.innerHTML = callout("info", `Загрузка данных… 0 / ${CORE_KEYS.length}`);
+  Promise.all(CORE_KEYS.map(k => loadScript(`data/${FILES[k]}.local.js`).then(() => { tick(); return k; })))
     .then(() => {
-      keys.forEach(k => { D[k] = dataFor(FILES[k]); });
+      CORE_KEYS.forEach(k => { D[k] = dataFor(FILES[k]); });
       buildIndexes();
       renderGlobalFilters();
+      applyRoleChrome();
       renderTab();
     })
     .catch(e => {
-      byId("main").innerHTML = callout("bad",
+      host.innerHTML = callout("bad",
         `Не удалось загрузить данные: ${esc(e.message)}. Проверьте, что рядом с index.html лежит вся ` +
         `папка целиком (включая data/) — файлы data/*.local.js должны быть на месте.`);
     });
@@ -319,8 +444,22 @@ function buildIndexes() {
 }
 
 /* ---------- вкладки ---------- */
-function renderTab() {
+async function renderTab() {
   const host = byId("main");
+  const seq = ++NAV_SEQ;
+  writeHash(false);
+  applyRoleChrome();
+  const need = TAB_NEEDS[TAB] || [];
+  if (need.some(k => D[k] === undefined)) {
+    host.innerHTML = callout("info", "Загрузка раздела…");
+    try { await ensureData(need); }
+    catch (e) {
+      if (seq !== NAV_SEQ) return;
+      host.innerHTML = callout("bad", esc(e.message));
+      return;
+    }
+    if (seq !== NAV_SEQ) return;
+  }
   switch (TAB) {
     case "sum": return renderSum(host);
     case "catalog": return renderCatalog(host);
@@ -347,27 +486,56 @@ function renderTab() {
    браузере (localStorage) — черновик одного человека, не общая заявка;
    выгружается в CSV или печатается, дальше — обычным порядком в закупку. */
 const CART_KEY = "wkcrm_cart_v1";
+function cartNormalize(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(i => i && typeof i === "object" && i.code != null).map(i => ({
+    code: String(i.code), name: String(i.name || ""), source: String(i.source || ""),
+    value: Number.isFinite(Number(i.value)) ? Number(i.value) : null,
+    qty: Math.max(1, parseInt(i.qty, 10) || 1), note: String(i.note || ""), addedAt: i.addedAt || "",
+    site: String(i.site || ""), unit: String(i.unit || ""), order: String(i.order || ""),
+  }));
+}
 function cartGet() {
+  if (CART_MEM) return CART_MEM;
   try {
-    const value = JSON.parse(localStorage.getItem(CART_KEY) || "[]");
-    if (!Array.isArray(value)) return [];
-    return value.filter(i => i && typeof i === "object" && i.code != null).map(i => ({
-      code: String(i.code), name: String(i.name || ""), source: String(i.source || ""),
-      value: Number.isFinite(Number(i.value)) ? Number(i.value) : null,
-      qty: Math.max(1, parseInt(i.qty, 10) || 1), note: String(i.note || ""), addedAt: i.addedAt || "",
-    }));
-  } catch (e) { return []; }
+    CART_MEM = cartNormalize(JSON.parse(localStorage.getItem(CART_KEY) || "[]"));
+  } catch (e) { CART_MEM = []; }
+  return CART_MEM;
 }
 function cartSet(items) {
-  try { localStorage.setItem(CART_KEY, JSON.stringify(items)); } catch (e) { /* приватный режим и т.п. */ }
+  CART_MEM = cartNormalize(items);
+  try { localStorage.setItem(CART_KEY, JSON.stringify(CART_MEM)); } catch (e) { /* приватный режим и т.п. */ }
   cartUpdateBadge();
 }
 function cartHas(code) { return cartGet().some(i => i.code === code); }
 function cartAdd(item) {
   const items = cartGet();
   if (items.some(i => i.code === item.code)) return;
-  items.push({ ...item, addedAt: new Date().toISOString() });
+  items.push({
+    ...item,
+    site: item.site || G.site || "",
+    unit: item.unit || G.unit || "",
+    order: item.order || G.order || "",
+    addedAt: new Date().toISOString(),
+  });
   cartSet(items);
+}
+function cartAddMany(list) {
+  const items = cartGet();
+  const have = new Set(items.map(i => i.code));
+  let n = 0;
+  for (const item of list) {
+    if (!item || item.code == null || have.has(String(item.code))) continue;
+    have.add(String(item.code));
+    items.push({
+      ...item, code: String(item.code),
+      site: item.site || G.site || "", unit: item.unit || G.unit || "",
+      order: item.order || G.order || "", addedAt: new Date().toISOString(),
+    });
+    n++;
+  }
+  if (n) cartSet(items);
+  return n;
 }
 function cartRemove(code) { cartSet(cartGet().filter(i => i.code !== code)); }
 function cartClear() { cartSet([]); }
@@ -429,6 +597,9 @@ function renderCart(host) {
       { key: "code", label: "Код", cls: "mono" },
       { key: "name", label: "Наименование", cls: "wrap" },
       { key: "source", label: "Источник" },
+      { key: "site", label: "Площадка", plain: v => v || "", fmt: v => v ? esc(siteNameOf(v) || v) : "—" },
+      { key: "unit", label: "Машина", fmt: v => v ? esc(v) : "—" },
+      { key: "order", label: "Заказ", fmt: v => v ? esc(v) : "—" },
       { key: "value", label: "Стоимость", numeric: true, fmt: v => v ? rub(v) : "" },
       {
         key: "qty", label: "Кол-во", numeric: true,
@@ -489,12 +660,47 @@ function renderSum(host) {
       <div class="card"><h3>Заказывать уже поздно</h3><div class="kpi bad" style="border:0;padding:0"><div class="v">${mrub(["late3", "lateMore", "past"].reduce((a, k) => a + ((p.feasible[k] || {}).value || 0), 0))}</div></div><p class="hint">срок работ наступит раньше поставки</p></div>
     </div>
 
+    <h2>Заказать сегодня</h2>
+    <p class="sub">Верхние позиции дефицита, которые ещё закрываются заказом на дату снимка. Пакет кладётся в заявку с площадкой и заказом из текущего контекста.</p>
+    <div id="sumOrderToday"></div>
+
     <h2>Парк по моделям</h2>
     <div id="sumFleet"></div>
 
     <h2>Крупнейшие статьи ремонта (факт 2022-2027)</h2>
     <div id="sumWork"></div>
   `;
+  const today = orderTodayItems(D.provision.items);
+  if (!today.length) {
+    byId("sumOrderToday").innerHTML = callout("info", "Нет позиций со статусом «успеем, если заказать сейчас».");
+  } else {
+    const packValue = today.reduce((s, r) => s + (r.canOrder || r.gapValue || 0), 0);
+    byId("sumOrderToday").innerHTML = `
+      <div class="toolbar">
+        <span class="count">${num(today.length)} позиций · ${mrub(packValue)}</span>
+        <button class="iconbtn on" id="sumPackBtn" type="button">В заявку пакетом</button>
+      </div>
+      <div id="sumOrderTable"></div>`;
+    renderTable(byId("sumOrderTable"), {
+      rows: today, sortKey: "gapValue",
+      csv: true, csvName: "wk_order_today.csv",
+      cols: [
+        { key: "code", label: "ЕКМТР", cls: "mono" },
+        { key: "name", label: "Наименование", cls: "wrap" },
+        { key: "gapValue", label: "Дефицит", numeric: true, fmt: rub },
+        { key: "canOrder", label: "Ещё можно заказать", numeric: true, fmt: v => v ? rub(v) : "—" },
+        { key: "leadDays", label: "Срок, дн.", numeric: true },
+        { key: "orderBy", label: "Заказать до", fmt: v => v ? `<span class="mono">${dmy(v)}</span>` : "—" },
+        { key: "code", label: "", plain: () => "", fmt: (v, r) => cartAddBtn({ code: v, name: r.name, value: r.canOrder || r.gapValue, source: "Заказать сегодня" }) },
+      ],
+    });
+    wireCartButtons(byId("sumOrderTable"));
+    byId("sumPackBtn").onclick = () => {
+      const n = cartAddMany(today.map(r => ({ code: r.code, name: r.name, value: r.canOrder || r.gapValue, source: "Заказать сегодня" })));
+      byId("sumPackBtn").textContent = n ? `Добавлено ${n}` : "Уже в заявке";
+      cartUpdateBadge();
+    };
+  }
   const byModel = {};
   D.fleet.units.forEach(u => { byModel[u.model] = (byModel[u.model] || 0) + 1; });
   renderTable(byId("sumFleet"), {
@@ -626,9 +832,8 @@ function renderCatalog(host) {
 /* ===================== КАТАЛОГ LINKONE (формат Komatsu/Cat/Cummins) =====================
    Дерево книга → узел → состав, как в песочнице KOMATSU_PARTS_BOOK: слева дерево, справа
    таблица позиций текущего узла, клик по позиции с дочерним узлом — раскрывает его, клик по
-   номеру, сверенному с прайсом ДП, — открывает карточку детали. В отличие от Komatsu, чертёж
-   (растровый .ilg) не декодирован — контейнер LinkOne читается, картинка нет (см. «Качество
-   данных»), поэтому показывается только состав узла, без изображения. */
+   номеру, сверенному с прайсом ДП, — открывает карточку детали. Чертежи .ilg разобраны
+   (палитра RGBQUAD + LZH + построчный RLE), выноски кликабельны. */
 const LO = { book: null, index: null, current: null, filter: "", fullscreen: false };
 const loAliasKey = id => String(id || "").toLowerCase().replace(/^\d+-/, "").replace(/^dk/, "k").replace(/a$/, "");
 
@@ -731,7 +936,7 @@ function renderLinkone(host) {
           <span class="s">${esc(b.model || "")} · ${num(b.pageCount)} стр.</span>
         </div>`).join("")}
     </div>
-    <div id="loBody"></div></div>
+    <div id="loShell"></div></div>
   `;
   qsa(".lo-book", host).forEach(el => el.onclick = () => loSelectBook(el.dataset.book, host));
   makeActivatable(host, ".lo-book");
@@ -752,7 +957,7 @@ function loSelectBook(code, host) {
 }
 
 function loRenderBody(host) {
-  const body = byId("loBody");
+  const body = byId("loShell");
   if (!LO.index || !LO.index.roots.length) {
     body.innerHTML = callout("bad", "В этой книге не удалось построить дерево — нет ни одной страницы.");
     return;
@@ -855,7 +1060,7 @@ function loRenderMain() {
       </div>
       <button class="minibtn lo-full-btn" id="loFullscreen" type="button" aria-pressed="${LO.fullscreen}" title="Развернуть чертёж и таблицу на весь экран">${LO.fullscreen ? "✕ Закрыть полный экран" : "⛶ На весь экран"}</button>
     </div>
-    <div class="lo-body${LO.fullscreen ? " lo-fullscreen" : ""}" id="loBody">
+    <div class="lo-body${LO.fullscreen ? " lo-fullscreen" : ""}" id="loFull">
       <div class="lo-fullbar"><b>${esc(page.title || page.id)}</b><span>${num(rows.length)} позиций</span><button class="minibtn" id="loFullscreenClose" type="button">✕ Закрыть</button></div>
       <div class="lo-pane">
         ${sheets.length ? `
@@ -998,6 +1203,7 @@ function renderFleet(host) {
     <h1>Парк WK</h1>
     <p class="sub">${num(rows.length)} из ${D.fleet.meta.units} единиц. Иерархия агрегации: площадка → модель → гаражный номер. Нажмите строку, чтобы перейти на следующий уровень.</p>
     <div class="kpis">${kpi('Единиц',num(rows.length))}${kpi('Средний КТГ',pct(avg(rows,'ktg')))}${kpi('Средний КИО',pct(avg(rows,'kio')))}${kpi('Связано с каталогом',num(rows.filter(x=>x.book).length)+' из '+num(rows.length),rows.some(x=>!x.book)?'warn':'good')}</div>
+    ${rows.some(x=>!x.book) ? callout("warn", `<b>Без подтверждённой книги:</b> ${rows.filter(x=>!x.book).map(x=>esc(x.name)).join(", ")}. Книга не подставляется наугад — нужна связка заводской № → комплектация от АТ-Майнинг.`) : ""}
     <div class="card"><h3>${level==='site'?'По площадкам':level==='model'?'Модели на выбранной площадке':'Единицы выбранной модели'}</h3><div id="fleetAgg"></div></div>
     <div class="card"><h3>КТГ по моделям, среднее по месяцам</h3>
       <p class="hint">Месяцы, где у модели ещё не было бортов в парке, из среднего исключены — не занижают график нулями.</p>
@@ -1380,6 +1586,19 @@ function renderProvision(host) {
           }
         },
         {
+          key: "code", label: "Прямые замены",
+          plain: (v, r) => {
+            const item = D.catalog.items.find(i => String(i.ekmtr) === String(v));
+            return item ? directSubs(item.art).join(", ") : "";
+          },
+          fmt: (v) => {
+            const item = D.catalog.items.find(i => String(i.ekmtr) === String(v));
+            const subs = item ? directSubs(item.art) : [];
+            if (!subs.length) return '<span class="dim" title="Транзитив отключён; показаны только прямые строки ведомости">нет</span>';
+            return `<span class="badge info" title="${esc(subs.join(", "))} — не засчитываются в покрытие">прямые ${num(subs.length)}</span>`;
+          }
+        },
+        {
           key: "code", label: "", plain: () => "",
           fmt: (v, r) => cartAddBtn({ code: v, name: r.name, value: r.gapValue || r.needValue, source: "Обеспеченность" })
         },
@@ -1397,7 +1616,8 @@ function renderStock(host) {
   const m = D.stock.meta;
   host.innerHTML = `
     <h1>Запасы</h1>
-    <p class="sub">Остаток по номенклатуре WK на дату выгрузки (${esc(m.srcStock)}). Ограниченный и блокированный запас вычтен из доступного и подсвечен отдельно.</p>
+    <p class="sub">Остаток по номенклатуре WK на дату выгрузки (${esc(m.srcStock)}). Ограниченный и блокированный запас вычтен из доступного и подсвечен отдельно.
+      ${G.site ? `Фильтр площадки <b>${esc(siteNameOf(G.site))} (${esc(G.site)})</b> не перемещает запас: ниже отдельно показано, сколько из наличия лежит на складах этой площадки.` : "Остаток глобальный: это обеспеченность номенклатуры, не разрешение забирать с чужой площадки."}</p>
     <div class="kpis">
       ${kpi("Кодов с остатком", num(m.codesWithStock))}
       ${kpi("Остаток всего", mrub(m.totalValue))}
@@ -1432,6 +1652,14 @@ function renderStock(host) {
         { key: "code", label: "Код", cls: "mono" },
         { key: "name", label: "Наименование", cls: "wrap" },
         { key: "qty", label: "Остаток, ед.", numeric: true, fmt: v => num(v, 1) },
+        { key: "qty", label: "На выбранной площадке", numeric: true,
+          plain: (v, r) => { const a = stockAtSite(r, G.site, siteNameOf(G.site)); return a.siteQty == null ? "" : a.siteQty; },
+          fmt: (v, r) => {
+            const a = stockAtSite(r, G.site, siteNameOf(G.site));
+            if (!G.site) return '<span class="dim">выберите площадку</span>';
+            if (!a.matched) return '<span class="dim" title="В разбивке складов нет названия этой площадки">нет в разрезе</span>';
+            return a.siteQty ? `<b>${num(a.siteQty, 1)}</b> <span class="dim">из ${num(a.total, 1)}</span>` : '<span class="badge warn">0 на площадке</span>';
+          } },
         { key: "value", label: "Стоимость", numeric: true, fmt: rub },
         { key: "restrictedValue", label: "Ограничено", numeric: true, fmt: v => v > 0 ? `<span class="badge restricted">${rub(v)}</span>` : "" },
         { key: "availValue", label: "Доступно", numeric: true, fmt: rub },
@@ -1496,14 +1724,22 @@ function renderCodif(host) {
     </div>
     <div id="codifTable"></div>
   `;
+  const ranked = uncoded.map(i => ({
+    ...i,
+    treeHit: (i.tree || []).length,
+    priority: (i.priceCNY || 0) * ((i.tree || []).length ? 2 : 1),
+  }));
   renderTable(byId("codifTable"), {
-    rows: uncoded, limit: 300, sortKey: "priceCNY",
+    rows: ranked, limit: 300, sortKey: "priority",
     csv: true, csvName: "wk_codification.csv",
     cols: [
       { key: "art", label: "Артикул", cls: "mono" },
       { key: "model", label: "Модель" },
       { key: "nameRu", label: "Наименование", cls: "wrap" },
       { key: "priceCNY", label: "Цена, ¥", numeric: true, fmt: cny },
+      { key: "priority", label: "Приоритет", numeric: true, fmt: v => num(v, 0),
+        plain: v => v },
+      { key: "treeHit", label: "В ведомости", numeric: true, fmt: v => v ? `<span class="badge good">${v}</span>` : '<span class="dim">нет</span>' },
       { key: "tree", label: "Узел", cls: "wrap", plain: v => v && v.length ? v[0].mech : "", fmt: v => v && v.length ? esc(v[0].mech) : "" },
       {
         key: "art", label: "", plain: () => "",
@@ -1553,7 +1789,7 @@ function renderDQ(host) {
   `;
   byId("dqList").innerHTML = D.quality.issues.map(i => `
     <div class="card"><h3>${esc(i.area)}</h3>
-      <p style="margin:6px 0">${esc(i.issue)}</p>
+      <p style="margin:6px 0">${esc(issueText(i.issue))}</p>
       <p class="hint" style="color:var(--warn)">${esc(i.impact)}</p>
     </div>`).join("");
 }
@@ -1584,7 +1820,7 @@ function renderDoc(host) {
       </ul>
     </div>
     <div class="card"><h3>Обеспеченность: как считается</h3>
-      <p class="hint">Потребность — строки плана ТОиР 2026–2027 по технике WK, у которых нет ни факта количества, ни факта суммы. Распределение — как в MRP/ATP, в два прохода.</p>
+      <p class="hint">Потребность — открытый остаток строк плана ТОиР 2026–2027 по технике WK: количество = max(план − факт, 0), стоимость пропорциональна. Распределение — как в MRP/ATP, в два прохода.</p>
       <ul>
         <li><b>Проход 1.</b> Потребность, отсортированная по дате начала работ, забирает доступный остаток, затем — те приходы закупки, чей месяц поставки не раньше даты снимка и не позже месяца начала работ («успевает»).</li>
         <li><b>Проход 2.</b> Остатками приходов закрывается то, что не успели, — это «опоздание».</li>
@@ -1847,25 +2083,26 @@ function kbFindAll(q) {
   const hitNum = (s) => hasNum && normArt(s).includes(num);
   const out = { parts: [], linkome: [], nodes: [], ekmtr: [], fleet: [], docs: [] };
 
-  for (const i of D.catalog.items) {
+  for (const i of (D.catalog && D.catalog.items) || []) {
     if (hitNum(i.art) || hit(i.nameRu) || hit(i.nameZh) || hitNum(i.ekmtr)) out.parts.push(i);
   }
-  for (const key in D.linkome.byPart) {
-    const rows = D.linkome.byPart[key];
+  const byPart = D.linkome && D.linkome.byPart;
+  if (byPart) for (const key in byPart) {
+    const rows = byPart[key];
     if (key.includes(num) && hasNum) { out.linkome.push([key, rows]); continue; }
     if (lo.length >= 2 && rows.some(r => hit(r.name))) out.linkome.push([key, rows]);
   }
-  for (const n of D.tree.nodes) {
+  for (const n of (D.tree && D.tree.nodes) || []) {
     if (hitNum(n.num) || hit(n.nameRu) || hit(n.nameZh) || hit(n.mech)) out.nodes.push(n);
   }
-  for (const e of D.ekmtrWk.items) {
+  for (const e of (D.ekmtrWk && D.ekmtrWk.items) || []) {
     if (hitNum(e.code) || hit(e.name) || hitNum(e.cat)) out.ekmtr.push(e);
   }
-  for (const u of D.fleet.units) {
+  for (const u of (D.fleet && D.fleet.units) || []) {
     if (hit(u.name) || hit(u.model) || hit(u.garage) || hit(u.book) ||
         hitNum(u.serial) || hit(u.siteName) || hit(u.site)) out.fleet.push(u);
   }
-  for (const d of D.kb.docs) {
+  for (const d of (D.kb && D.kb.docs) || []) {
     if (hit(d.name) || hit(d.class) || hit(d.model) || hit(d.path)) out.docs.push(d);
   }
   return out;
@@ -2135,8 +2372,81 @@ function renderKB(host) {
 
 /* ---------- навигация / поиск / тема ---------- */
 const VALID_TABS = new Set(["sum", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
+let CMD_ROWS = [];
+function setRole(role) {
+  ROLE = ROLES[role] ? role : "all";
+  try { localStorage.setItem("wkcrm_role", ROLE); } catch (e) { /* unavailable */ }
+  applyRoleChrome();
+  if (!tabAllowed(TAB)) {
+    const tabs = (ROLES[ROLE].tabs || ["sum"]);
+    navigateTo(tabs[0]);
+  } else {
+    writeHash(false);
+  }
+}
+function cmdClose() {
+  const back = byId("cmdBack");
+  if (back) back.hidden = true;
+}
+function cmdOpen(prefill) {
+  const back = byId("cmdBack"), input = byId("cmdInput");
+  if (!back || !input) {
+    KB_SEARCH_QUERY = prefill || "";
+    navigateTo("kb");
+    return;
+  }
+  back.hidden = false;
+  input.value = prefill != null ? prefill : (byId("globalSearch").value || "");
+  input.focus();
+  cmdRender(input.value);
+}
+function cmdRender(q) {
+  const list = byId("cmdList");
+  if (!list) return;
+  const needle = String(q || "").trim();
+  if (needle.length < 2) {
+    CMD_ROWS = [];
+    list.innerHTML = '<p class="hint">Минимум два символа. Enter открывает первый результат, Esc закрывает.</p>';
+    return;
+  }
+  const r = kbFindAll(needle);
+  const rows = [];
+  r.parts.slice(0, 8).forEach(i => rows.push({ kind: "Деталь", title: i.art, sub: i.nameRu || "", run: () => { cmdClose(); openDetail(i.art); } }));
+  r.ekmtr.slice(0, 6).forEach(e => rows.push({ kind: "ЕКМТР", title: e.code, sub: e.name || "", run: () => { cmdClose(); G.ekmtr = e.code; writeHash(false); renderGlobalFilters(); navigateTo("provision"); } }));
+  r.fleet.slice(0, 6).forEach(u => rows.push({ kind: "Борт", title: u.name, sub: `${u.siteName || u.site || ""} · ${u.model || ""}`, run: () => { cmdClose(); G.site = u.site || ""; G.model = u.model || ""; G.unit = u.name; writeHash(false); renderGlobalFilters(); navigateTo("fleet"); } }));
+  if (D.provision && D.provision.orders) {
+    const lo = needle.toLowerCase();
+    D.provision.orders.filter(o => String(o.order).toLowerCase().includes(lo)).slice(0, 5)
+      .forEach(o => rows.push({ kind: "Заказ", title: o.order, sub: o.unit || "", run: () => { cmdClose(); G.order = o.order; G.unit = o.unit || G.unit; G.site = o.site || G.site; writeHash(false); renderGlobalFilters(); navigateTo("provision"); } }));
+  }
+  r.nodes.slice(0, 5).forEach(n => rows.push({ kind: "Узел", title: n.num, sub: n.nameRu || "", run: () => { cmdClose(); LO.book = n.book; LO.current = n.num; LO.index = null; navigateTo("linkone"); } }));
+  r.docs.slice(0, 5).forEach(d => rows.push({ kind: "Документ", title: d.name, sub: d.class || "", run: () => { cmdClose(); KB_SEARCH_QUERY = needle; navigateTo("kb"); } }));
+  CMD_ROWS = rows;
+  if (!rows.length) {
+    list.innerHTML = '<p class="hint">Ничего не найдено в загруженных витринах.</p>';
+    return;
+  }
+  list.innerHTML = rows.map((row, i) =>
+    `<button class="cmd-row${i === 0 ? " on" : ""}" data-i="${i}" type="button"><span class="kind">${esc(row.kind)}</span><b>${esc(row.title)}</b><span class="sub">${esc(row.sub)}</span></button>`
+  ).join("");
+  qsa(".cmd-row", list).forEach(btn => btn.onclick = () => CMD_ROWS[+btn.dataset.i] && CMD_ROWS[+btn.dataset.i].run());
+}
+function copyShareLink() {
+  const url = location.href;
+  const done = () => {
+    const btn = byId("btnShare");
+    if (!btn) return;
+    const prev = btn.getAttribute("data-label") || "Ссылка";
+    btn.textContent = "Скопировано";
+    setTimeout(() => { btn.textContent = prev; }, 1400);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(done).catch(() => { prompt("Ссылка на текущий вид", url); });
+  } else prompt("Ссылка на текущий вид", url);
+}
 function navigateTo(tab, { updateHash = true, focusMain = true } = {}) {
   TAB = VALID_TABS.has(tab) ? tab : "sum";
+  if (!tabAllowed(TAB)) TAB = ((ROLES[ROLE] || ROLES.all).tabs || ["sum"])[0];
   if (TAB !== "repairs") SFULL = false;
   if (TAB !== "linkone") {
     LO.fullscreen = false;
@@ -2146,25 +2456,43 @@ function navigateTo(tab, { updateHash = true, focusMain = true } = {}) {
     const active = x.dataset.t === TAB;
     x.classList.toggle("on", active); x.setAttribute("aria-selected", active ? "true" : "false"); x.tabIndex = active ? 0 : -1;
   });
-  if (updateHash && location.hash !== `#${TAB}`) history.pushState(null, "", `#${TAB}`);
+  applyRoleChrome();
+  if (updateHash) writeHash(true);
   renderTab();
   if (focusMain) byId("main").focus({ preventScroll: true });
 }
 
+function applyHashState(raw, push) {
+  const parsed = parseHash(raw);
+  TAB = VALID_TABS.has(parsed.tab) ? parsed.tab : "sum";
+  if (parsed.role && ROLES[parsed.role]) ROLE = parsed.role;
+  G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", ...parsed.g };
+  if (!tabAllowed(TAB)) TAB = ((ROLES[ROLE] || ROLES.all).tabs || ["sum"])[0];
+  renderGlobalFilters();
+  navigateTo(TAB, { updateHash: !!push, focusMain: false });
+}
+
 function initNav() {
-  const fromHash = location.hash.slice(1);
-  TAB = VALID_TABS.has(fromHash) ? fromHash : "sum";
+  let savedRole = null, savedTheme = null;
+  try { savedRole = localStorage.getItem("wkcrm_role"); savedTheme = localStorage.getItem("wkcrm_theme"); } catch (e) { /* unavailable */ }
+  const parsed = parseHash(location.hash);
+  TAB = VALID_TABS.has(parsed.tab) ? parsed.tab : "sum";
+  ROLE = ROLES[parsed.role] ? parsed.role : (ROLES[savedRole] ? savedRole : "all");
+  G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", ...parsed.g };
+  if (!tabAllowed(TAB)) TAB = ((ROLES[ROLE] || ROLES.all).tabs || ["sum"])[0];
+  const visibleTabs = () => qsa("#tabs button").filter(b => !b.hidden);
   qsa("#tabs button").forEach(b => {
     b.onclick = () => navigateTo(b.dataset.t);
     b.onkeydown = e => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
-      e.preventDefault(); const tabs = qsa("#tabs button"); let i = tabs.indexOf(b);
+      e.preventDefault(); const tabs = visibleTabs(); let i = tabs.indexOf(b);
+      if (i < 0) i = 0;
       i = e.key === "Home" ? 0 : e.key === "End" ? tabs.length - 1 : (i + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
       tabs[i].focus();
     };
   });
   qsa("#tabs button").forEach(x => { const active = x.dataset.t === TAB; x.classList.toggle("on", active); x.setAttribute("aria-selected", active ? "true" : "false"); x.tabIndex = active ? 0 : -1; });
-  let savedTheme = null; try { savedTheme = localStorage.getItem("wkcrm_theme"); } catch (e) { /* unavailable */ }
+  applyRoleChrome();
   if (savedTheme === "light" || savedTheme === "dark") document.documentElement.setAttribute("data-theme", savedTheme);
   const syncThemeButton = () => {
     const actual = document.documentElement.getAttribute("data-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
@@ -2180,16 +2508,34 @@ function initNav() {
     syncThemeButton();
   };
   byId("btnCart").onclick = () => navigateTo("cart");
+  const share = byId("btnShare");
+  if (share) { share.setAttribute("data-label", share.textContent); share.onclick = copyShareLink; }
+  const roleSel = byId("roleSelect");
+  if (roleSel) { roleSel.value = ROLE; roleSel.onchange = e => setRole(e.target.value); }
   cartUpdateBadge();
-  byId("globalSearch").oninput = debounce(e => {
-    const q = e.target.value.trim();
-    if (!q) return;
-    KB_SEARCH_QUERY = q; navigateTo("kb");
-  }, 250);
-  window.addEventListener("hashchange", () => navigateTo(location.hash.slice(1), { updateHash: false }));
+  const search = byId("globalSearch");
+  search.addEventListener("focus", () => cmdOpen(search.value));
+  search.oninput = debounce(e => cmdOpen(e.target.value), 180);
+  const cmdInput = byId("cmdInput");
+  if (cmdInput) {
+    cmdInput.oninput = debounce(e => cmdRender(e.target.value), 140);
+    cmdInput.onkeydown = e => {
+      if (e.key === "Escape") { cmdClose(); search.focus(); }
+      if (e.key === "Enter" && CMD_ROWS[0]) { e.preventDefault(); CMD_ROWS[0].run(); }
+    };
+  }
+  const cmdBack = byId("cmdBack");
+  if (cmdBack) cmdBack.addEventListener("click", e => { if (e.target === cmdBack) cmdClose(); });
+  window.addEventListener("hashchange", () => applyHashState(location.hash, false));
 }
 
 document.addEventListener("keydown", e => {
+  if ((e.key === "k" || e.key === "K") && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault(); cmdOpen(byId("globalSearch") && byId("globalSearch").value);
+    return;
+  }
+  const cmdBack = byId("cmdBack");
+  if (e.key === "Escape" && cmdBack && !cmdBack.hidden) { cmdClose(); return; }
   const card = byId("modalCard");
   if (e.key === "Escape" && !card.hidden) { closeModal(); return; }
   if (e.key === "Escape" && SFULL) { SFULL = false; renderSchedule(byId("main")); return; }

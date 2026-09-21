@@ -2,7 +2,7 @@ name: Деплой на GitHub Pages
 
 on:
   push:
-    branches: [catalog-crm]
+    branches: [catalog-crm, GBT, grok]
   workflow_dispatch:
 
 permissions:
@@ -21,8 +21,7 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      # sparse-checkout: без media/ (2,8 ГБ полной библиотеки знаний, только для
-      # локального скачивания ветки) — иначе каждый деплой качает лишние гигабайты.
+      # sparse-checkout: без media/kb (2,8 ГБ). Чертежи LinkOne публикуем.
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -30,22 +29,22 @@ jobs:
             index.html
             app.js
             styles.css
+            schedule.js
+            schedule.css
             data
             lib
             media/linkome
+            exports
 
-      # Публикуем сам портал (index.html/app.js/styles.css/data/lib) и чертежи
-      # LinkOne (media/linkome, 97 МБ — без них в «Каталоге LinkOne» вместо
-      # чертежей будут битые картинки). Не публикуем PLAN.md, README.md,
-      # build/ (сборка), media/kb (полная библиотека знаний — 2,8 ГБ, только
-      # для локально скачанной копии ветки) и сырые прайсы (Прайс-лист ДП/УСО
-      # *.xlsx в корне ветки — коммерческие исходники, в рантайме не нужны).
+      # Портал + чертёжи LinkOne + график план-факта. Не публикуем PLAN.md,
+      # build/, media/kb и сырые прайсы.
       - name: Собрать сайт (только нужные порталу файлы)
         run: |
-          mkdir -p _site/media
-          cp index.html app.js styles.css _site/
+          mkdir -p _site/media _site/exports
+          cp index.html app.js styles.css schedule.js schedule.css _site/
           cp -r data lib _site/
-          cp -r media/linkome _site/media/
+          if [ -d media/linkome ]; then cp -r media/linkome _site/media/; fi
+          if [ -d exports ]; then cp -r exports/. _site/exports/; fi
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

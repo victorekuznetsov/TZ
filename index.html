@@ -23,12 +23,22 @@
   </div>
   <div class="tb-search">
     <label class="sr-only" for="globalSearch">Поиск по всему порталу</label>
-    <input type="search" id="globalSearch" placeholder="Поиск по всему порталу…" autocomplete="off" aria-label="Поиск по всему порталу"/>
+    <input type="search" id="globalSearch" placeholder="Поиск: деталь, борт, заказ, ЕКМТР… Ctrl+K" autocomplete="off" aria-label="Поиск по всему порталу" aria-controls="cmdList"/>
   </div>
+  <label class="role-select">
+    <span class="sr-only">Рабочее место</span>
+    <select id="roleSelect" aria-label="Рабочее место">
+      <option value="all">Все разделы</option>
+      <option value="supply">Снабжение</option>
+      <option value="toir">ТОиР</option>
+      <option value="catalog">Справочник</option>
+    </select>
+  </label>
   <div class="sp"></div>
   <div class="tb-actions">
+    <button class="iconbtn" id="btnShare" type="button" title="Скопировать ссылку на текущий вид">Ссылка</button>
     <button class="iconbtn" id="btnCart" title="Заявка" aria-label="Открыть заявку" style="position:relative">
-      <span aria-hidden="true">🛒</span><span id="cartBadge" class="tb-badge" style="display:none" aria-live="polite"></span>
+      <span aria-hidden="true">Заявка</span><span id="cartBadge" class="tb-badge" style="display:none" aria-live="polite"></span>
     </button>
     <button class="iconbtn" id="btnTheme" title="Переключить тему" aria-label="Переключить тему"><span aria-hidden="true">☾</span></button>
   </div>
@@ -57,10 +67,17 @@
   <div class="callout info" role="status" aria-live="polite">Загрузка данных…</div>
 </main>
 
+<div id="cmdBack" class="cmd-back" hidden>
+  <div class="cmd-box" role="dialog" aria-modal="true" aria-label="Поиск по порталу">
+    <input type="search" id="cmdInput" placeholder="Деталь, борт, заказ, ЕКМТР, узел…" autocomplete="off"/>
+    <div id="cmdList" class="cmd-list" role="listbox"></div>
+  </div>
+</div>
+
 <div id="modalBack" class="modal-back" hidden></div>
 <div id="modalCard" class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1" hidden></div>
 
-<footer>WK CRM · данные: прайсы ДП/УСО, ведомость взаимозаменяемости WK4.7, SAP (остатки, закупки, ПМ-06), TOPO КТГ · сборка build/*.py</footer>
+<footer>WK CRM · ветка grok · данные: прайсы ДП/УСО, ведомость взаимозаменяемости WK4.7, SAP, TOPO · сборка build/*.py</footer>
 
 <script src="lib/xlsx_stream.js"></script>
 <script src="lib/stock_pipeline.js"></script>
