@@ -26,6 +26,8 @@ python3 build/build_fleet.py      <ktg.json> data/fleet_books.json         data/
 python3 build/build_repairs.py    <topo_data_dir> data/ekmtr_wk.json       data/
 python3 build/build_provision.py  <topo_data_dir> data/ekmtr_wk.json \
                                    data/stock.json                         data/
+python3 build/build_uso_wk.py     <uso_mtr.json>                          data/
+
 
 # необязательные — реестр документов и чертежей, не в критическом пути
 git ls-tree -r -l origin/rawdata "rawdata/АТ майнинг/" \

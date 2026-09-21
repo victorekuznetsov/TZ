@@ -66,6 +66,8 @@ assert.equal(stockAtSite({ availQty: 10, byWarehouse: { "1100": 10 } }, "", "").
 assert.equal(warehouseSite("Бывш. Вост. Техн").site, "1100");
 assert.equal(warehouseSite("Склад Янтарь").site, "1400");
 assert.equal(warehouseSite("Консигнация").kind, "consign");
+assert.equal(warehouseSite("7104/Не присвоено").site, "1400");
+assert.equal(warehouseSite("7104/Не присвоено").kind, "contractor");
 const mag = stockAtSite({ availQty: 2, byWarehouse: { "Бывш. Вост. Техн": 2 } }, "1400", "Магадан");
 assert.equal(mag.matched, false);
 assert.equal(mag.siteQty, 0);

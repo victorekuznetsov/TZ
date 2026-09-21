@@ -29,6 +29,11 @@ build_stock.py) и сравнивается с датой начала рабо�
   * срок прихода закупки известен только до месяца — внутри месяца
     считаем, что приход успевает;
   * строки с фактом (a>0 или qf>0) — уже исполнены, это не потребность.
+    В PM-06 план и факт одной позиции приходят РАЗНЫМИ строками
+    (qp/p на одной, qf/a на другой). Сначала сливаются в зерно
+    заказ × ЕО × вид работ × материал, затем remaining = max(qp − qf, 0).
+    Без слияния закрытый заказ (как 1200407027) висел бы дефицитом.
+
 
 Выход: data/provision.json
 
@@ -66,7 +71,12 @@ def as_of(meta):
 
 
 def load_need(topo_dir):
-    """Открытые строки плана ТОиР по технике WK за 2026-2027."""
+    """Открытые строки плана ТОиР по технике WK за 2026-2027.
+
+    PM-06 хранит план и факт отдельными строками одного заказа и материала.
+    Сливаем их в зерно (заказ × ЕО × вид работ × материал) — так же, как
+    build_schedule.py — и только потом считаем max(план − факт, 0).
+    """
     need = []
     nocode_rows = 0
     nocode_v = 0.0
@@ -77,32 +87,47 @@ def load_need(topo_dir):
         if not wk_idx:
             continue
         od, orr = d.get("od", {}), d.get("orr", {})
+        grains = {}
         for i in range(d["n"]):
             if d["ei"][i] not in wk_idx:
                 continue
-            qp, qf, pv = N(d["qp"][i]), N(d["qf"][i]), N(d["p"][i])
-            remaining = max(qp - qf, 0)
-            if remaining <= 0:
-                continue  # без количества распределять нечего
-            ci = d["ci"][i]
-            code = d["cek"][ci] if ci < len(d["cek"]) else ""
-            if not code:
-                nocode_rows += 1
-                nocode_v += pv
-                continue
+            ei, ci, wi = d["ei"][i], d["ci"][i], d.get("wi", [None] * d["n"])[i]
             order = d["o"][i]
-            ei = d["ei"][i]
-            wi = d.get("wi", [None] * d["n"])[i]
-            unit = d["e"][ei] if isinstance(ei, int) and ei < len(d["e"]) else ""
-            work = d.get("w", [])[wi] if isinstance(wi, int) and wi < len(d.get("w", [])) else ""
-            need.append({
-                "date": (od.get(order) or [""])[0] or "",
-                "code": code, "qty": remaining,
-                "value": pv * remaining / qp if qp else 0,
-                "planQty": qp, "factQty": qf, "order": order,
-                "kind": orr.get(order, ""), "site": d["s"], "year": d["y"],
-                "mat": d["c"][ci], "unit": unit, "work": work,
-            })
+            key = (order, ei, wi, ci)
+            g = grains.get(key)
+            if g is None:
+                unit = d["e"][ei] if isinstance(ei, int) and ei < len(d["e"]) else ""
+                work = d.get("w", [])[wi] if isinstance(wi, int) and wi < len(d.get("w", [])) else ""
+                code = d["cek"][ci] if isinstance(ci, int) and ci < len(d.get("cek", [])) else ""
+                mat = d["c"][ci] if isinstance(ci, int) and ci < len(d.get("c", [])) else ""
+                g = {
+                    "date": (od.get(order) or [""])[0] or "",
+                    "code": code, "mat": mat, "order": order,
+                    "kind": orr.get(order, ""), "site": d["s"], "year": d["y"],
+                    "unit": unit, "work": work, "method": d.get("u", [""])[i] or "",
+                    "planQty": 0.0, "factQty": 0.0, "planValue": 0.0, "factValue": 0.0,
+                    "usoPlan": 0.0, "usoFact": 0.0,
+                }
+                grains[key] = g
+            g["planQty"] += N(d["qp"][i])
+            g["factQty"] += N(d["qf"][i])
+            g["planValue"] += N(d["p"][i])
+            g["factValue"] += N(d["a"][i])
+            g["usoPlan"] += N(d.get("up", [0])[i] if i < len(d.get("up", [])) else 0)
+            g["usoFact"] += N(d.get("uf", [0])[i] if i < len(d.get("uf", [])) else 0)
+            if d.get("u") and d["u"][i]:
+                g["method"] = d["u"][i]
+        for g in grains.values():
+            remaining = max(g["planQty"] - g["factQty"], 0)
+            if remaining <= 0:
+                continue
+            if not g["code"]:
+                nocode_rows += 1
+                nocode_v += g["planValue"] * remaining / g["planQty"] if g["planQty"] else 0
+                continue
+            g["qty"] = remaining
+            g["value"] = g["planValue"] * remaining / g["planQty"] if g["planQty"] else 0
+            need.append(g)
         del d
     return need, nocode_rows, nocode_v
 
@@ -217,17 +242,24 @@ def build_orders(rows, names):
                 "date": r["date"], "work": r["work"], "code": r["code"],
                 "name": names.get(r["code"], "") or r["mat"],
                 "qty": round(r["qty"], 3), "value": round(r["value"], 2),
+                "planQty": round(r.get("planQty") or 0, 3),
+                "factQty": round(r.get("factQty") or 0, 3),
+                "method": r.get("method") or "",
+                "usoPlan": round(r.get("usoPlan") or 0, 2),
+                "usoFact": round(r.get("usoFact") or 0, 2),
                 **{k: round(r[k], 3) for k in KEYS},
                 **{k + "Value": round(val(r, k), 2) for k in KEYS},
             })
         years = sorted({str(r["year"]) for r in lines})
         dates = sorted(r["date"] for r in lines if r["date"])
         model_match = re.search(r"WK-?(\d+C?)", unit or "", re.I)
+        methods = sorted({r.get("method") for r in lines if r.get("method")})
         out.append({
             "id": order_id(site, unit, order), "site": site, "unit": unit,
             "model": "WK-" + model_match.group(1).upper() if model_match else "",
             "order": order, "years": years, "date": dates[0] if dates else "",
             "kind": next((r["kind"] for r in lines if r["kind"]), ""),
+            "method": methods[0] if len(methods) == 1 else ("+".join(methods) if methods else ""),
             "status": status, "coverage": round(100 * on_time / t["value"], 1) if t["value"] else 0,
             **t, "lines": detail,
         })
@@ -364,7 +396,7 @@ def main():
     orders = build_orders(known, wk_names)
     result = {
         "meta": {
-            "src": "TOPO data/<площадка>_<год>.json, годы 2026-2027",
+            "src": "TOPO data/<площадка>_<год>.json, годы 2026-2027; план и факт слиты в зерно заказ×материал",
             "srcStock": sj["meta"].get("srcStock"),
             "srcPurchase": sj["meta"].get("srcPurchase"),
             "asOf": today.strftime("%Y-%m-%d"),

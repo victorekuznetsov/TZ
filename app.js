@@ -96,7 +96,7 @@ const TAB_NEEDS = {
   kb: ["kb", "tree", "linkome"],
   fleet: [],
   repairs: [],
-  provision: ["interchange"],
+  provision: ["interchange", "usoWk"],
   stock: [],
   purchase: [],
   codif: ["tree"],
@@ -162,6 +162,9 @@ function warehouseSite(name) {
   const raw = String(name || "").trim();
   const w = raw.toLowerCase();
   if (/консигнац/.test(w)) return { site: "", kind: "consign", label: "консигнация" };
+  const plant = (raw.match(/^710\d/) || [])[0];
+  const PLANTS = { "7101": ["1100", "Развитие Красноярск"], "7102": ["1200", "Развитие Иркутск"], "7103": ["1300", "Развитие Алдан"], "7104": ["1400", "Развитие Магадан"] };
+  if (plant && PLANTS[plant]) return { site: PLANTS[plant][0], kind: "contractor", label: PLANTS[plant][1] + " (подрядчик)" };
   if (/^1400\b|магадан|янтарь/.test(w)) return { site: "1400", kind: "site", label: "Магадан" };
   if (/^2400\b|сухой\s*лог/.test(w)) return { site: "2400", kind: "site", label: "Сухой Лог" };
   if (/^1200\b|вернин/.test(w)) return { site: "1200", kind: "site", label: "Вернинское" };
@@ -169,7 +172,6 @@ function warehouseSite(name) {
   if (/^1100\b|еруда|благодат|ожок|бгок|карьер|восточн|вост\.?\s*техн|бывш/.test(w))
     return { site: "1100", kind: "site", label: "Красноярск / Еруда" };
   if (/ат\s*майнинг/.test(w)) return { site: "", kind: "vendor", label: "поставщик" };
-  if (/^710\d/.test(w)) return { site: "", kind: "plant", label: "код " + raw.split("/")[0] };
   return { site: "", kind: "unknown", label: "площадка не подписана" };
 }
 function warehouseBreakdown(byWh) {
@@ -418,7 +420,7 @@ const FILES = {
   repairs: "repairs", provision: "provision",
   stock: "stock", quality: "quality", kb: "kb",
   drawings: "drawings", linkome: "linkome_catalog",
-  linkomeDraw: "linkome_drawings",
+  linkomeDraw: "linkome_drawings", usoWk: "uso_wk",
 };
 const CORE_KEYS = ["catalog", "ekmtrWk", "fleetBooks", "fleet", "repairs", "provision", "stock", "quality"];
 
@@ -1463,6 +1465,29 @@ function provisionOrderTotals(orders) {
 function provisionOrderCut(orders,keyfn){const m=new Map;orders.forEach(o=>{const k=keyfn(o);if(!m.has(k))m.set(k,[]);m.get(k).push(o)});return [...m].map(([key,a])=>({key,...provisionOrderTotals(a)})).sort((a,b)=>String(a.key).localeCompare(String(b.key),'ru'))}
 function provisionMonthChart(orders){const by=new Map;orders.forEach(o=>{const k=o.date?o.date.slice(0,7):'без даты';if(!by.has(k))by.set(k,[]);by.get(k).push(o)});const rows=[...by].map(([month,a])=>({month,...provisionOrderTotals(a),orders:a.length})).sort((a,b)=>a.month.localeCompare(b.month)),max=Math.max(1,...rows.map(r=>r.value));return `<div class="prov-months">${rows.map(r=>`<button data-prov-month="${esc(r.month)}" title="${esc(r.month)} · ${num(r.orders)} заказов · ${mrub(r.value)}"><b>${esc(r.month.replace(/^20/,''))}</b><i style="height:${Math.max(3,100*r.value/max)}%"></i><span>${num(r.orders)}</span></button>`).join('')}</div>`}
 
+function usoForOrder(order) {
+  return ((D.usoWk && D.usoWk.orders) || []).filter(o => String(o.order) === String(order));
+}
+function usoBlockHtml(list) {
+  if (!list || !list.length) return "";
+  return list.map(u => `
+    <div class="card" style="margin-top:10px">
+      <h3>МТР подрядчика (УСО)${u.method ? " · " + esc(u.method) : ""}</h3>
+      <p class="hint">${esc(u.be || "")} · завод подрядчика ${esc(u.plant)} → ${esc(u.siteName || u.site)} · ${esc(u.month || "")}.
+        Это материалы из выгрузки «МТР УСО», не остаток склада Полюса.
+        ${u.closed ? '<span class="badge good">закрыто фактом</span>' : `<span class="badge warn">открыто ${rub(u.openValue)}</span>`}
+        · план ${rub(u.planValue)} · факт ${rub(u.factValue)}</p>
+      <div class="twrap"><table>
+        <thead><tr><th>ЕКМТР</th><th>Деталь</th><th class="n">План, ед.</th><th class="n">Факт, ед.</th><th class="n">План ₽</th><th class="n">Факт ₽</th></tr></thead>
+        <tbody>${(u.lines || []).map(l => `<tr>
+          <td class="mono">${codeLink(l.code)}</td><td class="wrap">${esc(l.name)}</td>
+          <td class="n">${num(l.qp, 1)}</td><td class="n">${num(l.qf, 1)}</td>
+          <td class="n">${rub(l.p)}</td><td class="n">${rub(l.a)}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+    </div>`).join("");
+}
+
 function renderProvision(host) {
   const m = D.provision.meta, orders = provisionOrderRows(), w = provisionOrderTotals(orders);
   const T = w.value || 1;
@@ -1476,18 +1501,28 @@ function renderProvision(host) {
   const etaStr = dmy(eta.toISOString().slice(0, 10));
   const audit = provisionAudit(m, D.provision.items, D.stock.items);
   const auditOk = Math.abs(audit.qtyDelta) < .01 && Math.abs(audit.valueDelta) < .1 && !audit.badBalance && !audit.stockOver && !audit.buyOver;
+  const um = (D.usoWk && D.usoWk.meta) || {};
+
 
   host.innerHTML = `
     <h1>Обеспеченность плана ТОиР 2026–2027</h1>
-    <p class="sub">${num(orders.length)} заказов в текущем контексте, ${num(w.lines)} открытых строк потребности.
-      Потребность закрывается <b>доступным остатком</b> (за вычетом ограниченного) и <b>уже размещённой закупкой</b>,
-      приход которой сопоставлен с датой начала работ помесячно. Данные на ${dmy(m.asOf)}.</p>
+    <p class="sub">${num(orders.length)} открытых заказов в текущем контексте, ${num(w.lines)} строк потребности.
+      План и факт PM-06 слиты в зерно «заказ × материал» — закрытый заказ больше не висит дефицитом.
+      Покрытие — доступный остаток Полюса и уже размещённая закупка. Данные на ${dmy(m.asOf)}.</p>
+    ${callout("info", `В SAP план и факт одной позиции приходят <b>разными строками</b>. Раньше remaining считался по каждой строке, и заказ 1200407027 (WK-20C №6, Магадан, начало 24.07.2026) выглядел необеспеченным, хотя факт уже закрыл все 5 позиций МТР. Сейчас таких закрытых заказов нет в открытом списке.`)}
     <div class="kpis">
       ${kpi("Заказов", num(orders.length))}
       ${kpi("Потребность WK", mrub(w.value))}
       ${kpi("Обеспечено к сроку", mrub(w.fromStock + w.fromBuy) + ` <span class="kpi-sub">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}%</span>`, "good")}
       ${kpi("Не обеспечено", mrub(gapTotal) + ` <span class="kpi-sub">${num(100 * gapTotal / T, 0)}%</span>`, "bad")}
     </div>
+    ${um.orders ? `<div class="kpis">
+      ${kpi("Заказов УСО WK", num(um.orders))}
+      ${kpi("МТР подрядчика, план", mrub(um.planValue))}
+      ${kpi("МТР подрядчика, факт", mrub(um.factValue), "good")}
+      ${kpi("УСО ещё открыто", mrub(um.openValue), um.openValue > 0 ? "warn" : "good")}
+    </div>
+    <p class="hint">УСО — материалы подрядчика из <code>rawdata/УСО</code> TOPO (АО «Развитие», заводы 7101–7104). Они не смешиваются с остатком Полюса и не закрывают ATP-дефицит чужим складом.</p>` : ""}
 
     <div class="prov-order-filters">
       <label>Год<select id="provYear"><option value="">Все</option>${['2026','2027'].map(y=>`<option${PROV_FILTER.year===y?' selected':''}>${y}</option>`).join('')}</select></label>
@@ -1582,20 +1617,23 @@ function renderProvision(host) {
   byId('provOrderReset').onclick=()=>{PROV_FILTER={year:'',from:'',to:'',status:'',q:''};PROV_SELECTED=null;rerenderProvision()};
   qsa('[data-prov-month]',host).forEach(b=>b.onclick=()=>{const month=b.dataset.provMonth;if(month==='без даты'){PROV_FILTER.from='';PROV_FILTER.to=''}else{const [y,mn]=month.split('-').map(Number),last=new Date(Date.UTC(y,mn,0)).getUTCDate();PROV_FILTER.year=String(y);PROV_FILTER.from=`${month}-01`;PROV_FILTER.to=`${month}-${String(last).padStart(2,'0')}`}PROV_SELECTED=null;rerenderProvision()});
   renderTable(byId('provOrders'),{rows:orders,limit:100,sortKey:'date',sortDir:1,csv:true,csvName:'wk_provision_orders.csv',onRowClick:o=>{PROV_SELECTED=o.id;showOrder(o)},cols:[
-    {key:'date',label:'Начало'},{key:'site',label:'Площадка',fmt:v=>esc(sites[v]||v)},{key:'unit',label:'Машина',cls:'wrap'},{key:'order',label:'Заказ'},{key:'kind',label:'Вид затрат',cls:'wrap'},{key:'value',label:'Потребность',numeric:true,fmt:rub},{key:'coverage',label:'Обеспеченность',numeric:true,fmt:(v,r)=>`<span class="prov-cover"><i style="width:${Math.min(100,v)}%"></i></span><small>${num(v,0)}%</small>`},{key:'gap',label:'Не покрыто',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>mrub(r.late+r.undated+r.gap)}
+    {key:'date',label:'Начало'},{key:'site',label:'Площадка',fmt:v=>esc(sites[v]||v)},{key:'unit',label:'Машина',cls:'wrap'},{key:'order',label:'Заказ'},{key:'method',label:'Способ',fmt:v=>v?esc(v):'<span class="dim">—</span>'},{key:'kind',label:'Вид затрат',cls:'wrap'},{key:'value',label:'Потребность',numeric:true,fmt:rub},{key:'coverage',label:'Обеспеченность',numeric:true,fmt:(v,r)=>`<span class="prov-cover"><i style="width:${Math.min(100,v)}%"></i></span><small>${num(v,0)}%</small>`},{key:'gap',label:'Не покрыто',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>mrub(r.late+r.undated+r.gap)}
   ]});
   function showOrder(o){
     const box=byId('provOrderDetail'); if(!box) return;
     G.order = o.order; G.unit = o.unit || G.unit; G.site = o.site || G.site;
     writeHash(false);
-    box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${num(o.lines.length)} строк. Цена — прайс ДП; график закупки — открытые заявки и заказы SAP, не дефицит ATP.</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>${provBar(o,o.value||1,11)}${provLegend(o)}<div id="provOrderLines"></div></div>`;
+    const uso = usoForOrder(o.order);
+    box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${esc(o.method||"")} · ${num(o.lines.length)} открытых строк МТР. План/факт — зерно PM-06; УСО — отдельно, из выгрузки подрядчика.</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>${provBar(o,o.value||1,11)}${provLegend(o)}<div id="provOrderLines"></div><div id="provOrderUso">${usoBlockHtml(uso)}</div></div>`;
     renderTable(byId('provOrderLines'),{rows:o.lines,limit:200,sortKey:'value',csv:true,csvName:`order_${o.order}_provision.csv`,onRowClick:l=>openCodeDetail(l.code, o.date),cols:[
       {key:'work',label:'Вид работ',cls:'wrap'},
       {key:'code',label:'ЕКМТР',cls:'mono',fmt:v=>codeLink(v)},
       {key:'name',label:'Деталь',cls:'wrap'},
       {key:'code',label:'Цена ДП',numeric:true,plain:(v)=>{const c=catalogByEkmtr(v);return c&&c.priceCNY||"";},fmt:(v)=>{const c=catalogByEkmtr(v);return c&&c.priceCNY!=null?cny(c.priceCNY)+ (getRate()?`<span class="sup-sub">${rub(c.priceCNY*getRate())}</span>`:""):'<span class="dim">нет в прайсе</span>';}},
-      {key:'value',label:'Сумма заказа',numeric:true,fmt:rub},
-      {key:'qty',label:'Нужно',numeric:true,fmt:v=>num(v,3)},
+      {key:'value',label:'Открытая сумма',numeric:true,fmt:rub},
+      {key:'planQty',label:'План',numeric:true,fmt:(v,r)=>num(r.planQty,3)},
+      {key:'factQty',label:'Факт',numeric:true,fmt:(v,r)=>num(r.factQty,3)},
+      {key:'qty',label:'Ещё нужно',numeric:true,fmt:v=>num(v,3)},
       {key:'fromStock',label:'Склад',numeric:true,fmt:(v,r)=>{const st=STOCK_BY_CODE.get(String(r.code)); return `${num(v,3)}${st?`<div class="sup-sub">${warehouseHtml(st.byWarehouse,o.site)}</div>`:""}`;}},
       {key:'code',label:'Закупка',cls:'wrap',plain:(v,r)=>{const st=STOCK_BY_CODE.get(String(v)); const vs=purchaseAgainstDate(st&&st.purchase, r.date||o.date); return vs.label;},fmt:(v,r)=>{
         const st=STOCK_BY_CODE.get(String(v)); const vs=purchaseAgainstDate(st&&st.purchase, r.date||o.date);
@@ -1608,11 +1646,25 @@ function renderProvision(host) {
       {key:'code',label:'',plain:()=>'',fmt:(v,r)=>cartAddBtn({code:v,name:r.name,value:r.value,source:`Заказ ${o.order}`,order:o.order,unit:o.unit,site:o.site})}
     ]});
     wireCartButtons(byId('provOrderLines'));
-    wireCodeLinks(byId('provOrderLines'));
+    wireCodeLinks(box);
     qs('[data-close-prov]',box).onclick=()=>{PROV_SELECTED=null;box.innerHTML=''};
     box.scrollIntoView({behavior:'smooth',block:'nearest'});
   }
   if(PROV_SELECTED){const selected=orders.find(o=>o.id===PROV_SELECTED);if(selected)showOrder(selected)}
+  else if(G.order){
+    const open=orders.find(o=>String(o.order)===String(G.order));
+    if(open) showOrder(open);
+    else {
+      const uso=usoForOrder(G.order);
+      const box=byId('provOrderDetail');
+      if(box && uso.length){
+        box.innerHTML = callout("good", `Заказ <b>${esc(G.order)}</b> не в открытой потребности: план МТР закрыт фактом PM-06. Ниже — МТР подрядчика по этому заказу.`) + usoBlockHtml(uso);
+        wireCodeLinks(box);
+      } else if (box) {
+        box.innerHTML = callout("info", `Заказ <b>${esc(G.order)}</b> не найден среди открытых строк WK и не найден в срезе УСО.`);
+      }
+    }
+  }
 
   const items = D.provision.items;
   const provisionItemByCode = new Map(items.map(i => [String(i.code), i]));
@@ -1939,7 +1991,9 @@ function renderDoc(host) {
         <li>Обеспеченность считается только по номенклатуре WK (код входит в ППЗ 3.1.2.7 «Запчасти к экскаваторам WK»).</li>
         <li>Дубли карточек КТГ схлопываются по паре (площадка, точное имя борта) — берётся запись с непустым планом КТГ.</li>
         <li>КТГ план = поля p/pm витрины TOPO, КТГ факт = a/am. Это не КИО: коэффициент использования в ktg.json отдельно не приходит.</li>
-        <li>Склад в MM-M03 приходит именем, без кода площадки. Подпись площадки — эвристика по названию (Еруда/Благодатный/ОГОК → 1100, Янтарь/Магадан → 1400). Неподписанный склад показывается как есть, не прячется.</li>
+        <li>Склад в MM-M03 приходит именем, без кода площадки. Подпись площадки — эвристика по названию (Еруда/Благодатный/ОГОК → 1100, Янтарь/Магадан → 1400). Коды 7101–7104 — заводы подрядчика АО «Развитие», не склады Полюса.</li>
+        <li>План и факт PM-06 одной позиции приходят разными строками. Обеспеченность сначала сливает зерно заказ × материал, затем remaining = max(план − факт, 0). Иначе закрытый заказ висит дефицитом.</li>
+        <li>МТР подрядчика (УСО) — отдельная выгрузка TOPO <code>rawdata/УСО</code>. Она не вычитается из остатка Полюса и не подменяет ATP.</li>
       </ul>
     </div>
     <div class="card"><h3>Обеспеченность: как считается</h3>
