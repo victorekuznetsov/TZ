@@ -2057,11 +2057,63 @@ function renderDoc(host) {
 }
 
 /* ===================== ОБНОВЛЕНИЕ ДАННЫХ ===================== */
-/* Пересборка stock.json (остатки + ограниченный запас + закупки) прямо
-   в браузере — те же правила, что в build/build_stock.py (доступно =
-   остаток минус ограниченное), см. lib/stock_pipeline.js. Файлы не
-   уходят никуда за пределы вкладки: разбор целиком в браузере. */
-const UPD = { files: {}, busy: false, progress: null, result: null, err: "" };
+/* Пересборка витрин прямо в браузере. Файлы не покидают вкладку.
+   Остатки — lib/stock_pipeline.js; ТОРО PM-06 — lib/pm06_pipeline.js
+   + ATP WK (lib/wk_update_pipeline.js); УСО — lib/uso_pipeline.js. */
+const UPD = { files: {}, busy: false, progress: null, result: null, err: "", applied: false };
+const UPD_TORO = { files: [], busy: false, progress: null, err: "", results: [], provision: null, applied: false, msg: "" };
+const UPD_USO = { files: [], busy: false, progress: null, err: "", usoWk: null, applied: false, msg: "", years: [] };
+let UPD_LIBS = null;
+
+function updLoadLibs() {
+  if (UPD_LIBS) return UPD_LIBS;
+  const one = src => new Promise((res, rej) => {
+    if ((src.includes("pm06") && typeof PM06 !== "undefined") ||
+        (src.includes("uso_pipeline") && typeof USOPIPE !== "undefined") ||
+        (src.includes("wk_update") && typeof WkUpdate !== "undefined")) return res();
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = res;
+    el.onerror = () => rej(new Error("Не загрузился " + src + " — папка lib должна лежать рядом с index.html"));
+    document.head.appendChild(el);
+  });
+  UPD_LIBS = Promise.all([
+    one("lib/pm06_pipeline.js"),
+    one("lib/uso_pipeline.js"),
+    one("lib/wk_update_pipeline.js"),
+  ]).catch(e => { UPD_LIBS = null; throw e; });
+  return UPD_LIBS;
+}
+
+async function updStreamPm06(zip, onRow, onProgress) {
+  try {
+    return await XLSXStream.streamSheet(zip, "PM-06", onRow, onProgress);
+  } catch (e) {
+    const name = await StockPipeline.firstSheetName(zip);
+    if (!name || name === "PM-06") throw e;
+    return await XLSXStream.streamSheet(zip, name, onRow, onProgress);
+  }
+}
+
+function updTickBar(id, pct, text) {
+  const bar = byId(id), txt = byId(id + "Txt");
+  if (bar) bar.style.width = Math.max(0, Math.min(100, pct)) + "%";
+  if (txt) txt.textContent = text;
+}
+
+function updDownloadNamed(filename, text) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+function updDownloadPair(jsonName, key, obj) {
+  const raw = JSON.stringify(obj);
+  updDownloadNamed(jsonName, raw);
+  const js = "window.__DATA__=window.__DATA__||{};window.__DATA__[\"" + key + "\"]=" + raw.replace(/<\//g, "<\\/") + ";\n";
+  setTimeout(() => updDownloadNamed(jsonName.replace(/\.json$/, ".local.js"), js), 400);
+}
 
 async function updRun() {
   if (UPD.busy) return;
@@ -2104,12 +2156,7 @@ function updApply() {
 
 function updDownload() {
   if (!UPD.result) return;
-  const blob = new Blob([JSON.stringify(UPD.result)], { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "stock.json";
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  updDownloadPair("stock.json", "stock", UPD.result);
 }
 
 function updDiffRow(label, oldV, newV, fmt) {
@@ -2119,63 +2166,248 @@ function updDiffRow(label, oldV, newV, fmt) {
     <td class="n"><span class="badge ${cls}">${delta >= 0 ? "+" : ""}${fmt(delta)}</span></td></tr>`;
 }
 
+async function updToroRun() {
+  if (UPD_TORO.busy || !UPD_TORO.files.length) return;
+  UPD_TORO.busy = true; UPD_TORO.err = ""; UPD_TORO.provision = null; UPD_TORO.msg = "";
+  renderTab();
+  try {
+    await updLoadLibs();
+    const details = [];
+    for (let i = 0; i < UPD_TORO.files.length; i++) {
+      const f = UPD_TORO.files[i];
+      if (!f.site || !f.year) throw new Error("Для «" + f.file.name + "» укажите площадку и год (из имени M06_1400_2026.xlsx или вручную)");
+      UPD_TORO.progress = { name: f.file.name, pct: 0 };
+      updTickBar("updToroBar", 0, f.file.name);
+      const zip = await XLSXStream.openZip(f.file);
+      const proc = PM06.createSiteRouter(f.site, f.year);
+      await updStreamPm06(zip, cells => proc.pushRow(cells), pr => {
+        const pct = pr.total ? Math.round(100 * pr.done / pr.total) : 0;
+        UPD_TORO.progress = { name: f.file.name, pct };
+        updTickBar("updToroBar", pct, f.file.name + " — " + pct + "%, " + (pr.rows || 0) + " строк");
+      });
+      proc.finishAll().forEach(r => details.push(r.detail));
+    }
+    UPD_TORO.results = details;
+    UPD_TORO.provision = WkUpdate.assemble(details, D.ekmtrWk, D.stock);
+    UPD_TORO.msg = "Разобрано " + details.length + " площадко-лет. Обеспеченность WK пересчитана по этим файлам и текущему stock.json.";
+  } catch (e) {
+    UPD_TORO.err = "Ошибка разбора ТОРО: " + (e && e.message || e);
+  }
+  UPD_TORO.busy = false; UPD_TORO.progress = null;
+  renderTab();
+}
+
+function updToroApply() {
+  if (!UPD_TORO.provision) return;
+  D.provision = UPD_TORO.provision;
+  buildIndexes();
+  UPD_TORO.applied = true;
+  renderTab();
+}
+
+async function updUsoRun() {
+  if (UPD_USO.busy || !UPD_USO.files.length) return;
+  UPD_USO.busy = true; UPD_USO.err = ""; UPD_USO.usoWk = null; UPD_USO.msg = "";
+  renderTab();
+  try {
+    await updLoadLibs();
+    const parsed = [];
+    for (let i = 0; i < UPD_USO.files.length; i++) {
+      const f = UPD_USO.files[i];
+      if (!f.year) throw new Error("Для «" + f.file.name + "» укажите год (имя «МТР УСО 2026 all.xlsx» или вручную)");
+      UPD_USO.progress = { name: f.file.name, pct: 0 };
+      updTickBar("updUsoBar", 0, f.file.name);
+      const zip = await XLSXStream.openZip(f.file);
+      const proc = USOPIPE.createProcessor(f.year);
+      await updStreamPm06(zip, cells => proc.pushRow(cells), pr => {
+        const pct = pr.total ? Math.round(100 * pr.done / pr.total) : 0;
+        UPD_USO.progress = { name: f.file.name, pct };
+        updTickBar("updUsoBar", pct, f.file.name + " — " + pct + "%");
+      });
+      parsed.push(proc.finish());
+    }
+    const years = new Set(parsed.map(r => String(r.year)));
+    const props = WkUpdate.orderPropsFromDetails(UPD_TORO.results || []);
+    ((D.usoWk && D.usoWk.orders) || []).forEach(o => {
+      if (!props.has(String(o.order))) props.set(String(o.order), { e: o.unit, u: o.method, w: o.work, orr: o.kind, bs: o.month });
+    });
+    ((D.provision && D.provision.orders) || []).concat((D.provision && D.provision.closedOrders) || []).forEach(o => {
+      if (!props.has(String(o.order))) props.set(String(o.order), { e: o.unit, u: o.method, w: (o.lines && o.lines[0] && o.lines[0].work) || "", orr: o.kind, bs: o.date });
+    });
+    USOPIPE.enrich(parsed.flatMap(r => r.rows), props);
+    const fresh = WkUpdate.buildUsoWk(parsed.flatMap(r => r.rows), props, D.usoWk && D.usoWk.meta);
+    UPD_USO.years = [...years];
+    UPD_USO.usoWk = WkUpdate.mergeUsoWk(D.usoWk, fresh, years);
+    UPD_USO.msg = "Годы " + UPD_USO.years.join(", ") + " заменены в срезе УСО WK. Остальные годы текущей витрины сохранены.";
+  } catch (e) {
+    UPD_USO.err = "Ошибка разбора УСО: " + (e && e.message || e);
+  }
+  UPD_USO.busy = false; UPD_USO.progress = null;
+  renderTab();
+}
+
+function updUsoApply() {
+  if (!UPD_USO.usoWk) return;
+  D.usoWk = UPD_USO.usoWk;
+  UPD_USO.applied = true;
+  renderTab();
+}
+
 function renderUpdate(host) {
   const f = UPD.files;
+  const toro = UPD_TORO.files;
+  const uso = UPD_USO.files;
+  const tp = UPD_TORO.provision, um = UPD_USO.usoWk;
   host.innerHTML = `
     <h1>Обновление данных</h1>
-    <p class="sub">Пересборка остатков, ограниченного запаса и закупок — прямо в браузере, без Python. Разбирает те же три файла, что и <code>build/build_stock.py</code>, теми же правилами; файлы не покидают вкладку.</p>
-    ${callout("info", "Официальный способ обновить данные портала — <code>python3 build/build_stock.py</code> и коммит в репозиторий: здесь только предпросмотр и файл на скачивание, ничего не публикуется само.")}
+    <p class="sub">Три контура выгрузок SAP BW — остатки, ТОРО (PM-06) и МТР подрядчика (УСО). Разбор в браузере, файлы никуда не уходят. Чтобы изменения остались после перезагрузки, скачайте JSON и замените файлы в <code>data/</code>.</p>
+    ${callout("info", "Официальный путь в репозиторий — Python <code>build/*.py</code>. Здесь предпросмотр и файл на скачивание.")}
 
     <div class="card">
-      <h3>1. Файлы</h3>
-      <p class="hint">Три отдельных поля — надёжнее, чем угадывать тип по имени файла (его могут переименовать при сохранении).</p>
+      <h3>1. Остатки, ограниченный запас, закупка</h3>
+      <p class="hint">Те же три файла, что <code>build/build_stock.py</code>. Три поля — надёжнее, чем угадывать тип по имени.</p>
       <div class="dl" style="grid-template-columns:170px 1fr">
-        <dt>Остатки</dt><dd><input type="file" id="updFileStock" accept=".xlsx,.XLSX"/> ${f.stock ? `<span class="badge good">✓ ${esc(f.stock.name)}</span>` : ""}</dd>
+        <dt>Остатки MM-M03</dt><dd><input type="file" id="updFileStock" accept=".xlsx,.XLSX"/> ${f.stock ? `<span class="badge good">✓ ${esc(f.stock.name)}</span>` : ""}</dd>
         <dt>Ограниченный запас</dt><dd><input type="file" id="updFileRestricted" accept=".xlsx,.XLSX"/> ${f.restricted ? `<span class="badge good">✓ ${esc(f.restricted.name)}</span>` : ""}</dd>
-        <dt>Закупка</dt><dd><input type="file" id="updFilePurchase" accept=".xlsx,.XLSX"/> ${f.purchase ? `<span class="badge good">✓ ${esc(f.purchase.name)}</span>` : ""}</dd>
+        <dt>Закупка ALL</dt><dd><input type="file" id="updFilePurchase" accept=".xlsx,.XLSX"/> ${f.purchase ? `<span class="badge good">✓ ${esc(f.purchase.name)}</span>` : ""}</dd>
       </div>
       <div style="margin-top:12px">
-        <button class="iconbtn ${Object.keys(f).length === 3 ? "on" : ""}" id="updGo" ${UPD.busy ? "disabled" : ""}>${UPD.busy ? "Разбор…" : "Пересобрать"}</button>
+        <button class="iconbtn ${Object.keys(f).length === 3 ? "on" : ""}" id="updGo" ${UPD.busy ? "disabled" : ""}>${UPD.busy ? "Разбор…" : "Пересобрать остатки"}</button>
       </div>
       ${UPD.progress ? `<div class="bar" style="margin-top:10px;height:8px"><i style="width:${UPD.progress.pct}%"></i></div><p class="hint">${esc(UPD.progress.label)} — ${UPD.progress.pct}%</p>` : ""}
       ${UPD.err ? callout("bad", esc(UPD.err)) : ""}
+      ${UPD.result ? `
+        <div class="twrap" style="margin-top:12px"><table>
+          <thead><tr><th>Показатель</th><th class="n">Сейчас</th><th class="n">Новая выгрузка</th><th class="n">Δ</th></tr></thead>
+          <tbody>
+            ${updDiffRow("Остаток всего", D.stock.meta.totalValue, UPD.result.meta.totalValue, rub)}
+            ${updDiffRow("Доступно", D.stock.meta.totalAvailValue, UPD.result.meta.totalAvailValue, rub)}
+            ${updDiffRow("Ограничено", D.stock.meta.totalRestrictedValue, UPD.result.meta.totalRestrictedValue, rub)}
+            ${updDiffRow("Закупка план", D.stock.meta.totalPurchasePlanValue, UPD.result.meta.totalPurchasePlanValue, rub)}
+          </tbody>
+        </table></div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="iconbtn on" id="updApplyBtn">Применить в этом сеансе</button>
+          <button class="iconbtn" id="updDownloadBtn">Скачать stock.json</button>
+        </div>
+        ${UPD.applied ? callout("good", "Остатки применены. «Обеспеченность» сама не пересчитается — загрузите PM-06 ниже или запустите <code>build_provision.py</code>.") : ""}
+      ` : ""}
     </div>
 
-    ${UPD.result ? `
     <div class="card">
-      <h3>2. Сверка с текущими данными портала</h3>
-      <div class="twrap"><table>
-        <thead><tr><th>Показатель</th><th class="n">Сейчас</th><th class="n">Новая выгрузка</th><th class="n">Δ</th></tr></thead>
-        <tbody>
-          ${updDiffRow("Остаток всего", D.stock.meta.totalValue, UPD.result.meta.totalValue, rub)}
-          ${updDiffRow("Доступно", D.stock.meta.totalAvailValue, UPD.result.meta.totalAvailValue, rub)}
-          ${updDiffRow("Ограничено", D.stock.meta.totalRestrictedValue, UPD.result.meta.totalRestrictedValue, rub)}
-          ${updDiffRow("Полностью ограничено, кодов", D.stock.meta.fullyRestrictedCodes, UPD.result.meta.fullyRestrictedCodes, v => num(v))}
-          ${updDiffRow("Закупка план", D.stock.meta.totalPurchasePlanValue, UPD.result.meta.totalPurchasePlanValue, rub)}
-          ${updDiffRow("Кодов с остатком", D.stock.meta.codesWithStock, UPD.result.meta.codesWithStock, v => num(v))}
-        </tbody>
-      </table></div>
-      <div style="margin-top:12px;display:flex;gap:8px">
-        <button class="iconbtn on" id="updApplyBtn">Применить в этом сеансе</button>
-        <button class="iconbtn" id="updDownloadBtn">Скачать stock.json</button>
+      <h3>2. ТОРО · гибкий отчёт PM-06 (BW)</h3>
+      <p class="hint">Сырые <code>M06_{площадка}_{год}.xlsx</code> (лист PM-06). Площадка и год — из имени, иначе вручную. Можно несколько файлов. Обеспеченность WK пересчитывается <b>по загруженным файлам</b> и текущему stock: чтобы картина по всем площадкам, положите 1100/1200/1300/1400/2400 за 2026–2027.</p>
+      <input type="file" id="updToroInput" accept=".xlsx,.XLSX" multiple hidden/>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="minibtn" type="button" id="updToroPick">Выбрать файлы PM-06…</button>
+        ${toro.length ? `<button class="minibtn" type="button" id="updToroClear">Очистить</button>
+          <button class="iconbtn on" type="button" id="updToroGo" ${UPD_TORO.busy ? "disabled" : ""}>${UPD_TORO.busy ? "Разбор…" : "Пересобрать обеспеченность"}</button>` : ""}
       </div>
-      ${UPD.applied ? callout("good", "Применено в этом сеансе: разделы «Запасы», «Закупки» и карточки деталей используют новую выгрузку. «Обеспеченность» не пересчитывается в браузере: для неё нужен <code>build/build_provision.py</code>.") : ""}
-      <p class="hint" style="margin-top:8px">Чтобы изменения остались навсегда — скачайте файл и замените <code>data/stock.json</code> в репозитории.</p>
-    </div>` : ""}
+      ${toro.length ? `<div class="twrap" style="margin-top:10px"><table>
+        <thead><tr><th>Файл</th><th class="n">МБ</th><th>Площадка</th><th>Год</th></tr></thead>
+        <tbody>${toro.map((x,i)=>`<tr>
+          <td>${esc(x.file.name)}</td><td class="n">${(x.file.size/1e6).toFixed(1)}</td>
+          <td><input data-toro-site="${i}" value="${esc(x.site)}" size="6"/></td>
+          <td><input data-toro-year="${i}" value="${esc(x.year)}" size="6"/></td>
+        </tr>`).join("")}</tbody></table></div>` : `<p class="hint" style="margin-top:8px">Нажмите «Выбрать файлы» и укажите выгрузки BW PM-06.</p>`}
+      ${(UPD_TORO.busy || UPD_TORO.progress) ? `<div class="bar" style="margin-top:10px;height:8px"><i id="updToroBar" style="width:${(UPD_TORO.progress&&UPD_TORO.progress.pct)||0}%"></i></div><p class="hint" id="updToroBarTxt">${esc((UPD_TORO.progress&&UPD_TORO.progress.name)||"Разбор…")}</p>` : ""}
+      ${UPD_TORO.err ? callout("bad", esc(UPD_TORO.err)) : ""}
+      ${UPD_TORO.msg ? callout("info", esc(UPD_TORO.msg)) : ""}
+      ${tp ? `
+        <div class="twrap" style="margin-top:12px"><table>
+          <thead><tr><th>Показатель</th><th class="n">Сейчас</th><th class="n">Новый PM-06</th><th class="n">Δ</th></tr></thead>
+          <tbody>
+            ${updDiffRow("Открытых заказов WK", D.provision.meta.orders, tp.meta.orders, v => num(v))}
+            ${updDiffRow("Закрытых фактом", D.provision.meta.closedOrders || 0, tp.meta.closedOrders || 0, v => num(v))}
+            ${updDiffRow("Потребность WK", D.provision.meta.wk.value, tp.meta.wk.value, rub)}
+            ${updDiffRow("Не покрыто", D.provision.meta.wk.gap, tp.meta.wk.gap, rub)}
+          </tbody>
+        </table></div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="iconbtn on" id="updToroApply">Применить обеспеченность</button>
+          <button class="iconbtn" id="updToroDl">Скачать provision.json</button>
+        </div>
+        ${UPD_TORO.applied ? callout("good", "Обеспеченность этого сеанса — из загруженного PM-06. Закрытый заказ больше не висит дефицитом: план и факт слиты до ATP.") : ""}
+      ` : ""}
+    </div>
+
+    <div class="card">
+      <h3>3. УСО · МТР подрядчика</h3>
+      <p class="hint">Файлы <code>МТР УСО {год} all.xlsx</code> (лист тоже PM-06 — не путать с гибким отчётом ТОРО). Один файл = все площадки за год. Заводы 7101–7104 — АО «Развитие». Единица оборудования подтягивается по номеру заказа из PM-06 этого сеанса, иначе из текущих витрин. Обновляются только выбранные годы.</p>
+      <input type="file" id="updUsoInput" accept=".xlsx,.XLSX" multiple hidden/>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="minibtn" type="button" id="updUsoPick">Выбрать файлы УСО…</button>
+        ${uso.length ? `<button class="minibtn" type="button" id="updUsoClear">Очистить</button>
+          <button class="iconbtn on" type="button" id="updUsoGo" ${UPD_USO.busy ? "disabled" : ""}>${UPD_USO.busy ? "Разбор…" : "Пересобрать УСО WK"}</button>` : ""}
+      </div>
+      ${uso.length ? `<div class="twrap" style="margin-top:10px"><table>
+        <thead><tr><th>Файл</th><th class="n">МБ</th><th>Год</th></tr></thead>
+        <tbody>${uso.map((x,i)=>`<tr>
+          <td>${esc(x.file.name)}</td><td class="n">${(x.file.size/1e6).toFixed(1)}</td>
+          <td><input data-uso-year="${i}" value="${esc(x.year)}" size="6"/></td>
+        </tr>`).join("")}</tbody></table></div>` : `<p class="hint" style="margin-top:8px">Нажмите «Выбрать файлы» и укажите выгрузки «МТР УСО».</p>`}
+      ${(UPD_USO.busy || UPD_USO.progress) ? `<div class="bar" style="margin-top:10px;height:8px"><i id="updUsoBar" style="width:${(UPD_USO.progress&&UPD_USO.progress.pct)||0}%"></i></div><p class="hint" id="updUsoBarTxt">${esc((UPD_USO.progress&&UPD_USO.progress.name)||"Разбор…")}</p>` : ""}
+      ${UPD_USO.err ? callout("bad", esc(UPD_USO.err)) : ""}
+      ${UPD_USO.msg ? callout("info", esc(UPD_USO.msg)) : ""}
+      ${um ? `
+        <div class="twrap" style="margin-top:12px"><table>
+          <thead><tr><th>Показатель</th><th class="n">Сейчас</th><th class="n">Новая выгрузка</th><th class="n">Δ</th></tr></thead>
+          <tbody>
+            ${updDiffRow("Заказов УСО WK", (D.usoWk && D.usoWk.meta.orders) || 0, um.meta.orders, v => num(v))}
+            ${updDiffRow("План подрядчика", (D.usoWk && D.usoWk.meta.planValue) || 0, um.meta.planValue, rub)}
+            ${updDiffRow("Факт подрядчика", (D.usoWk && D.usoWk.meta.factValue) || 0, um.meta.factValue, rub)}
+            ${updDiffRow("Ещё открыто", (D.usoWk && D.usoWk.meta.openValue) || 0, um.meta.openValue, rub)}
+          </tbody>
+        </table></div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="iconbtn on" id="updUsoApply">Применить УСО</button>
+          <button class="iconbtn" id="updUsoDl">Скачать uso_wk.json</button>
+        </div>
+        ${UPD_USO.applied ? callout("good", "Срез УСО WK применён. Это не склад Полюса и не закрывает ATP.") : ""}
+      ` : ""}
+    </div>
   `;
+
   [["updFileStock", "stock"], ["updFileRestricted", "restricted"], ["updFilePurchase", "purchase"]].forEach(([id, key]) => {
-    byId(id).onchange = e => {
+    const el = byId(id); if (!el) return;
+    el.onchange = e => {
       if (e.target.files[0]) UPD.files[key] = e.target.files[0];
       UPD.result = null; UPD.err = "";
       renderTab();
     };
   });
-  const go = byId("updGo");
-  if (go) go.onclick = updRun;
-  const ap = byId("updApplyBtn");
-  if (ap) ap.onclick = updApply;
-  const dl = byId("updDownloadBtn");
-  if (dl) dl.onclick = updDownload;
+  const go = byId("updGo"); if (go) go.onclick = updRun;
+  const ap = byId("updApplyBtn"); if (ap) ap.onclick = updApply;
+  const dl = byId("updDownloadBtn"); if (dl) dl.onclick = updDownload;
+
+  const pickT = byId("updToroPick");
+  if (pickT) pickT.onclick = () => byId("updToroInput").click();
+  const inpT = byId("updToroInput");
+  if (inpT) inpT.onchange = e => {
+    UPD_TORO.files = [...e.target.files].map(file => ({ file, ...WkUpdate.parseToroName(file.name) }));
+    UPD_TORO.provision = null; UPD_TORO.err = ""; UPD_TORO.msg = "";
+    renderTab();
+  };
+  qsa("[data-toro-site]", host).forEach(el => el.oninput = () => { UPD_TORO.files[+el.dataset.toroSite].site = el.value.trim(); });
+  qsa("[data-toro-year]", host).forEach(el => el.oninput = () => { UPD_TORO.files[+el.dataset.toroYear].year = el.value.trim(); });
+  const clrT = byId("updToroClear"); if (clrT) clrT.onclick = () => { UPD_TORO.files = []; UPD_TORO.provision = null; renderTab(); };
+  const goT = byId("updToroGo"); if (goT) goT.onclick = updToroRun;
+  const apT = byId("updToroApply"); if (apT) apT.onclick = updToroApply;
+  const dlT = byId("updToroDl"); if (dlT) dlT.onclick = () => updDownloadPair("provision.json", "provision", UPD_TORO.provision);
+
+  const pickU = byId("updUsoPick");
+  if (pickU) pickU.onclick = () => byId("updUsoInput").click();
+  const inpU = byId("updUsoInput");
+  if (inpU) inpU.onchange = e => {
+    UPD_USO.files = [...e.target.files].map(file => ({ file, year: WkUpdate.parseUsoName(file.name) }));
+    UPD_USO.usoWk = null; UPD_USO.err = ""; UPD_USO.msg = "";
+    renderTab();
+  };
+  qsa("[data-uso-year]", host).forEach(el => el.oninput = () => { UPD_USO.files[+el.dataset.usoYear].year = el.value.trim(); });
+  const clrU = byId("updUsoClear"); if (clrU) clrU.onclick = () => { UPD_USO.files = []; UPD_USO.usoWk = null; renderTab(); };
+  const goU = byId("updUsoGo"); if (goU) goU.onclick = updUsoRun;
+  const apU = byId("updUsoApply"); if (apU) apU.onclick = updUsoApply;
+  const dlU = byId("updUsoDl"); if (dlU) dlU.onclick = () => updDownloadPair("uso_wk.json", "uso_wk", UPD_USO.usoWk);
 }
 
 /* ===================== КАРТОЧКА ДЕТАЛИ (модалка) ===================== */
