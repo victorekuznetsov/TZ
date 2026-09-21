@@ -78,6 +78,7 @@ def load_need(topo_dir):
     build_schedule.py — и только потом считаем max(план − факт, 0).
     """
     need = []
+    closed = []
     nocode_rows = 0
     nocode_v = 0.0
     for fp in sorted(glob.glob(os.path.join(topo_dir, "*_202[67].json"))):
@@ -119,17 +120,19 @@ def load_need(topo_dir):
                 g["method"] = d["u"][i]
         for g in grains.values():
             remaining = max(g["planQty"] - g["factQty"], 0)
-            if remaining <= 0:
-                continue
             if not g["code"]:
                 nocode_rows += 1
                 nocode_v += g["planValue"] * remaining / g["planQty"] if g["planQty"] else 0
                 continue
             g["qty"] = remaining
             g["value"] = g["planValue"] * remaining / g["planQty"] if g["planQty"] else 0
+            if remaining <= 0:
+                if g["planQty"] > 0 or g["factQty"] > 0:
+                    closed.append(g)
+                continue
             need.append(g)
         del d
-    return need, nocode_rows, nocode_v
+    return need, closed, nocode_rows, nocode_v
 
 
 def allocate(need, stock, today=None):
@@ -254,13 +257,20 @@ def build_orders(rows, names):
         dates = sorted(r["date"] for r in lines if r["date"])
         model_match = re.search(r"WK-?(\d+C?)", unit or "", re.I)
         methods = sorted({r.get("method") for r in lines if r.get("method")})
+        plan_value = round(sum(r.get("planValue") or 0 for r in lines), 2)
+        fact_value = round(sum(r.get("factValue") or 0 for r in lines), 2)
+        closed = t["qty"] <= 1e-9 and (plan_value > 0 or fact_value > 0)
+        if closed:
+            status = "closed"
         out.append({
             "id": order_id(site, unit, order), "site": site, "unit": unit,
             "model": "WK-" + model_match.group(1).upper() if model_match else "",
             "order": order, "years": years, "date": dates[0] if dates else "",
             "kind": next((r["kind"] for r in lines if r["kind"]), ""),
             "method": methods[0] if len(methods) == 1 else ("+".join(methods) if methods else ""),
-            "status": status, "coverage": round(100 * on_time / t["value"], 1) if t["value"] else 0,
+            "status": status, "closed": closed,
+            "planValue": plan_value, "factValue": fact_value,
+            "coverage": 100.0 if closed else (round(100 * on_time / t["value"], 1) if t["value"] else 0),
             **t, "lines": detail,
         })
     return sorted(out, key=lambda r: (r["date"] or "9999", r["site"], r["unit"], r["order"]))
@@ -280,10 +290,16 @@ def main():
     today = as_of(sj["meta"])
     lead_default = sj["meta"].get("leadMedianDays") or 0
 
-    need, nocode_rows, nocode_v = load_need(topo_dir)
+    need, closed_rows, nocode_rows, nocode_v = load_need(topo_dir)
     need = allocate(need, stock, today)
     known = [r for r in need if r["code"] in stock]
     other = [r for r in need if r["code"] not in stock]
+    wk_closed = []
+    for r in closed_rows:
+        if r["code"] not in wk_names:
+            continue
+        r.update(fromStock=0.0, fromBuy=0.0, late=0.0, undated=0.0, gap=0.0, left=0.0)
+        wk_closed.append(r)
 
     # --- по позициям ----------------------------------------------------
     agg = defaultdict(lambda: defaultdict(float))
@@ -394,6 +410,7 @@ def main():
             bym[m or ""] += q
 
     orders = build_orders(known, wk_names)
+    closed_orders = build_orders(wk_closed, wk_names)
     result = {
         "meta": {
             "src": "TOPO data/<площадка>_<год>.json, годы 2026-2027; план и факт слиты в зерно заказ×материал",
@@ -404,6 +421,7 @@ def main():
             "leadMeasurements": sj["meta"].get("leadMeasurements"),
             "leadCodes": sj["meta"].get("leadCodes"),
             "orders": len(orders),
+            "closedOrders": len(closed_orders),
             "lines": len(need),
             "positions": len(agg),
             "noCodeRows": nocode_rows, "noCodeValue": round(nocode_v, 2),
@@ -420,6 +438,7 @@ def main():
         },
         "items": items,
         "orders": orders,
+        "closedOrders": closed_orders,
     }
     with open(os.path.join(out_dir, "provision.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, separators=(",", ":"))
@@ -428,7 +447,7 @@ def main():
     w = m["wk"]
     T = w["value"] or 1
     M = lambda x: f"{x/1e6:,.0f}".replace(",", " ")
-    print(f"на {m['asOf']}: заказов {m['orders']}, строк {m['lines']}, "
+    print(f"на {m['asOf']}: заказов {m['orders']}, закрытых {m.get('closedOrders', 0)}, строк {m['lines']}, "
           f"позиций WK {m['positions']}")
     print(f"потребность WK: {M(w['value'])} млн ₽ ({w['lines']} строк); "
           f"прочая номенклатура {M(m['notWkParts']['value'])} млн ₽ — не считаем")

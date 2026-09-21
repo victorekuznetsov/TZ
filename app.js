@@ -1452,11 +1452,27 @@ function provisionArrivalChart(arrivals, asOf) {
 
 let PROV_FILTER = { year: "", from: "", to: "", status: "", q: "" };
 let PROV_SELECTED = null;
+function provisionPass(o, partCodes, q, ge, go) {
+  return (!G.site || o.site===G.site) && (!G.model || o.model===G.model) && (!G.unit || o.unit===G.unit)
+    && (!go || normText(o.order).includes(go))
+    && (!PROV_FILTER.year || (o.years||[]).includes(PROV_FILTER.year))
+    && (!PROV_FILTER.from || !o.date || o.date>=PROV_FILTER.from)
+    && (!PROV_FILTER.to || !o.date || o.date<=PROV_FILTER.to)
+    && (!ge || (o.lines||[]).some(l=>normText(l.code).includes(ge)))
+    && (!G.part || (o.lines||[]).some(l=>partCodes.has(String(l.code))))
+    && (!q || normText([o.order,o.unit,o.kind,...(o.lines||[]).flatMap(l=>[l.code,l.name,l.work])].join(' ')).includes(q));
+}
 function provisionOrderRows() {
   const partCodes = new Set();
   if (G.part) D.catalog.items.filter(i => normArt(i.art).includes(normArt(G.part)) || normArt(i.artNew).includes(normArt(G.part))).forEach(i => i.ekmtr && partCodes.add(String(i.ekmtr)));
   const q = normText(PROV_FILTER.q), ge = normText(G.ekmtr), go = normText(G.order);
-  return (D.provision.orders || []).filter(o => (!G.site || o.site===G.site) && (!G.model || o.model===G.model) && (!G.unit || o.unit===G.unit) && (!go || normText(o.order).includes(go)) && (!PROV_FILTER.year || o.years.includes(PROV_FILTER.year)) && (!PROV_FILTER.status || o.status===PROV_FILTER.status) && (!PROV_FILTER.from || !o.date || o.date>=PROV_FILTER.from) && (!PROV_FILTER.to || !o.date || o.date<=PROV_FILTER.to) && (!ge || o.lines.some(l=>normText(l.code).includes(ge))) && (!G.part || o.lines.some(l=>partCodes.has(String(l.code)))) && (!q || normText([o.order,o.unit,o.kind,...o.lines.flatMap(l=>[l.code,l.name,l.work])].join(' ')).includes(q)));
+  const wantClosed = PROV_FILTER.status === "closed" || !!go || (!!q && /^\d{7,}$/.test(q.trim()));
+  const open = (D.provision.orders || []).filter(o => provisionPass(o, partCodes, q, ge, go) && (!PROV_FILTER.status || PROV_FILTER.status === "closed" || o.status===PROV_FILTER.status));
+  if (!wantClosed && PROV_FILTER.status !== "closed") return open;
+  const closed = (D.provision.closedOrders || []).filter(o => provisionPass(o, partCodes, q, ge, go));
+  if (PROV_FILTER.status === "closed") return closed;
+  const seen = new Set(open.map(o => o.id));
+  return open.concat(closed.filter(o => !seen.has(o.id)));
 }
 function provisionOrderTotals(orders) {
   const t={value:0,qty:0,lines:0}; for(const k of ['fromStock','fromBuy','late','undated','gap']){t[k]=0;t[k+'Qty']=0}
@@ -1509,9 +1525,10 @@ function renderProvision(host) {
     <p class="sub">${num(orders.length)} открытых заказов в текущем контексте, ${num(w.lines)} строк потребности.
       План и факт PM-06 слиты в зерно «заказ × материал» — закрытый заказ больше не висит дефицитом.
       Покрытие — доступный остаток Полюса и уже размещённая закупка. Данные на ${dmy(m.asOf)}.</p>
-    ${callout("info", `В SAP план и факт одной позиции приходят <b>разными строками</b>. Раньше remaining считался по каждой строке, и заказ 1200407027 (WK-20C №6, Магадан, начало 24.07.2026) выглядел необеспеченным, хотя факт уже закрыл все 5 позиций МТР. Сейчас таких закрытых заказов нет в открытом списке.`)}
+    ${callout("info", `В SAP план и факт одной позиции — <b>разные строки</b> (qp на одной, qf на другой). Без слияния закрытый заказ висит дефицитом: так выглядел 1200407027 (WK-20C №6, Магадан, 24.07.2026) — все 5 МТР уже с фактом. Введите номер в «Заказ» или фильтр «Закрытые фактом». МТР подрядчика (УСО) — отдельная выгрузка, её коды не обязаны совпадать с МТР Полюса.`)}
     <div class="kpis">
-      ${kpi("Заказов", num(orders.length))}
+      ${kpi("Открытых заказов", num(orders.filter(o=>o.status!=='closed').length))}
+      ${kpi("Закрытых фактом", num((D.provision.closedOrders||[]).length), "good")}
       ${kpi("Потребность WK", mrub(w.value))}
       ${kpi("Обеспечено к сроку", mrub(w.fromStock + w.fromBuy) + ` <span class="kpi-sub">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}%</span>`, "good")}
       ${kpi("Не обеспечено", mrub(gapTotal) + ` <span class="kpi-sub">${num(100 * gapTotal / T, 0)}%</span>`, "bad")}
@@ -1528,7 +1545,7 @@ function renderProvision(host) {
       <label>Год<select id="provYear"><option value="">Все</option>${['2026','2027'].map(y=>`<option${PROV_FILTER.year===y?' selected':''}>${y}</option>`).join('')}</select></label>
       <label>Период с<input id="provFrom" type="date" value="${esc(PROV_FILTER.from)}"></label>
       <label>по<input id="provTo" type="date" value="${esc(PROV_FILTER.to)}"></label>
-      <label>Статус<select id="provOrderStatus"><option value="">Все</option><option value="full"${PROV_FILTER.status==='full'?' selected':''}>Полностью</option><option value="partial"${PROV_FILTER.status==='partial'?' selected':''}>Частично</option><option value="none"${PROV_FILTER.status==='none'?' selected':''}>Не обеспечен</option></select></label>
+      <label>Статус<select id="provOrderStatus"><option value="">Открытые</option><option value="full"${PROV_FILTER.status==='full'?' selected':''}>Полностью</option><option value="partial"${PROV_FILTER.status==='partial'?' selected':''}>Частично</option><option value="none"${PROV_FILTER.status==='none'?' selected':''}>Не обеспечен</option><option value="closed"${PROV_FILTER.status==='closed'?' selected':''}>Закрытые фактом</option></select></label>
       <label class="wide">Поиск<input id="provOrderQ" value="${esc(PROV_FILTER.q)}" placeholder="заказ, машина, ЕКМТР, деталь"></label>
       <button class="minibtn" id="provOrderReset">Сбросить период</button>
     </div>
@@ -1548,6 +1565,9 @@ function renderProvision(host) {
 
     <section class="card"><div class="prov-card-head"><div><h3>Обеспеченность заказов по месяцу начала работ</h3><p class="hint">Столбцы кликабельны: нажатие отбирает месяц и открывает реестр заказов.</p></div></div>${provisionMonthChart(orders)}</section>
     <section class="card"><h3>Плановые заказы</h3><div id="provOrders"></div><div id="provOrderDetail"></div></section>
+    ${um.orders ? `<section class="card"><h3>МТР подрядчика (УСО) по парку WK</h3>
+      <p class="hint">Источник TOPO <code>rawdata/УСО/МТР УСО {год} all.xlsx</code> → uso_mtr.json. Заводы 7101–7104 — АО «Развитие»; заказчик — Полюс. Это не остаток склада и не прайс ДП. Коды в УСО часто другие, чем МТР заказа PM-06 (в 1200407027 УСО закрыло выключатель и засов, а насос/рычаг/втулка/цепь/болт закрыты фактом Полюса).</p>
+      <div id="usoTable"></div></section>` : ""}
 
     <div class="prov-audit-grid">
       <section class="card prov-audit">
@@ -1617,14 +1637,17 @@ function renderProvision(host) {
   byId('provOrderReset').onclick=()=>{PROV_FILTER={year:'',from:'',to:'',status:'',q:''};PROV_SELECTED=null;rerenderProvision()};
   qsa('[data-prov-month]',host).forEach(b=>b.onclick=()=>{const month=b.dataset.provMonth;if(month==='без даты'){PROV_FILTER.from='';PROV_FILTER.to=''}else{const [y,mn]=month.split('-').map(Number),last=new Date(Date.UTC(y,mn,0)).getUTCDate();PROV_FILTER.year=String(y);PROV_FILTER.from=`${month}-01`;PROV_FILTER.to=`${month}-${String(last).padStart(2,'0')}`}PROV_SELECTED=null;rerenderProvision()});
   renderTable(byId('provOrders'),{rows:orders,limit:100,sortKey:'date',sortDir:1,csv:true,csvName:'wk_provision_orders.csv',onRowClick:o=>{PROV_SELECTED=o.id;showOrder(o)},cols:[
-    {key:'date',label:'Начало'},{key:'site',label:'Площадка',fmt:v=>esc(sites[v]||v)},{key:'unit',label:'Машина',cls:'wrap'},{key:'order',label:'Заказ'},{key:'method',label:'Способ',fmt:v=>v?esc(v):'<span class="dim">—</span>'},{key:'kind',label:'Вид затрат',cls:'wrap'},{key:'value',label:'Потребность',numeric:true,fmt:rub},{key:'coverage',label:'Обеспеченность',numeric:true,fmt:(v,r)=>`<span class="prov-cover"><i style="width:${Math.min(100,v)}%"></i></span><small>${num(v,0)}%</small>`},{key:'gap',label:'Не покрыто',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>mrub(r.late+r.undated+r.gap)}
+    {key:'date',label:'Начало'},{key:'site',label:'Площадка',fmt:v=>esc(sites[v]||v)},{key:'unit',label:'Машина',cls:'wrap'},{key:'order',label:'Заказ'},{key:'method',label:'Способ',fmt:v=>v?esc(v):'<span class="dim">—</span>'},{key:'status',label:'Статус',fmt:(v,r)=>r.closed||v==='closed'?'<span class="badge good">закрыт фактом</span>':v==='full'?'<span class="badge good">обеспечен</span>':v==='none'?'<span class="badge bad">не обеспечен</span>':'<span class="badge warn">частично</span>'},{key:'kind',label:'Вид затрат',cls:'wrap'},{key:'value',label:'Открыто',numeric:true,fmt:(v,r)=>r.closed?rub(0):rub(v)},{key:'coverage',label:'Обеспеченность',numeric:true,fmt:(v,r)=>`<span class="prov-cover"><i style="width:${Math.min(100,v)}%"></i></span><small>${num(v,0)}%</small>`},{key:'gap',label:'Не покрыто',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>r.closed?'—':mrub(r.late+r.undated+r.gap)}
   ]});
   function showOrder(o){
     const box=byId('provOrderDetail'); if(!box) return;
     G.order = o.order; G.unit = o.unit || G.unit; G.site = o.site || G.site;
     writeHash(false);
     const uso = usoForOrder(o.order);
-    box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${esc(o.method||"")} · ${num(o.lines.length)} открытых строк МТР. План/факт — зерно PM-06; УСО — отдельно, из выгрузки подрядчика.</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>${provBar(o,o.value||1,11)}${provLegend(o)}<div id="provOrderLines"></div><div id="provOrderUso">${usoBlockHtml(uso)}</div></div>`;
+    const closed = o.closed || o.status === "closed";
+    box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${esc(o.method||"")} · ${closed ? "закрыт фактом PM-06" : num(o.lines.length)+" открытых строк МТР"}.</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>
+      ${closed ? callout("good", `План ${rub(o.planValue)} · факт ${rub(o.factValue)}. Открытой потребности нет: qp и qf жили на соседних строках SAP, после слияния remaining = 0. Это не «не обеспечено».`) : provBar(o,o.value||1,11)+provLegend(o)}
+      <div id="provOrderLines"></div><div id="provOrderUso">${usoBlockHtml(uso)}</div></div>`;
     renderTable(byId('provOrderLines'),{rows:o.lines,limit:200,sortKey:'value',csv:true,csvName:`order_${o.order}_provision.csv`,onRowClick:l=>openCodeDetail(l.code, o.date),cols:[
       {key:'work',label:'Вид работ',cls:'wrap'},
       {key:'code',label:'ЕКМТР',cls:'mono',fmt:v=>codeLink(v)},
@@ -1650,20 +1673,43 @@ function renderProvision(host) {
     qs('[data-close-prov]',box).onclick=()=>{PROV_SELECTED=null;box.innerHTML=''};
     box.scrollIntoView({behavior:'smooth',block:'nearest'});
   }
-  if(PROV_SELECTED){const selected=orders.find(o=>o.id===PROV_SELECTED);if(selected)showOrder(selected)}
+  if(PROV_SELECTED){const selected=orders.find(o=>o.id===PROV_SELECTED)||(D.provision.closedOrders||[]).find(o=>o.id===PROV_SELECTED);if(selected)showOrder(selected)}
   else if(G.order){
-    const open=orders.find(o=>String(o.order)===String(G.order));
-    if(open) showOrder(open);
+    const found=orders.find(o=>String(o.order)===String(G.order))
+      || (D.provision.closedOrders||[]).find(o=>String(o.order)===String(G.order));
+    if(found) showOrder(found);
     else {
       const uso=usoForOrder(G.order);
       const box=byId('provOrderDetail');
       if(box && uso.length){
-        box.innerHTML = callout("good", `Заказ <b>${esc(G.order)}</b> не в открытой потребности: план МТР закрыт фактом PM-06. Ниже — МТР подрядчика по этому заказу.`) + usoBlockHtml(uso);
+        box.innerHTML = callout("good", `Заказ <b>${esc(G.order)}</b> не в открытой потребности WK. Ниже — МТР подрядчика по этому заказу.`) + usoBlockHtml(uso);
         wireCodeLinks(box);
       } else if (box) {
-        box.innerHTML = callout("info", `Заказ <b>${esc(G.order)}</b> не найден среди открытых строк WK и не найден в срезе УСО.`);
+        box.innerHTML = callout("info", `Заказ <b>${esc(G.order)}</b> не найден среди открытых/закрытых строк WK и не найден в срезе УСО.`);
       }
     }
+  }
+  if (byId("usoTable") && D.usoWk) {
+    let usoRows = D.usoWk.orders || [];
+    if (G.site) usoRows = usoRows.filter(o => o.site === G.site);
+    if (G.unit) usoRows = usoRows.filter(o => o.unit === G.unit);
+    if (G.order) usoRows = usoRows.filter(o => String(o.order).includes(String(G.order)));
+    renderTable(byId("usoTable"), {
+      rows: usoRows, limit: 80, sortKey: "month", sortDir: 1,
+      csv: true, csvName: "wk_uso.csv",
+      onRowClick: r => { G.order = r.order; writeHash(false); renderGlobalFilters(); renderTab(); },
+      cols: [
+        { key: "month", label: "Месяц" },
+        { key: "siteName", label: "Площадка" },
+        { key: "order", label: "Заказ", cls: "mono" },
+        { key: "unit", label: "Машина", cls: "wrap" },
+        { key: "method", label: "Способ" },
+        { key: "closed", label: "Статус", fmt: v => v ? '<span class="badge good">закрыт</span>' : '<span class="badge warn">открыт</span>' },
+        { key: "planValue", label: "План", numeric: true, fmt: rub },
+        { key: "factValue", label: "Факт", numeric: true, fmt: rub },
+        { key: "openValue", label: "Открыто", numeric: true, fmt: v => v ? rub(v) : "—" },
+      ],
+    });
   }
 
   const items = D.provision.items;

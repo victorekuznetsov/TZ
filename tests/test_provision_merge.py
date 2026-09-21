@@ -26,9 +26,12 @@ def test_closed_order_disappears():
     }
     with tempfile.TemporaryDirectory() as td:
         json.dump(d, open(os.path.join(td, "1400_2026.json"), "w"))
-        need, nocode, _ = bp.load_need(td)
+        need, closed, nocode, _ = bp.load_need(td)
     assert need == [], need
     assert nocode == 0
+    assert len(closed) == 2
+    assert {c["code"] for c in closed} == {"976494", "869271"}
+    assert all(c["qty"] == 0 and c["factQty"] == 1 for c in closed)
 
 def test_partial_keeps_open_qty():
     d = {
@@ -44,8 +47,9 @@ def test_partial_keeps_open_qty():
     }
     with tempfile.TemporaryDirectory() as td:
         json.dump(d, open(os.path.join(td, "1400_2026.json"), "w"))
-        need, _, _ = bp.load_need(td)
+        need, closed, _, _ = bp.load_need(td)
     assert len(need) == 1
+    assert closed == []
     assert need[0]["qty"] == 7
     assert need[0]["planQty"] == 10
     assert need[0]["factQty"] == 3
