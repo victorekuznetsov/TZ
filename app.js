@@ -478,8 +478,8 @@ function wireInterLinks(container) {
   };
 }
 function linkomeRowsFor(art) {
-  // data/linkome_catalog.json.byPart уже ключуется нормализованным номером
-  return (art && D.linkome.byPart[normArt(art)]) || null;
+  const byPart = D.linkome && D.linkome.byPart;
+  return (art && byPart && byPart[normArt(art)]) || null;
 }
 function buildIndexes() {
   STOCK_BY_CODE = new Map((D.stock && D.stock.items || []).map(i => [String(i.code), i]));
@@ -743,7 +743,7 @@ function sumLineBucket(line, keys) {
 
 function sumBucketPositions(keys) {
   const map = new Map();
-  (D.provision.orders || []).forEach(o => (o.lines || []).forEach(l => {
+  contextOrders().forEach(o => (o.lines || []).forEach(l => {
     const b = sumLineBucket(l, keys);
     if (b.qty <= 1e-9 && b.value <= 1e-9) return;
     const cur = map.get(String(l.code)) || { code: l.code, name: l.name, qty: 0, value: 0, orders: new Set(), sites: new Set() };
@@ -757,7 +757,7 @@ function sumBucketPositions(keys) {
 
 function sumBucketLines(keys, code) {
   const rows = [];
-  (D.provision.orders || []).forEach(o => (o.lines || []).forEach(l => {
+  contextOrders().forEach(o => (o.lines || []).forEach(l => {
     if (code && String(l.code) !== String(code)) return;
     const b = sumLineBucket(l, keys);
     if (b.qty <= 1e-9 && b.value <= 1e-9) return;
@@ -771,10 +771,17 @@ function sumBucketLines(keys, code) {
 }
 
 function sumFeasibleItems(kind) {
-  const items = D.provision.items || [];
-  if (kind === "inTime") return items.filter(i => (i.canOrder || 0) > 0).sort((a, b) => (b.canOrder || 0) - (a.canOrder || 0));
-  if (kind === "tooLate") return items.filter(i => (i.tooLate || 0) > 0).sort((a, b) => (b.tooLate || 0) - (a.tooLate || 0));
+  const scoped = contextScopedItems();
+  if (kind === "inTime") return scoped.filter(i => (i.canOrder || 0) > 0).sort((a, b) => (b.canOrder || 0) - (a.canOrder || 0));
+  if (kind === "tooLate") return scoped.filter(i => (i.tooLate || 0) > 0).sort((a, b) => (b.tooLate || 0) - (a.tooLate || 0));
   return [];
+}
+function contextScopedItems() {
+  const items = D.provision.items || [];
+  if (!contextHasFilter()) return items;
+  const codes = new Set();
+  contextOrders().forEach(o => (o.lines || []).forEach(l => codes.add(String(l.code))));
+  return items.filter(i => codes.has(String(i.code)));
 }
 
 function sumSetDrill(next) {
@@ -810,7 +817,7 @@ function sumDrillHtml() {
   }
   const sites = (D.fleet && D.fleet.meta && D.fleet.meta.sites) || {};
   if (SUM_DRILL.kind === "fleet") {
-    const units = (D.fleet.units || []).filter(u => u.model === SUM_DRILL.key);
+    const units = (D.fleet.units || []).filter(u => u.model === SUM_DRILL.key && (!G.site || u.site === G.site) && (!G.unit || u.name === G.unit));
     return `<div class="sum-drill-head"><h3>${esc(SUM_DRILL.key)} · ${num(units.length)} машин</h3>
       <button class="minibtn" type="button" data-sum-close>Скрыть</button></div>
       <div id="sumDrillTable"></div>`;
@@ -857,7 +864,7 @@ function wireSumDrill(box) {
   if (!table || !SUM_DRILL) return;
   const sites = (D.fleet && D.fleet.meta && D.fleet.meta.sites) || {};
   if (SUM_DRILL.kind === "fleet") {
-    const units = (D.fleet.units || []).filter(u => u.model === SUM_DRILL.key);
+    const units = (D.fleet.units || []).filter(u => u.model === SUM_DRILL.key && (!G.site || u.site === G.site) && (!G.unit || u.name === G.unit));
     renderTable(table, {
       rows: units, sortKey: "name", sortDir: 1, csv: true, csvName: `wk_fleet_${SUM_DRILL.key}.csv`,
       onRowClick: u => { G.model = u.model; G.unit = u.name; G.site = u.site; TAB = "fleet"; writeHash(); renderGlobalFilters(); renderTab(); },
@@ -951,32 +958,52 @@ function wireSumClicks(host) {
 }
 
 function renderSum(host) {
-  const c = D.catalog.meta, s = D.stock.meta, p = D.provision.meta, r = D.repairs.meta, f = D.fleet.meta;
+  const c = D.catalog.meta, s = D.stock.meta, r = D.repairs.meta, f = D.fleet.meta, p = D.provision.meta;
+  const orders = contextOrders();
+  const w = contextHasFilter() ? provisionOrderTotals(orders) : p.wk;
+  const T = w.value || 1;
+  const units = D.fleet.units.filter(u => (!G.site || u.site === G.site) && (!G.model || u.model === G.model) && (!G.unit || u.name === G.unit));
+  const unitNames = new Set(units.map(u => u.name));
+  const repairUnits = (D.repairs.byUnit || []).filter(u => !contextHasFilter() || unitNames.has(u.unit));
+  const repairFact = contextHasFilter() ? repairUnits.reduce((sum, u) => sum + (u.total || 0), 0) : r.factTotal;
+  const scopedItems = contextScopedItems();
+  const inTime = scopedItems.filter(i => (i.canOrder || 0) > 0).reduce((sum, i) => sum + (i.canOrder || 0), 0);
+  const tooLate = scopedItems.filter(i => (i.tooLate || 0) > 0).reduce((sum, i) => sum + (i.tooLate || 0), 0);
+  const catItems = D.catalog.items.filter(i => {
+    if (G.model && i.model !== G.model && i.model !== "WK-20&WK-35") return false;
+    if (G.ekmtr && !normText(i.ekmtr).includes(normText(G.ekmtr))) return false;
+    if (G.part && ![i.art, i.artNew].some(v => normArt(v).includes(normArt(G.part)))) return false;
+    return true;
+  });
+  const catCoded = catItems.filter(i => i.ekmtr).length;
+  const ctx = contextHasFilter() ? contextLabel() : "";
+  const uncovered = w.late + w.undated + w.gap;
   host.innerHTML = `
     <h1>WK CRM</h1>
-    <p class="sub">Каталог запчастей, база знаний, запасы, обеспеченность, закупки и ремонты экскаваторов WK. Taiyuan Heavy Industry, ${f.units} единиц.</p>
+    <p class="sub">Каталог запчастей, база знаний, запасы, обеспеченность, закупки и ремонты экскаваторов WK. Taiyuan Heavy Industry, ${f.units} единиц.${ctx ? ` Контекст: <b>${esc(ctx)}</b>.` : ""}</p>
+    ${ctx ? callout("info", `Показатели и списки на этой вкладке — по выбранному контексту (<b>${esc(ctx)}</b>). Сбросьте фильтры сверху, чтобы вернуть весь парк.`) : ""}
     <div class="kpis">
-      ${kpi("Парк", f.units + " ед.", "", ` data-sum-tab="fleet" tabindex="0"`)}
-      ${kpi("Позиций в прайсе", num(c.items), "", ` data-sum-tab="catalog" tabindex="0"`)}
-      ${kpi("Кодифицировано", pct(c.matchedEkmtr / c.items), c.matchedEkmtr / c.items < 0.5 ? "warn" : "", ` data-sum-tab="catalog" tabindex="0"`)}
+      ${kpi("Парк", units.length + " ед.", "", ` data-sum-tab="fleet" tabindex="0"`)}
+      ${kpi("Позиций в прайсе", num(catItems.length), "", ` data-sum-tab="catalog" tabindex="0"`)}
+      ${kpi("Кодифицировано", pct(catItems.length ? catCoded / catItems.length : 0), catItems.length && catCoded / catItems.length < 0.5 ? "warn" : "", ` data-sum-tab="catalog" tabindex="0"`)}
       ${kpi("Остаток WK доступно", mrub(s.totalAvailValue), "good", ` data-sum-tab="stock" tabindex="0"`)}
       ${kpi("Запас ограничен", mrub(s.totalRestrictedValue), s.totalRestrictedValue > 0 ? "bad" : "", ` data-sum-tab="stock" tabindex="0"`)}
       ${kpi("Закупка план", mrub(s.totalPurchasePlanValue), "", ` data-sum-tab="purchase" tabindex="0"`)}
-      ${kpi("Ремонт факт 22-27", mrub(r.factTotal), "", ` data-sum-tab="repairs" tabindex="0"`)}
-      ${kpi("Не обеспечено 26-27", mrub(p.wk.late + p.wk.undated + p.wk.gap), "bad", ` data-sum-drill="uncovered" tabindex="0"`)}
+      ${kpi("Ремонт факт 22-27", mrub(repairFact), "", ` data-sum-tab="repairs" tabindex="0"`)}
+      ${kpi("Не обеспечено 26-27", mrub(uncovered), "bad", ` data-sum-drill="uncovered" tabindex="0"`)}
     </div>
 
     ${callout("info", `<b>Ограниченный запас</b> — позиции, которые физически есть на складе, но SAP запрещает их использовать в ремонте (брак, резерв, спорное качество). Такой запас <b>вычитается</b> из доступного остатка везде в этом портале и подсвечивается статусом «ограничено» — не путайте с обычным наличием.`)}
 
     <h2>Обеспеченность плана 2026–2027 (номенклатура WK)</h2>
-    <p class="sub">Потребность ${mrub(p.wk.value)} закрывается остатком и уже размещённой закупкой с учётом сроков поставки. Данные на ${dmy(p.asOf)}. Нажмите сегмент графика или подпись — откроется состав корзины.</p>
-    ${provBar(p.wk, p.wk.value, 14, true)}
-    ${provLegend(p.wk, true)}
+    <p class="sub">${ctx ? `В контексте ${esc(ctx)}: ` : ""}потребность ${mrub(w.value)} · ${num(orders.length)} открытых заказов. Закрывается остатком и уже размещённой закупкой. Данные на ${dmy(p.asOf)}. Нажмите сегмент графика или подпись — откроется состав корзины.</p>
+    ${provBar(w, T, 14, true)}
+    ${provLegend(w, true)}
     <div id="sumDrill" class="sum-drill">${sumDrillHtml()}</div>
     <div class="grid3" style="margin-top:14px">
-      <div class="card sum-hit" data-sum-drill="covered" tabindex="0"><h3>Обеспечено к сроку работ</h3><div class="kpi good" style="border:0;padding:0"><div class="v">${mrub(p.wk.fromStock + p.wk.fromBuy)}</div></div><p class="hint">${num(100 * (p.wk.fromStock + p.wk.fromBuy) / (p.wk.value || 1), 0)}% потребности · нажмите, чтобы раскрыть</p></div>
-      <div class="card sum-hit" data-sum-drill="inTime" tabindex="0"><h3>Ещё можно успеть заказом</h3><div class="kpi warn" style="border:0;padding:0"><div class="v">${mrub((p.feasible.inTime || {}).value || 0)}</div></div><p class="hint">при сроке поставки ${num(p.leadMedianDays)} дн. · нажмите, чтобы раскрыть</p></div>
-      <div class="card sum-hit" data-sum-drill="tooLate" tabindex="0"><h3>Заказывать уже поздно</h3><div class="kpi bad" style="border:0;padding:0"><div class="v">${mrub(["late3", "lateMore", "past"].reduce((a, k) => a + ((p.feasible[k] || {}).value || 0), 0))}</div></div><p class="hint">срок работ наступит раньше поставки · нажмите, чтобы раскрыть</p></div>
+      <div class="card sum-hit" data-sum-drill="covered" tabindex="0"><h3>Обеспечено к сроку работ</h3><div class="kpi good" style="border:0;padding:0"><div class="v">${mrub(w.fromStock + w.fromBuy)}</div></div><p class="hint">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}% потребности · нажмите, чтобы раскрыть</p></div>
+      <div class="card sum-hit" data-sum-drill="inTime" tabindex="0"><h3>Ещё можно успеть заказом</h3><div class="kpi warn" style="border:0;padding:0"><div class="v">${mrub(contextHasFilter() ? inTime : ((p.feasible.inTime || {}).value || 0))}</div></div><p class="hint">при сроке поставки ${num(p.leadMedianDays)} дн. · нажмите, чтобы раскрыть</p></div>
+      <div class="card sum-hit" data-sum-drill="tooLate" tabindex="0"><h3>Заказывать уже поздно</h3><div class="kpi bad" style="border:0;padding:0"><div class="v">${mrub(contextHasFilter() ? tooLate : ["late3", "lateMore", "past"].reduce((a, k) => a + ((p.feasible[k] || {}).value || 0), 0))}</div></div><p class="hint">срок работ наступит раньше поставки · нажмите, чтобы раскрыть</p></div>
     </div>
 
     <h2>Заказать сегодня</h2>
@@ -989,7 +1016,7 @@ function renderSum(host) {
     <h2>Крупнейшие статьи ремонта (факт 2022-2027)</h2>
     <div id="sumWork"></div>
   `;
-  const today = orderTodayItems(D.provision.items);
+  const today = orderTodayItems(scopedItems);
   if (!today.length) {
     byId("sumOrderToday").innerHTML = callout("info", "Нет позиций со статусом «успеем, если заказать сейчас».");
   } else {
@@ -1022,19 +1049,23 @@ function renderSum(host) {
     };
   }
   const byModel = {};
-  D.fleet.units.forEach(u => { byModel[u.model] = (byModel[u.model] || 0) + 1; });
+  units.forEach(u => { byModel[u.model] = (byModel[u.model] || 0) + 1; });
   renderTable(byId("sumFleet"), {
     rows: Object.entries(byModel).map(([model, n]) => ({ model, n })),
     cols: [{ key: "model", label: "Модель" }, { key: "n", label: "Единиц", numeric: true }],
     onRowClick: r => sumSetDrill({ kind: "fleet", key: r.model, keep: true }),
   });
   renderTable(byId("sumWork"), {
-    rows: D.repairs.byWork.slice(0, 10),
-    cols: [{ key: "work", label: "Вид работ" }, { key: "value", label: "Факт", numeric: true, fmt: mrub }],
-    onRowClick: r => sumSetDrill({ kind: "work", key: r.work, keep: true }),
+    rows: contextHasFilter()
+      ? repairUnits.slice().sort((a, b) => (b.total || 0) - (a.total || 0)).slice(0, 10).map(u => ({ work: u.unit, value: u.total }))
+      : D.repairs.byWork.slice(0, 10),
+    cols: [{ key: "work", label: contextHasFilter() ? "Машина" : "Вид работ" }, { key: "value", label: "Факт", numeric: true, fmt: mrub }],
+    onRowClick: r => contextHasFilter()
+      ? (G.unit = r.work, navigateTo("repairs"))
+      : sumSetDrill({ kind: "work", key: r.work, keep: true }),
   });
   qsa("[data-sum-tab]", host).forEach(el => {
-    el.onclick = () => { TAB = el.dataset.sumTab; writeHash(); renderGlobalFilters(); renderTab(); };
+    el.onclick = e => { e.preventDefault(); e.stopPropagation(); navigateTo(el.dataset.sumTab); };
   });
   makeActivatable(host, "[data-sum-tab],.sum-hit");
   wireSumClicks(host);
@@ -1114,7 +1145,7 @@ function renderCatalog(host) {
       return true;
     });
     byId("catCount").textContent = num(rows.length) + " позиций";
-    if (!rows.length) { byId("catTable").innerHTML = callout("info", "По текущим фильтрам позиций нет. Измените запрос или сбросьте фильтры."); return; }
+    if (!rows.length) { byId("catTable").innerHTML = callout("info", "По текущим фильтрам позиций нет. Сбросьте фильтры каталога или контекст отчёта сверху (площадка / модель / ЕКМТР)."); return; }
     renderTable(byId("catTable"), {
       rows, limit: 500, rowClass: () => "mrow",
       onRowClick: r => openDetail(r.art),
@@ -1141,8 +1172,8 @@ function renderCatalog(host) {
         },
         {
           key: "art", label: "Чертёж / состав", cls: "",
-          plain: v => D.drawings.byNum[v] ? "чертёж" : linkomeRowsFor(v) ? "состав узла (LinkOme)" : "",
-          fmt: (v) => D.drawings.byNum[v]
+          plain: v => (D.drawings && D.drawings.byNum && D.drawings.byNum[v]) ? "чертёж" : linkomeRowsFor(v) ? "состав узла (LinkOme)" : "",
+          fmt: (v) => (D.drawings && D.drawings.byNum && D.drawings.byNum[v])
             ? '<span class="badge good">чертёж</span>'
             : linkomeRowsFor(v) ? '<span class="badge info">состав узла</span>' : ""
         },
@@ -1724,14 +1755,44 @@ function purchaseScheduleRows(rows) {
 let PROV_FILTER = { year: "", from: "", to: "", status: "", q: "" };
 let PROV_SELECTED = null;
 function provisionPass(o, partCodes, q, ge, go) {
-  return (!G.site || o.site===G.site) && (!G.model || o.model===G.model) && (!G.unit || o.unit===G.unit)
-    && (!go || normText(o.order).includes(go))
+  return globalPass(o, partCodes, ge, go)
     && (!PROV_FILTER.year || (o.years||[]).includes(PROV_FILTER.year))
     && (!PROV_FILTER.from || !o.date || o.date>=PROV_FILTER.from)
     && (!PROV_FILTER.to || !o.date || o.date<=PROV_FILTER.to)
-    && (!ge || (o.lines||[]).some(l=>normText(l.code).includes(ge)))
-    && (!G.part || (o.lines||[]).some(l=>partCodes.has(String(l.code))))
     && (!q || normText([o.order,o.unit,o.kind,...(o.lines||[]).flatMap(l=>[l.code,l.name,l.work])].join(' ')).includes(q));
+}
+function globalPartCodes() {
+  const partCodes = new Set();
+  if (G.part && D.catalog) {
+    D.catalog.items.filter(i => normArt(i.art).includes(normArt(G.part)) || normArt(i.artNew).includes(normArt(G.part)))
+      .forEach(i => i.ekmtr && partCodes.add(String(i.ekmtr)));
+  }
+  return partCodes;
+}
+function globalPass(o, partCodes, ge, go) {
+  if (partCodes == null) partCodes = globalPartCodes();
+  if (ge == null) ge = normText(G.ekmtr);
+  if (go == null) go = normText(G.order);
+  return (!G.site || o.site===G.site) && (!G.model || o.model===G.model) && (!G.unit || o.unit===G.unit)
+    && (!go || normText(o.order).includes(go))
+    && (!ge || (o.lines||[]).some(l=>normText(l.code).includes(ge)))
+    && (!G.part || (o.lines||[]).some(l=>partCodes.has(String(l.code))));
+}
+function contextHasFilter() {
+  return !!(G.site || G.model || G.unit || G.order || G.ekmtr || G.part);
+}
+function contextOrders() {
+  return (D.provision.orders || []).filter(o => globalPass(o));
+}
+function contextLabel() {
+  const bits = [];
+  if (G.site) bits.push(siteNameOf(G.site) || G.site);
+  if (G.model) bits.push(G.model);
+  if (G.unit) bits.push(G.unit);
+  if (G.order) bits.push("заказ " + G.order);
+  if (G.ekmtr) bits.push("ЕКМТР " + G.ekmtr);
+  if (G.part) bits.push("№ " + G.part);
+  return bits.join(" · ");
 }
 function provisionOrderRows() {
   const partCodes = new Set();
@@ -2771,10 +2832,9 @@ function jumpToCodeTab(tab, code, extra) {
   G.ekmtr = String(code || "");
   if (extra && extra.order) G.order = String(extra.order);
   if (extra && extra.unit) G.unit = String(extra.unit);
-  TAB = tab;
-  writeHash();
+  writeHash(false);
   renderGlobalFilters();
-  renderTab();
+  navigateTo(tab);
 }
 function openCodeDetail(code, needDate) {
   const c = String(code || "");
@@ -2852,8 +2912,8 @@ function openDetail(art) {
   if (!item) return;
   const stock = item.ekmtr ? STOCK_BY_CODE.get(item.ekmtr) : null;
   const group = INTER_GROUP_OF.get(interKey(item.art));
-  const drawings = D.drawings.byNum[item.art] ||
-    (item.tree[0] ? D.drawings.byNum[item.tree[0].num] : null);
+  const drawings = (D.drawings && D.drawings.byNum && (D.drawings.byNum[item.art] ||
+    (item.tree && item.tree[0] ? D.drawings.byNum[item.tree[0].num] : null))) || null;
   const linkomeRows = linkomeRowsFor(item.art) ||
     (item.tree[0] ? linkomeRowsFor(item.tree[0].num) : null);
 
@@ -3339,6 +3399,13 @@ function copyShareLink() {
   } else prompt("Ссылка на текущий вид", url);
 }
 function navigateTo(tab, { updateHash = true, focusMain = true } = {}) {
+  if (VALID_TABS.has(tab) && !tabAllowed(tab)) {
+    ROLE = "all";
+    try { localStorage.setItem("wkcrm_role", ROLE); } catch (e) { /* unavailable */ }
+    const roleSel = byId("roleSelect");
+    if (roleSel) roleSel.value = ROLE;
+    applyRoleChrome();
+  }
   TAB = VALID_TABS.has(tab) ? tab : "sum";
   if (!tabAllowed(TAB)) TAB = ((ROLES[ROLE] || ROLES.all).tabs || ["sum"])[0];
   if (TAB !== "repairs") SFULL = false;
@@ -3420,7 +3487,10 @@ function initNav() {
   }
   const cmdBack = byId("cmdBack");
   if (cmdBack) cmdBack.addEventListener("click", e => { if (e.target === cmdBack) cmdClose(); });
-  window.addEventListener("hashchange", () => applyHashState(location.hash, false));
+  window.addEventListener("hashchange", () => {
+    if (location.hash === serializeHash(TAB, ROLE, G)) return;
+    applyHashState(location.hash, false);
+  });
 }
 
 document.addEventListener("keydown", e => {
