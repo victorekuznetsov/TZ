@@ -23,9 +23,37 @@ class ProvisionAllocationTest(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as td:
             Path(td, "sample_2026.json").write_text(json.dumps(payload), encoding="utf-8")
-            rows, _, _ = BP.load_need(td)
+            rows, _, _, _ = BP.load_need(td)
         self.assertEqual(rows[0]["qty"], 6)
         self.assertEqual(rows[0]["value"], 600)
+
+    def test_negative_fact_without_plan_does_not_create_need(self):
+        payload = {
+            "e": ["Экскаватор WK-20 №1"], "n": 1, "ei": [0],
+            "qp": [0], "qf": [-14], "p": [0], "a": [-693582], "ci": [0],
+            "cek": ["961124"], "c": ["Коронка"], "o": ["77"],
+            "s": "1400", "y": 2026, "od": {"77": ["2025-12-21"]},
+            "orr": {"77": "OPEX"}, "wi": [0], "w": ["Ремонт"],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "sample_2026.json").write_text(json.dumps(payload), encoding="utf-8")
+            rows, closed, _, _ = BP.load_need(td)
+        self.assertEqual(rows, [])
+        self.assertEqual(closed, [])
+
+    def test_remaining_need_never_exceeds_positive_plan(self):
+        payload = {
+            "e": ["Экскаватор WK-20 №1"], "n": 1, "ei": [0],
+            "qp": [10], "qf": [-2], "p": [1000], "a": [-200], "ci": [0],
+            "cek": ["100"], "c": ["Деталь"], "o": ["77"],
+            "s": "2400", "y": 2026, "od": {"77": ["2026-12-01"]},
+            "orr": {"77": "ТО"}, "wi": [0], "w": ["Ремонт"],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "sample_2026.json").write_text(json.dumps(payload), encoding="utf-8")
+            rows, _, _, _ = BP.load_need(td)
+        self.assertEqual(rows[0]["qty"], 10)
+        self.assertEqual(rows[0]["value"], 1000)
 
     def test_covered_verdict_has_no_uncovered_quantity(self):
         payload = json.loads((ROOT / "data" / "provision.json").read_text(encoding="utf-8"))

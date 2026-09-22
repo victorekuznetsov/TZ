@@ -29,6 +29,11 @@ build_stock.py) и сравнивается с датой начала рабо�
   * срок прихода закупки известен только до месяца — внутри месяца
     считаем, что приход успевает;
   * строки с фактом (a>0 или qf>0) — уже исполнены, это не потребность.
+    В PM-06 план и факт одной позиции приходят РАЗНЫМИ строками
+    (qp/p на одной, qf/a на другой). Сначала сливаются в зерно
+    заказ × ЕО × вид работ × материал, затем remaining = max(qp − qf, 0).
+    Без слияния закрытый заказ (как 1200407027) висел бы дефицитом.
+
 
 Выход: data/provision.json
 
@@ -43,6 +48,17 @@ from collections import defaultdict
 N = lambda x: x if isinstance(x, (int, float)) else 0
 WK_RE = re.compile(r"WK-?\d", re.I)
 DATE_RE = re.compile(r"(\d{2})[_.-](\d{2})[_.-](\d{4})")
+
+
+def cell(values, index, default=0):
+    """Return a column value without assuming every source has every field.
+
+    Older PM-06 snapshots do not contain the newer fact/cost columns.  Treating
+    an absent optional column as zero keeps the historical plan usable and is
+    equivalent to "fact not supplied"; malformed short columns are handled in
+    the same deterministic way.
+    """
+    return values[index] if isinstance(values, list) and index < len(values) else default
 
 
 def as_of(meta):
@@ -66,8 +82,14 @@ def as_of(meta):
 
 
 def load_need(topo_dir):
-    """Открытые строки плана ТОиР по технике WK за 2026-2027."""
+    """Открытые строки плана ТОиР по технике WK за 2026-2027.
+
+    PM-06 хранит план и факт отдельными строками одного заказа и материала.
+    Сливаем их в зерно (заказ × ЕО × вид работ × материал) — так же, как
+    build_schedule.py — и только потом считаем max(план − факт, 0).
+    """
     need = []
+    closed = []
     nocode_rows = 0
     nocode_v = 0.0
     for fp in sorted(glob.glob(os.path.join(topo_dir, "*_202[67].json"))):
@@ -77,34 +99,56 @@ def load_need(topo_dir):
         if not wk_idx:
             continue
         od, orr = d.get("od", {}), d.get("orr", {})
+        grains = {}
         for i in range(d["n"]):
             if d["ei"][i] not in wk_idx:
                 continue
-            qp, qf, pv = N(d["qp"][i]), N(d["qf"][i]), N(d["p"][i])
-            remaining = max(qp - qf, 0)
-            if remaining <= 0:
-                continue  # без количества распределять нечего
-            ci = d["ci"][i]
-            code = d["cek"][ci] if ci < len(d["cek"]) else ""
-            if not code:
+            ei, ci, wi = cell(d.get("ei"), i, -1), cell(d.get("ci"), i, -1), cell(d.get("wi"), i, None)
+            order = cell(d.get("o"), i, "")
+            key = (order, ei, wi, ci)
+            g = grains.get(key)
+            if g is None:
+                unit = d["e"][ei] if isinstance(ei, int) and ei < len(d["e"]) else ""
+                work = d.get("w", [])[wi] if isinstance(wi, int) and wi < len(d.get("w", [])) else ""
+                code = d["cek"][ci] if isinstance(ci, int) and ci < len(d.get("cek", [])) else ""
+                mat = d["c"][ci] if isinstance(ci, int) and ci < len(d.get("c", [])) else ""
+                g = {
+                    "date": (od.get(order) or [""])[0] or "",
+                    "code": code, "mat": mat, "order": order,
+                    "kind": orr.get(order, ""), "site": d["s"], "year": d["y"],
+                    "unit": unit, "work": work, "method": cell(d.get("u"), i, "") or "",
+                    "planQty": 0.0, "factQty": 0.0, "planValue": 0.0, "factValue": 0.0,
+                    "usoPlan": 0.0, "usoFact": 0.0,
+                }
+                grains[key] = g
+            g["planQty"] += N(cell(d.get("qp"), i))
+            g["factQty"] += N(cell(d.get("qf"), i))
+            g["planValue"] += N(cell(d.get("p"), i))
+            g["factValue"] += N(cell(d.get("a"), i))
+            g["usoPlan"] += N(cell(d.get("up"), i))
+            g["usoFact"] += N(cell(d.get("uf"), i))
+            if cell(d.get("u"), i, ""):
+                g["method"] = cell(d.get("u"), i, "")
+        for g in grains.values():
+            # A negative fact row is a reversal/correction, not a new material
+            # requirement.  Open demand must stay between zero and the
+            # positive plan; otherwise a standalone qf=-14 row becomes a
+            # fictitious need of 14 and consumes ATP stock.
+            plan_qty = max(g["planQty"], 0)
+            remaining = max(plan_qty - max(g["factQty"], 0), 0)
+            if not g["code"]:
                 nocode_rows += 1
-                nocode_v += pv
+                nocode_v += g["planValue"] * remaining / g["planQty"] if g["planQty"] else 0
                 continue
-            order = d["o"][i]
-            ei = d["ei"][i]
-            wi = d.get("wi", [None] * d["n"])[i]
-            unit = d["e"][ei] if isinstance(ei, int) and ei < len(d["e"]) else ""
-            work = d.get("w", [])[wi] if isinstance(wi, int) and wi < len(d.get("w", [])) else ""
-            need.append({
-                "date": (od.get(order) or [""])[0] or "",
-                "code": code, "qty": remaining,
-                "value": pv * remaining / qp if qp else 0,
-                "planQty": qp, "factQty": qf, "order": order,
-                "kind": orr.get(order, ""), "site": d["s"], "year": d["y"],
-                "mat": d["c"][ci], "unit": unit, "work": work,
-            })
+            g["qty"] = remaining
+            g["value"] = g["planValue"] * remaining / plan_qty if plan_qty else 0
+            if remaining <= 0:
+                if g["planQty"] > 0 or g["factQty"] > 0:
+                    closed.append(g)
+                continue
+            need.append(g)
         del d
-    return need, nocode_rows, nocode_v
+    return need, closed, nocode_rows, nocode_v
 
 
 def allocate(need, stock, today=None):
@@ -217,18 +261,32 @@ def build_orders(rows, names):
                 "date": r["date"], "work": r["work"], "code": r["code"],
                 "name": names.get(r["code"], "") or r["mat"],
                 "qty": round(r["qty"], 3), "value": round(r["value"], 2),
+                "planQty": round(r.get("planQty") or 0, 3),
+                "factQty": round(r.get("factQty") or 0, 3),
+                "method": r.get("method") or "",
+                "usoPlan": round(r.get("usoPlan") or 0, 2),
+                "usoFact": round(r.get("usoFact") or 0, 2),
                 **{k: round(r[k], 3) for k in KEYS},
                 **{k + "Value": round(val(r, k), 2) for k in KEYS},
             })
         years = sorted({str(r["year"]) for r in lines})
         dates = sorted(r["date"] for r in lines if r["date"])
         model_match = re.search(r"WK-?(\d+C?)", unit or "", re.I)
+        methods = sorted({r.get("method") for r in lines if r.get("method")})
+        plan_value = round(sum(r.get("planValue") or 0 for r in lines), 2)
+        fact_value = round(sum(r.get("factValue") or 0 for r in lines), 2)
+        closed = t["qty"] <= 1e-9 and (plan_value > 0 or fact_value > 0)
+        if closed:
+            status = "closed"
         out.append({
             "id": order_id(site, unit, order), "site": site, "unit": unit,
             "model": "WK-" + model_match.group(1).upper() if model_match else "",
             "order": order, "years": years, "date": dates[0] if dates else "",
             "kind": next((r["kind"] for r in lines if r["kind"]), ""),
-            "status": status, "coverage": round(100 * on_time / t["value"], 1) if t["value"] else 0,
+            "method": methods[0] if len(methods) == 1 else ("+".join(methods) if methods else ""),
+            "status": status, "closed": closed,
+            "planValue": plan_value, "factValue": fact_value,
+            "coverage": 100.0 if closed else (round(100 * on_time / t["value"], 1) if t["value"] else 0),
             **t, "lines": detail,
         })
     return sorted(out, key=lambda r: (r["date"] or "9999", r["site"], r["unit"], r["order"]))
@@ -248,10 +306,16 @@ def main():
     today = as_of(sj["meta"])
     lead_default = sj["meta"].get("leadMedianDays") or 0
 
-    need, nocode_rows, nocode_v = load_need(topo_dir)
+    need, closed_rows, nocode_rows, nocode_v = load_need(topo_dir)
     need = allocate(need, stock, today)
     known = [r for r in need if r["code"] in stock]
     other = [r for r in need if r["code"] not in stock]
+    wk_closed = []
+    for r in closed_rows:
+        if r["code"] not in wk_names:
+            continue
+        r.update(fromStock=0.0, fromBuy=0.0, late=0.0, undated=0.0, gap=0.0, left=0.0)
+        wk_closed.append(r)
 
     # --- по позициям ----------------------------------------------------
     agg = defaultdict(lambda: defaultdict(float))
@@ -361,10 +425,12 @@ def main():
         for m, q in (((stock[code].get("purchase") or {}).get("byMonth")) or {}).items():
             bym[m or ""] += q
 
-    orders = build_orders(known, wk_names)
+    all_orders = build_orders(known + wk_closed, wk_names)
+    orders = [o for o in all_orders if o["qty"] > 1e-9]
+    closed_orders = [o for o in all_orders if o["qty"] <= 1e-9]
     result = {
         "meta": {
-            "src": "TOPO data/<площадка>_<год>.json, годы 2026-2027",
+            "src": "TOPO data/<площадка>_<год>.json, годы 2026-2027; план и факт слиты в зерно заказ×материал",
             "srcStock": sj["meta"].get("srcStock"),
             "srcPurchase": sj["meta"].get("srcPurchase"),
             "asOf": today.strftime("%Y-%m-%d"),
@@ -372,6 +438,7 @@ def main():
             "leadMeasurements": sj["meta"].get("leadMeasurements"),
             "leadCodes": sj["meta"].get("leadCodes"),
             "orders": len(orders),
+            "closedOrders": len(closed_orders),
             "lines": len(need),
             "positions": len(agg),
             "noCodeRows": nocode_rows, "noCodeValue": round(nocode_v, 2),
@@ -388,6 +455,7 @@ def main():
         },
         "items": items,
         "orders": orders,
+        "closedOrders": closed_orders,
     }
     with open(os.path.join(out_dir, "provision.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, separators=(",", ":"))
@@ -396,7 +464,7 @@ def main():
     w = m["wk"]
     T = w["value"] or 1
     M = lambda x: f"{x/1e6:,.0f}".replace(",", " ")
-    print(f"на {m['asOf']}: заказов {m['orders']}, строк {m['lines']}, "
+    print(f"на {m['asOf']}: заказов {m['orders']}, закрытых {m.get('closedOrders', 0)}, строк {m['lines']}, "
           f"позиций WK {m['positions']}")
     print(f"потребность WK: {M(w['value'])} млн ₽ ({w['lines']} строк); "
           f"прочая номенклатура {M(m['notWkParts']['value'])} млн ₽ — не считаем")

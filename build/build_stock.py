@@ -3,7 +3,7 @@
 """
 Строит запасы, ограниченный запас и закупки по номенклатуре WK.
 
-Источники (все — свежие выгрузки SAP из репозитория for_update):
+Источники (все — свежие выгрузки SAP из TOPO, ветка rawdata, папка Запас-Закупка):
   Остатки_*.xlsx                          — BW MM-M03, остаток по складам
   Запас с ограниченным использованием*.xlsx — позиции, которые ЕСТЬ на
                                               складе, но НЕЛЬЗЯ взять в ремонт
@@ -130,6 +130,19 @@ def parse_purchase(path, wk_codes):
     cu = col_index(hdr, "Валюта")
     rq = col_index(hdr, "Дата заявки")
     qn = col_index(hdr, "Количество")
+    def exact(names):
+        return next((i for name in names for i, h in enumerate(hdr) if h.lower() == name), -1)
+    doc = exact(["документ закупки", "номер документа закупки", "№ документа закупки", "заказ на поставку"])
+    req = exact(["заявка", "заявка на закупку", "номер заявки", "№ заявки"])
+    pos = exact(["позиция документа закупки", "позиция заказа", "позиция"])
+    req_pos = exact(["позиция заявки"])
+    unit = exact(["единица измерения", "еи", "е.и.", "базовая единица измерения"])
+    order_date = exact(["дата поставки по заказу"])
+    actual_date = exact(["фактическая дата поставки"])
+    created_date = exact(["дата создания заказа"])
+    plant = exact(["завод"])
+    status = exact(["описание"])
+    delivered = exact(["кол-во факт поставки в базисной еи"])
     rows_total = 0
     # byMonth/years — это ОТКРЫТОЕ КОЛИЧЕСТВО («еще поставить») по сроку
     # поставки, а не число строк: для обеспеченности важно, сколько и когда
@@ -138,7 +151,7 @@ def parse_purchase(path, wk_codes):
     by_code = defaultdict(lambda: {"planV": 0.0, "openQty": 0.0, "transitQty": 0.0,
                                     "qty": 0.0, "lines": 0, "suppliers": defaultdict(float),
                                     "years": defaultdict(float), "byMonth": defaultdict(float),
-                                    "lead": []})
+                                    "lead": [], "documents": []})
     for r in it:
         rows_total += 1
         code = r[ci]
@@ -159,6 +172,22 @@ def parse_purchase(path, wk_codes):
         # по УЖЕ ОФОРМЛЕННЫМ строкам (в том числе закрытым) — это единственный
         # в выгрузке замер того, сколько реально идёт позиция.
         da, db = as_date(r[rq]), as_date(r[di])
+        def txt(i):
+            return str(r[i]).strip() if 0 <= i < len(r) and r[i] is not None else ""
+        def date_cell(i):
+            value = as_date(r[i]) if 0 <= i < len(r) else None
+            return value.strftime("%Y-%m-%d") if value else ""
+        e["documents"].append({
+            "document": txt(doc), "request": txt(req), "position": txt(pos), "requestPosition": txt(req_pos),
+            "deliveryDate": date_cell(order_date) or (db.strftime("%Y-%m-%d") if db else ""),
+            "requiredDate": db.strftime("%Y-%m-%d") if db else "",
+            "orderDeliveryDate": date_cell(order_date), "actualDeliveryDate": date_cell(actual_date),
+            "orderCreatedDate": date_cell(created_date), "plant": txt(plant), "status": txt(status),
+            "deliveredQty": N(r[delivered]) if delivered >= 0 else None,
+            "requestDate": da.strftime("%Y-%m-%d") if da else "", "supplier": txt(si),
+            "qty": N(r[qn]), "openQty": N(r[li]), "transitQty": N(r[ti]), "value": N(r[vi]),
+            "currency": txt(cu), "unit": txt(unit), "sourceRow": rows_total + 1,
+        })
         if da and db:
             days = (db - da).days
             if 0 < days < 1500:
@@ -177,6 +206,7 @@ def parse_purchase(path, wk_codes):
             "topSupplier": max(e["suppliers"].items(), key=lambda x: x[1])[0] if e["suppliers"] else None,
             "years": {k: round(v, 3) for k, v in sorted(e["years"].items())},
             "byMonth": {k: round(v, 3) for k, v in sorted(e["byMonth"].items())},
+            "documents": e["documents"],
             "leadDays": med(e["lead"]),
             "leadN": len(e["lead"]),
         }

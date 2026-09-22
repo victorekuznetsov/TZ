@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 def load(name): return json.loads((DATA / f"{name}.json").read_text(encoding="utf-8"))
 def alias(v): return re.sub(r"a$", "", re.sub(r"^dk", "k", re.sub(r"^\d+-", "", str(v).lower())))
+def near(a, b, tol=1e-6): return abs((a or 0) - (b or 0)) <= tol
 
 def main():
     names = [p.stem for p in DATA.glob("*.json")]
@@ -28,6 +29,41 @@ def main():
     codes = {str(x["code"]) for x in bundles["ekmtr_wk"]["items"]}
     bad = {str(x["ekmtr"]) for x in bundles["catalog"]["items"] if x.get("ekmtr") and str(x["ekmtr"]) not in codes}
     if bad: errors.append(f"catalog: unknown EKMTR: {sorted(bad)[:10]}")
+    provision = bundles["provision"]
+    bad_need = []
+    for order in provision.get("orders", []):
+        for line in order.get("lines", []):
+            if line.get("qty", 0) > max(line.get("planQty", 0), 0) + 1e-9:
+                bad_need.append(f'{order.get("order")}:{line.get("code")}')
+    if bad_need:
+        errors.append(f"provision: open qty exceeds positive plan: {bad_need[:10]}")
+    stock = bundles["stock"]
+    bad_stock, bad_warehouse, bad_purchase = [], [], []
+    for item in stock["items"]:
+        if not near(item["qty"], item["availQty"] + item["restrictedQty"]) or not near(item["value"], item["availValue"] + item["restrictedValue"], .02):
+            bad_stock.append(item["code"])
+        if not near(item["qty"], sum((item.get("byWarehouse") or {}).values())):
+            bad_warehouse.append(item["code"])
+        purchase = item.get("purchase")
+        if purchase and not near(purchase["openQty"], sum((purchase.get("byMonth") or {}).values())):
+            bad_purchase.append(item["code"])
+    if bad_stock: errors.append(f"stock: gross != available + restricted: {bad_stock[:10]}")
+    if bad_warehouse: errors.append(f"stock: warehouse quantities do not reconcile: {bad_warehouse[:10]}")
+    if bad_purchase: errors.append(f"purchase: schedule does not reconcile to open qty: {bad_purchase[:10]}")
+    wk = provision["meta"]["wk"]
+    orders = provision.get("orders", [])
+    if not near(wk["value"], sum(o["value"] for o in orders), .02) or not near(wk["qty"], sum(o["qty"] for o in orders)):
+        errors.append("provision: order totals do not reconcile to WK meta")
+    for suffix in ("", "Qty"):
+        total_key = "value" if suffix == "" else "qty"
+        if not near(wk[total_key], sum(wk[k + suffix] for k in ("fromStock", "fromBuy", "late", "undated", "gap")), .05):
+            errors.append(f"provision: {total_key} buckets do not reconcile")
+    uso = bundles["uso_wk"]
+    for key in ("planValue", "factValue", "openValue"):
+        if not near(uso["meta"][key], sum(o[key] for o in uso["orders"]), .02):
+            errors.append(f"uso_wk: {key} does not reconcile")
+    if uso["meta"]["rows"] != sum(len(o["lines"]) for o in uso["orders"]):
+        errors.append("uso_wk: line count does not reconcile")
     pages = bundles["linkome_catalog"]["pages"]
     aliases = {f'{k.split("|",1)[0].lower()}|{alias(k.split("|",1)[1])}' for k in pages}
     unresolved = []
