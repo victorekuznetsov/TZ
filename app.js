@@ -1701,6 +1701,26 @@ function provisionArrivalChart(arrivals, asOf) {
   </div>`;
 }
 
+function supplyBars(rows, valueKey, labelKey, format) {
+  const top = (rows || []).filter(r => (r[valueKey] || 0) > 0).slice(0, 10);
+  const max = Math.max(1, ...top.map(r => r[valueKey] || 0));
+  if (!top.length) return '<p class="hint">Нет данных для выбранного контекста.</p>';
+  return `<div class="supply-bars">${top.map(r => `<div>
+    <span title="${esc(r[labelKey])}">${esc(r[labelKey])}</span>
+    <i><b style="width:${(100 * r[valueKey] / max).toFixed(1)}%"></b></i>
+    <strong>${format(r[valueKey])}</strong>
+  </div>`).join("")}</div>`;
+}
+
+function purchaseScheduleRows(rows) {
+  const by = new Map();
+  (rows || []).forEach(r => Object.entries(r.byMonth || {}).forEach(([month, qty]) => {
+    const key = month || "";
+    by.set(key, (by.get(key) || 0) + (+qty || 0));
+  }));
+  return [...by].map(([month, qty]) => ({ month, qty })).sort((a, b) => (a.month || "9999").localeCompare(b.month || "9999"));
+}
+
 let PROV_FILTER = { year: "", from: "", to: "", status: "", q: "" };
 let PROV_SELECTED = null;
 function provisionPass(o, partCodes, q, ge, go) {
@@ -1769,6 +1789,8 @@ function renderProvision(host) {
   const audit = provisionAudit(m, D.provision.items, D.stock.items);
   const auditOk = Math.abs(audit.qtyDelta) < .01 && Math.abs(audit.valueDelta) < .1 && !audit.badBalance && !audit.stockOver && !audit.buyOver;
   const um = (D.usoWk && D.usoWk.meta) || {};
+  const pmPlan = orders.reduce((s, o) => s + (o.planValue || 0), 0);
+  const pmFact = orders.reduce((s, o) => s + (o.factValue || 0), 0);
 
 
   host.innerHTML = `
@@ -1779,7 +1801,7 @@ function renderProvision(host) {
     ${callout("info", `В SAP план и факт одной позиции — <b>разные строки</b> (qp на одной, qf на другой). Без слияния закрытый заказ висит дефицитом: так выглядел 1200407027 (WK-20C №6, Магадан, 24.07.2026) — все 5 МТР уже с фактом. Введите номер в «Заказ» или фильтр «Закрытые фактом». МТР подрядчика (УСО) — отдельная выгрузка, её коды не обязаны совпадать с МТР Полюса.`)}
     <div class="kpis">
       ${kpi("Открытых заказов", num(orders.filter(o=>o.status!=='closed').length))}
-      ${kpi("Закрытых фактом", num((D.provision.closedOrders||[]).length), "good")}
+      ${kpi("Закрытых фактом (все площадки)", num((D.provision.closedOrders||[]).length), "good")}
       ${kpi("Потребность WK", mrub(w.value))}
       ${kpi("Обеспечено к сроку", mrub(w.fromStock + w.fromBuy) + ` <span class="kpi-sub">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}%</span>`, "good")}
       ${kpi("Не обеспечено", mrub(gapTotal) + ` <span class="kpi-sub">${num(100 * gapTotal / T, 0)}%</span>`, "bad")}
@@ -1790,7 +1812,15 @@ function renderProvision(host) {
       ${kpi("МТР подрядчика, факт", mrub(um.factValue), "good")}
       ${kpi("УСО ещё открыто", mrub(um.openValue), um.openValue > 0 ? "warn" : "good")}
     </div>
-    <p class="hint">УСО — материалы подрядчика из <code>rawdata/УСО</code> TOPO (АО «Развитие», заводы 7101–7104). Они не смешиваются с остатком Полюса и не закрывают ATP-дефицит чужим складом.</p>` : ""}
+    <p class="hint">KPI УСО показаны по всей выгрузке WK 2026–2027 и не меняются от фильтров реестра. УСО — материалы подрядчика из <code>rawdata/УСО</code> TOPO (АО «Развитие», заводы 7101–7104). Они не смешиваются с остатком Полюса и не закрывают ATP-дефицит чужим складом.</p>` : ""}
+
+    <section class="card">
+      <div class="prov-card-head"><div><h3>План, фактический расход и открытая потребность</h3><p class="hint">PM‑06 показан для текущего реестра заказов; УСО — вся выгрузка WK 2026–2027, без фильтров реестра. PM‑06 включает закрытые строки выбранных заказов, но только номенклатуру WK из витрины. Смешивать их в одну сумму нельзя.</p></div></div>
+      <div class="twrap"><table class="supply-ledger"><thead><tr><th>Контур</th><th class="n">План</th><th class="n">Факт</th><th class="n">Исполнение</th><th class="n">Открыто</th></tr></thead><tbody>
+        <tr><th>МТР Полюса, PM‑06 (WK)</th><td class="n">${rub(pmPlan)}</td><td class="n">${rub(pmFact)}</td><td class="n">${pmPlan > 0 ? num(100 * pmFact / pmPlan, 1) + "%" : "—"}</td><td class="n"><b>${rub(w.value)}</b></td></tr>
+        ${um.orders ? `<tr><th>МТР подрядчика, УСО</th><td class="n">${rub(um.planValue)}</td><td class="n">${rub(um.factValue)}</td><td class="n">${um.planValue > 0 ? num(100 * um.factValue / um.planValue, 1) + "%" : "—"}</td><td class="n"><b>${rub(um.openValue)}</b></td></tr>` : ""}
+      </tbody></table></div>
+    </section>
 
     <div class="prov-order-filters">
       <label>Год<select id="provYear"><option value="">Все</option>${['2026','2027'].map(y=>`<option${PROV_FILTER.year===y?' selected':''}>${y}</option>`).join('')}</select></label>
@@ -2069,8 +2099,22 @@ function renderProvision(host) {
 /* ===================== ЗАПАСЫ ===================== */
 function renderStock(host) {
   const m = D.stock.meta;
+  const needByCode = new Map(((D.provision && D.provision.items) || []).map(i => [String(i.code), i]));
+  const stockRows = D.stock.items.map(i => {
+    const need = needByCode.get(String(i.code));
+    const uncoveredQty = need ? need.gap + need.late + need.undated : 0;
+    const supplyStatus = !need ? "noNeed" : uncoveredQty > 0 ? (need.fromStock + need.fromBuy > 0 ? "partial" : "gap") : "covered";
+    return { ...i, need, needQty: need ? need.needQty : 0, uncoveredQty, supplyStatus, firstNeed: need ? need.firstNeed : "" };
+  });
+  const warehouse = new Map();
+  stockRows.forEach(i => Object.entries(i.byWarehouse || {}).forEach(([name, qty]) => warehouse.set(name, (warehouse.get(name) || 0) + (+qty || 0))));
+  const warehouseRows = [...warehouse].map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty);
+  const totalQty = stockRows.reduce((s, i) => s + i.qty, 0);
+  const availQty = stockRows.reduce((s, i) => s + i.availQty, 0);
+  const restrictedQty = stockRows.reduce((s, i) => s + i.restrictedQty, 0);
+  const purchaseQty = stockRows.reduce((s, i) => s + ((i.purchase && i.purchase.openQty) || 0), 0);
   host.innerHTML = `
-    <h1>Запасы</h1>
+    <h1>Запасы</h1><p class="hint">KPI и диаграммы — вся выгрузка WK; фильтры ниже применяются к реестру. Суммы количества разнородных МТР справочные: единицы измерения источник не раскрывает, физические объёмы не сопоставимы.</p>
     <p class="sub">Остаток по номенклатуре WK на дату выгрузки (${esc(m.srcStock)}). Ограниченный и блокированный запас вычтен из доступного и подсвечен отдельно.
       ${G.site ? `Фильтр площадки <b>${esc(siteNameOf(G.site))} (${esc(G.site)})</b> не перемещает запас: ниже отдельно показано, сколько из наличия лежит на складах этой площадки.` : "Остаток глобальный: это обеспеченность номенклатуры, не разрешение забирать с чужой площадки."}</p>
     <div class="kpis">
@@ -2080,9 +2124,23 @@ function renderStock(host) {
       ${kpi("Ограничено", mrub(m.totalRestrictedValue), "bad")}
       ${kpi("Полностью ограничено", m.fullyRestrictedCodes + " код.", m.fullyRestrictedCodes > 0 ? "bad" : "")}
     </div>
+    <div class="kpis">
+      ${kpi("Остаток, ед.", num(totalQty, 0))}
+      ${kpi("Доступно, ед.", num(availQty, 0), "good")}
+      ${kpi("Ограничено, ед.", num(restrictedQty, 0), restrictedQty ? "bad" : "")}
+      ${kpi("Открытая закупка, ед.", num(purchaseQty, 0), "warn")}
+      ${kpi("Кодов с дефицитом", num(stockRows.filter(i => i.uncoveredQty > 0).length), "bad")}
+    </div>
     ${m.totalRestrictedValue > 0 ? callout("warn", `<b>${num(m.fullyRestrictedCodes)} позиций</b> имеют остаток, весь который ограничен — фактически это дефицит, хотя формально «есть на складе».`) : ""}
+    <div class="prov-audit-grid">
+      <section class="card"><h3>Крупнейшие места хранения</h3><p class="hint">Справочная сумма количества разных МТР из MM‑M03, без сопоставления единиц измерения; стоимость по складам источник не раскрывает.</p>${supplyBars(warehouseRows, "qty", "name", v => num(v, 0) + " ед.")}</section>
+      <section class="card"><h3>Контур запас → потребность</h3><p class="hint">Потребность относится только к WK и распределяется глобально по ATP; наличие на выбранной площадке показано отдельно в реестре.</p>
+        <div class="supply-flow"><div><span>Доступный запас</span><b>${num(availQty, 0)} ед.</b><small>${mrub(m.totalAvailValue)}</small></div><i>+</i><div><span>Открытая закупка</span><b>${num(purchaseQty, 0)} ед.</b><small>${mrub(m.totalPurchasePlanValue)}</small></div><i>→</i><div><span>Дефицит плана</span><b>${num((D.provision.meta.wk.gapQty || 0) + (D.provision.meta.wk.lateQty || 0) + (D.provision.meta.wk.undatedQty || 0), 0)} ед.</b><small>${mrub(D.provision.meta.wk.gap + D.provision.meta.wk.late + D.provision.meta.wk.undated)}</small></div></div>
+      </section>
+    </div>
     <div class="toolbar">
       <button class="pill" id="stkRestricted" type="button" aria-pressed="false">только ограниченные</button>
+      <select id="stkStatus"><option value="">Все статусы</option><option value="gap">Нет покрытия</option><option value="partial">Частичное покрытие</option><option value="covered">Потребность покрыта</option><option value="noNeed">Нет потребности в плане</option></select>
       <input type="search" id="stkQ" placeholder="Код или наименование…" value="${esc(G.ekmtr)}"/>
       <span class="count" id="stkCount"></span>
     </div>
@@ -2091,10 +2149,12 @@ function renderStock(host) {
   let restrOnly = false;
   function apply() {
     const q = (byId("stkQ").value || "").trim().toLowerCase();
+    const status = byId("stkStatus").value;
     const partCodes = new Set(G.part ? D.catalog.items.filter(x=>normArt(x.art).includes(normArt(G.part))).map(x=>String(x.ekmtr||'')) : []);
-    let rows = D.stock.items.filter(i => {
+    let rows = stockRows.filter(i => {
       if (G.part && !partCodes.has(String(i.code))) return false;
       if (restrOnly && i.restrictedValue <= 0) return false;
+      if (status && i.supplyStatus !== status) return false;
       if (q && !i.code.includes(q) && !(i.name || "").toLowerCase().includes(q)) return false;
       return true;
     });
@@ -2111,6 +2171,10 @@ function renderStock(host) {
             const cat = catalogByEkmtr(r.code);
             return cat ? `<button type="button" class="pn-link" data-code="${esc(r.code)}">${esc(v || "")}</button>` : esc(v || "");
           } },
+        { key: "needQty", label: "Потребность", numeric: true, fmt: v => v > 0 ? num(v, 1) : "—" },
+        { key: "uncoveredQty", label: "Не покрыто", numeric: true, fmt: v => v > 0 ? `<b style="color:var(--bad)">${num(v, 1)}</b>` : "—" },
+        { key: "supplyStatus", label: "ATP", fmt: v => v === "gap" ? '<span class="badge bad">нет покрытия</span>' : v === "partial" ? '<span class="badge warn">частично</span>' : v === "covered" ? '<span class="badge good">покрыто</span>' : '<span class="dim">нет потребности</span>' },
+        { key: "firstNeed", label: "Первая потребность", fmt: v => v ? dmy(v) : "—" },
         { key: "qty", label: "Остаток, ед.", numeric: true, fmt: v => num(v, 1) },
         { key: "qty", label: "На выбранной площадке", numeric: true,
           plain: (v, r) => { const a = stockAtSite(r, G.site, siteNameOf(G.site)); return a.siteQty == null ? "" : a.siteQty; },
@@ -2138,6 +2202,7 @@ function renderStock(host) {
     wireCodeLinks(byId("stkTable"));
   }
   byId("stkQ").oninput = apply;
+  byId("stkStatus").onchange = apply;
   byId("stkRestricted").onclick = e => { restrOnly = !restrOnly; e.currentTarget.classList.toggle("on", restrOnly); e.currentTarget.setAttribute("aria-pressed", restrOnly); apply(); };
   apply();
 }
@@ -2145,37 +2210,68 @@ function renderStock(host) {
 /* ===================== ЗАКУПКИ ===================== */
 function renderPurchase(host) {
   const partCodes = new Set(G.part ? D.catalog.items.filter(x=>normArt(x.art).includes(normArt(G.part))).map(x=>String(x.ekmtr||'')) : []);
-  const rows = D.stock.items.filter(i => i.purchase && (!G.ekmtr || String(i.code).includes(G.ekmtr)) && (!G.part || partCodes.has(String(i.code)))).map(i => ({ ...i.purchase, code: i.code, name: i.name }));
+  const asOfMonth = (D.provision.meta.asOf || "").slice(0, 7);
+  const needByCode = new Map(((D.provision && D.provision.items) || []).map(i => [String(i.code), i]));
+  const rows = D.stock.items.filter(i => i.purchase && (!G.ekmtr || String(i.code).includes(G.ekmtr)) && (!G.part || partCodes.has(String(i.code)))).map(i => {
+    const p = i.purchase, need = needByCode.get(String(i.code));
+    const overdueQty = Object.entries(p.byMonth || {}).reduce((s, [month, qty]) => s + (month && month < asOfMonth ? (+qty || 0) : 0), 0);
+    const undatedQty = +(p.byMonth || {})[""] || 0;
+    const uncoveredQty = need ? need.gap + need.late + need.undated : 0;
+    return { ...p, code: i.code, name: i.name, needQty: need ? need.needQty : 0, uncoveredQty, firstNeed: need ? need.firstNeed : "", orderBy: need ? need.orderBy : "", overdueQty, undatedQty, scheduleStatus: overdueQty > 0 ? "overdue" : undatedQty > 0 ? "undated" : "future" };
+  });
   const total = rows.reduce((s, r) => s + r.planV, 0);
   const openQty = rows.reduce((s, r) => s + r.openQty, 0);
+  const overdueQty = rows.reduce((s, r) => s + r.overdueQty, 0);
+  const undatedQty = rows.reduce((s, r) => s + r.undatedQty, 0);
+  const suppliers = new Set(rows.map(r => r.topSupplier).filter(Boolean)).size;
   host.innerHTML = `
-    <h1>Закупки</h1>
+    <h1>Закупки</h1><p class="hint">KPI и график — вся выгрузка закупок WK; фильтры ниже применяются к реестру. Количества разных МТР суммированы справочно, без сопоставления единиц измерения.</p>
     <p class="sub">Открытые заявки и заказы на поставку по номенклатуре WK (${esc(D.stock.meta.srcPurchase)}).</p>
     <div class="kpis">
       ${kpi("Кодов в закупке", num(rows.length))}
       ${kpi("Плановая стоимость", mrub(total))}
       ${kpi("Ещё поставить, ед.", num(openQty, 0))}
+      ${kpi("Просрочено, ед.", num(overdueQty, 0), overdueQty ? "bad" : "good")}
+      ${kpi("Без даты, ед.", num(undatedQty, 0), undatedQty ? "warn" : "good")}
+      ${kpi("Основных поставщиков", num(suppliers))}
     </div>
+    <section class="card prov-arrival-card"><div class="prov-card-head"><div><h3>График открытых поставок</h3><p class="hint">Точное открытое количество по плановому месяцу; красным — месяц раньше снимка ${dmy(D.provision.meta.asOf)}.</p></div></div>${provisionArrivalChart(purchaseScheduleRows(rows), D.provision.meta.asOf)}</section>
+    <div class="toolbar"><select id="purStatus"><option value="">Все сроки</option><option value="overdue">Есть просрочка</option><option value="undated">Есть объём без даты</option><option value="future">Только будущий график</option><option value="gap">Есть непокрытая потребность</option></select><input type="search" id="purQ" placeholder="Код, наименование или поставщик…"><span class="count" id="purCount"></span></div>
     <div id="purTable"></div>
   `;
-  renderTable(byId("purTable"), {
-    rows, limit: 300, sortKey: "planV",
+  function apply() {
+    const status = byId("purStatus").value, q = normText(byId("purQ").value).trim();
+    let shown = rows.filter(r => (!status || (status === "gap" ? r.uncoveredQty > 0 : status === "undated" ? r.undatedQty > 0 : r.scheduleStatus === status)) && (!q || normText([r.code, r.name, r.topSupplier].join(" ")).includes(q)));
+    byId("purCount").textContent = `${num(shown.length)} позиций · ${num(shown.reduce((s, r) => s + r.openQty, 0), 0)} ед. · ${mrub(shown.reduce((s, r) => s + r.planV, 0))}`;
+    renderTable(byId("purTable"), {
+    rows: shown, limit: 300, sortKey: "planV",
     csv: true, csvName: "wk_purchase.csv",
     onRowClick: r => openCodeDetail(r.code),
     cols: [
       { key: "code", label: "Код", cls: "mono", fmt: v => codeLink(v) },
       { key: "name", label: "Наименование", cls: "wrap" },
+      { key: "needQty", label: "Потребность", numeric: true, fmt: v => v > 0 ? num(v, 1) : "—" },
+      { key: "uncoveredQty", label: "Не покрыто ATP", numeric: true, fmt: v => v > 0 ? `<b style="color:var(--bad)">${num(v, 1)}</b>` : "—" },
       { key: "planV", label: "Плановая ст-ть", numeric: true, fmt: rub },
       { key: "openQty", label: "Ещё поставить", numeric: true, fmt: v => num(v, 1) },
       { key: "transitQty", label: "В пути", numeric: true, fmt: v => num(v, 1) },
+      { key: "overdueQty", label: "Просрочено", numeric: true, fmt: v => v > 0 ? `<span class="badge bad">${num(v, 1)}</span>` : "—" },
+      { key: "undatedQty", label: "Без даты", numeric: true, fmt: v => v > 0 ? `<span class="badge warn">${num(v, 1)}</span>` : "—" },
       { key: "byMonth", label: "График поставки", cls: "wrap",
         plain: v => Object.entries(v || {}).map(([m, q]) => (m || "без даты") + ": " + q).join("; "),
         fmt: (v, r) => purchaseMonthsHtml(r) },
       { key: "lines", label: "Строк", numeric: true },
-      { key: "topSupplier", label: "Поставщик", cls: "wrap" },
+      { key: "topSupplier", label: "Основной поставщик", cls: "wrap" },
+      { key: "leadDays", label: "Факт. срок", numeric: true, fmt: (v, r) => v ? `${num(v)} дн. <span class="sup-sub">${num(r.leadN)} зам.</span>` : "—" },
+      { key: "firstNeed", label: "Первая потребность", fmt: v => v ? dmy(v) : "—" },
+      { key: "orderBy", label: "Заказать до", fmt: v => v ? dmy(v) : "—" },
     ],
   });
   wireCodeLinks(byId("purTable"));
+  }
+  byId("purStatus").onchange = apply;
+  byId("purQ").oninput = debounce(apply, 120);
+  apply();
 }
 
 /* ===================== КОДИФИКАЦИЯ ===================== */

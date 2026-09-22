@@ -49,3 +49,17 @@ assert.equal(uso.orders[0].closed, true);
 assert.equal(uso.orders[0].site, "1400");
 
 console.log("WkUpdate tests: OK");
+
+const reversal = {...d2, qp: [0, 0], qf: [0, -14]};
+assert.equal(WkUpdate.loadNeed([reversal]).need.length, 0);
+assert.equal(WkUpdate.loadNeed([{...d2, qf: [0, -3]}]).need[0].qty, 10);
+assert.equal(WkUpdate.loadNeed([{...d2, qf: undefined, a: undefined}]).need[0].qty, 10);
+const mixed = {...d, qf: [0, 1, 0, 0]};
+const assembled = WkUpdate.assemble([mixed],
+  {items: d.cek.map(code => ({code, name: code}))},
+  {meta: {}, items: d.cek.map(code => ({code, availQty: 0}))});
+assert.equal(assembled.orders.length, 1);
+assert.equal(assembled.closedOrders.length, 0);
+assert.equal(assembled.orders[0].lines.length, 2);
+assert.equal(assembled.orders[0].factValue, 1398391);
+console.log("Negative corrections, optional columns, partial order completeness: OK");

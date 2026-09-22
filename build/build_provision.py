@@ -50,6 +50,17 @@ WK_RE = re.compile(r"WK-?\d", re.I)
 DATE_RE = re.compile(r"(\d{2})[_.-](\d{2})[_.-](\d{4})")
 
 
+def cell(values, index, default=0):
+    """Return a column value without assuming every source has every field.
+
+    Older PM-06 snapshots do not contain the newer fact/cost columns.  Treating
+    an absent optional column as zero keeps the historical plan usable and is
+    equivalent to "fact not supplied"; malformed short columns are handled in
+    the same deterministic way.
+    """
+    return values[index] if isinstance(values, list) and index < len(values) else default
+
+
 def as_of(meta):
     """Дата, на которую верна картина, — самая поздняя из дат выгрузок.
 
@@ -92,8 +103,8 @@ def load_need(topo_dir):
         for i in range(d["n"]):
             if d["ei"][i] not in wk_idx:
                 continue
-            ei, ci, wi = d["ei"][i], d["ci"][i], d.get("wi", [None] * d["n"])[i]
-            order = d["o"][i]
+            ei, ci, wi = cell(d.get("ei"), i, -1), cell(d.get("ci"), i, -1), cell(d.get("wi"), i, None)
+            order = cell(d.get("o"), i, "")
             key = (order, ei, wi, ci)
             g = grains.get(key)
             if g is None:
@@ -105,27 +116,32 @@ def load_need(topo_dir):
                     "date": (od.get(order) or [""])[0] or "",
                     "code": code, "mat": mat, "order": order,
                     "kind": orr.get(order, ""), "site": d["s"], "year": d["y"],
-                    "unit": unit, "work": work, "method": d.get("u", [""])[i] or "",
+                    "unit": unit, "work": work, "method": cell(d.get("u"), i, "") or "",
                     "planQty": 0.0, "factQty": 0.0, "planValue": 0.0, "factValue": 0.0,
                     "usoPlan": 0.0, "usoFact": 0.0,
                 }
                 grains[key] = g
-            g["planQty"] += N(d["qp"][i])
-            g["factQty"] += N(d["qf"][i])
-            g["planValue"] += N(d["p"][i])
-            g["factValue"] += N(d["a"][i])
-            g["usoPlan"] += N(d.get("up", [0])[i] if i < len(d.get("up", [])) else 0)
-            g["usoFact"] += N(d.get("uf", [0])[i] if i < len(d.get("uf", [])) else 0)
-            if d.get("u") and d["u"][i]:
-                g["method"] = d["u"][i]
+            g["planQty"] += N(cell(d.get("qp"), i))
+            g["factQty"] += N(cell(d.get("qf"), i))
+            g["planValue"] += N(cell(d.get("p"), i))
+            g["factValue"] += N(cell(d.get("a"), i))
+            g["usoPlan"] += N(cell(d.get("up"), i))
+            g["usoFact"] += N(cell(d.get("uf"), i))
+            if cell(d.get("u"), i, ""):
+                g["method"] = cell(d.get("u"), i, "")
         for g in grains.values():
-            remaining = max(g["planQty"] - g["factQty"], 0)
+            # A negative fact row is a reversal/correction, not a new material
+            # requirement.  Open demand must stay between zero and the
+            # positive plan; otherwise a standalone qf=-14 row becomes a
+            # fictitious need of 14 and consumes ATP stock.
+            plan_qty = max(g["planQty"], 0)
+            remaining = max(plan_qty - max(g["factQty"], 0), 0)
             if not g["code"]:
                 nocode_rows += 1
                 nocode_v += g["planValue"] * remaining / g["planQty"] if g["planQty"] else 0
                 continue
             g["qty"] = remaining
-            g["value"] = g["planValue"] * remaining / g["planQty"] if g["planQty"] else 0
+            g["value"] = g["planValue"] * remaining / plan_qty if plan_qty else 0
             if remaining <= 0:
                 if g["planQty"] > 0 or g["factQty"] > 0:
                     closed.append(g)
@@ -409,8 +425,9 @@ def main():
         for m, q in (((stock[code].get("purchase") or {}).get("byMonth")) or {}).items():
             bym[m or ""] += q
 
-    orders = build_orders(known, wk_names)
-    closed_orders = build_orders(wk_closed, wk_names)
+    all_orders = build_orders(known + wk_closed, wk_names)
+    orders = [o for o in all_orders if o["qty"] > 1e-9]
+    closed_orders = [o for o in all_orders if o["qty"] <= 1e-9]
     result = {
         "meta": {
             "src": "TOPO data/<площадка>_<год>.json, годы 2026-2027; план и факт слиты в зерно заказ×материал",
