@@ -36,6 +36,8 @@ const context = {
   STOCK_BY_CODE:new Map(),codeLink:v=>v,closeModal:()=>{},renderGlobalFilters:()=>{},
   navigateTo:tab=>{navigated=tab},wireCodeLinks:()=>{},
   byId:id=>{if(!elements.has(id))elements.set(id,{innerHTML:"",focus(){}});return elements.get(id)},
+  entityLink:(t,v)=>String(v),beginEntityCard:()=>{},finishEntityCard:()=>{},
+  openToroCard:(id,hint)=>{navigated={id,hint}},
   qsa:sel=>sel==="[data-material-order]"?[button]:[],
 };
 context.STOCK_BY_CODE=new Map(context.D.stock.items.map(x=>[x.code,x]));
@@ -50,7 +52,6 @@ context.openPurchaseDocument("document","00450001","001");
 assert.ok(elements.get("modalCard").innerHTML.includes("Строк: 3"));
 assert.ok(elements.get("modalCard").innerHTML.includes("CNY"));
 context.wireMaterialDrilldowns({}, "001");button.onclick();
-assert.equal(context.PROV_SELECTED,"a");assert.equal(context.PROV_FILTER.q,"");
-assert.equal(context.G.ekmtr,"");assert.equal(context.G.part,"");
-assert.equal(navigated,"provision");
+assert.equal(navigated.id,"123");assert.equal(navigated.hint.site,"1400");
+assert.equal(context.G.ekmtr,"old");assert.equal(context.G.part,"old");
 console.log("Material drilldowns: document lines, missing fields, dates, scope, TORO navigation OK");

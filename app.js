@@ -266,6 +266,125 @@ function renderGlobalFilters() {
 }
 
 /* ---------- generic sortable table ---------- */
+/* Typed links: identifiers are routed by meaning, never guessed from digits. */
+function entityLink(type, value, row = {}) {
+  if (value == null || value === "") return '<span class="dim">—</span>';
+  return `<button type="button" class="pn-link mono" data-entity="${esc(type)}" data-id="${esc(value)}" data-site="${esc(row.site || "")}" data-unit="${esc(row.unit || "")}">${esc(value)}</button>`;
+}
+function entityCell(col, row, fallback) {
+  if (!col.label || /<(button|a|input|select)\b/i.test(fallback)) return fallback;
+  if (row.code && ["qty","availQty","restrictedQty","fromStock","openQty","fromBuy"].includes(col.key)) {
+    const section = ["openQty","fromBuy"].includes(col.key) ? "purchase" : "stock";
+    if (["qty","fromStock"].includes(col.key) && !/остаток|склад|налич/i.test(col.label)) return fallback;
+    if (!/<[^>]+>/.test(fallback)) return entityLink(section,row.code).replace(">" + esc(row.code) + "</button>", ">" + fallback + "</button>");
+  }
+  if (col.numeric) return fallback;
+  const labels = {code:/^(код|код екмтр|екмтр)$/i, ekmtr:/екмтр/i,
+    art:/^(артикул|каталожный.*|номер)$/i, order:/^(заказ|заказ торо)$/i,
+    document:/документ закупки/i, request:/заявка/i};
+  if (!labels[col.key]?.test(col.label.trim())) return fallback;
+  const type = {code:"material", ekmtr:"material", art:"part", order:"toro", document:"document", request:"request"}[col.key];
+  return row[col.key] == null || row[col.key] === "" ? fallback : entityLink(type, row[col.key], row);
+}
+let CARD_TRAIL = [], CARD_REPLAY = false, CARD_SEQ = 0;
+function beginEntityCard(type, args) {
+  const card = byId("modalCard"), wasClosed = card.hidden;
+  if (wasClosed) { CARD_TRAIL = []; MODAL_RETURN_FOCUS = document.activeElement; }
+  const next = {type, args};
+  if (!CARD_REPLAY && JSON.stringify(CARD_TRAIL.at(-1)) !== JSON.stringify(next)) CARD_TRAIL.push(next);
+  CARD_SEQ++;
+  card.hidden = false; byId("modalBack").hidden = false;
+  byId("modalBack").onclick = closeModal;
+  document.body.classList.add("modal-open");
+}
+function finishEntityCard(code) {
+  const card = byId("modalCard");
+  const bar = document.createElement("div");
+  bar.className = "entity-card-nav";
+  bar.innerHTML = (CARD_TRAIL.length > 1 ? '<button class="minibtn" data-card-back>← Назад</button>' : "") +
+    (code ? `<button class="minibtn" data-card-section="stock">Наличие</button><button class="minibtn" data-card-section="purchase">Закупки</button><button class="minibtn" data-card-section="toro">Заказы ТОРО</button>` : "");
+  card.insertBefore(bar, card.querySelector("h2")?.nextSibling || card.firstChild);
+  bar.querySelector("[data-card-back]")?.addEventListener("click", () => {
+    CARD_TRAIL.pop(); const prev = CARD_TRAIL.at(-1); if (!prev) return;
+    CARD_REPLAY = true;
+    try { routeEntity(prev.type, ...prev.args); } finally { CARD_REPLAY = false; }
+  });
+  bar.querySelectorAll("[data-card-section]").forEach(b => b.onclick = () => {
+    if (CARD_TRAIL.at(-1)?.type !== "material") openCodeDetail(code);
+    const target = byId("modalCard").querySelector('[data-section="' + b.dataset.cardSection + '"]');
+    target?.scrollIntoView({block:"start", behavior:"smooth"});
+  });
+}
+function routeEntity(type, id, hint = {}) {
+  if (type === "stock" || type === "purchase") {
+    openCodeDetail(id);
+    byId("modalCard").querySelector('[data-section="' + type + '"]')?.scrollIntoView({block:"start"});
+    return;
+  }
+  if (type === "material") return openCodeDetail(id);
+  if (type === "part") return openPartCard(id);
+  if (type === "toro") return openToroCard(id, hint);
+  if (type === "document" || type === "request") return openPurchaseDocument(type, id, hint.code || "");
+}
+function openPartCard(part) {
+  // Exact match only; punctuation can distinguish different spare parts.
+  const item = CATALOG_BY_ART.get(String(part)) || (D.catalog.items || []).find(i => interKey(i.art) === interKey(part));
+  if (item) return openDetail(item.art);
+  beginEntityCard("part", [part]);
+  const refs = (D.ekmtr?.items || []).filter(i => interKey(i.cat) === interKey(part));
+  const card = byId("modalCard");
+  card.innerHTML = `<button class="mclose" id="mCloseBtn" aria-label="Закрыть карточку">✕</button><h2 id="modalTitle">Каталожный № ${esc(part)}</h2>
+  <p class="hint">Номер отсутствует в прайсе. Наличие и закупка доступны только при подтверждённой связи с ЕКМТР.</p>
+  ${refs.map(i => `<p>${codeLink(i.code)} · ${esc(i.name)}</p>`).join("") || '<p class="hint">Точная связь с ЕКМТР не найдена.</p>'}`;
+  byId("mCloseBtn").onclick = closeModal; finishEntityCard(); byId("mCloseBtn").focus();
+}
+async function openToroCard(number, hint = {}) {
+  beginEntityCard("toro", [number, hint]);
+  const seq = CARD_SEQ, card = byId("modalCard");
+  card.innerHTML = '<button class="mclose" id="mCloseBtn" aria-label="Закрыть карточку">✕</button><h2 id="modalTitle">Заказ ТОРО ' + esc(number) + '</h2><p>Загрузка состава заказа…</p>';
+  byId("mCloseBtn").onclick = closeModal;
+  try {
+    await ensureData(["provision", "usoWk"]);
+    let orders = [...(D.provision.orders || []), ...(D.provision.closedOrders || [])].filter(o =>
+      String(o.order) === String(number) && (!hint.site || o.site === hint.site) && (!hint.unit || o.unit === hint.unit));
+    let historical = [];
+    if (!orders.length) {
+      if (!S) {
+        if (!SP) SP = loadScript("data/schedule_manifest.local.js").then(async () => {
+          const m = dataFor("schedule_manifest");
+          await Promise.all(m.shards.map(n => loadScript("data/" + n + ".local.js")));
+          return {meta:m.meta, rows:m.shards.flatMap(n => sDecode(dataFor(n)))};
+        });
+        S = await SP;
+      }
+      historical = S.rows.filter(r => String(r.order) === String(number) && (!hint.site || r.site === hint.site) && (!hint.unit || r.unit === hint.unit));
+    }
+    if (seq !== CARD_SEQ || card.hidden) return;
+    const lineTable = lines => '<div class="twrap"><table><thead><tr><th>ЕКМТР</th><th>Материал</th><th>Вид работ</th><th>План</th><th>Факт</th><th>Открытая потребность</th></tr></thead><tbody>' +
+      lines.map(l => `<tr><td>${codeLink(l.code)}</td><td>${esc(l.name)}</td><td>${esc(l.work || "")}</td><td>${num(l.planQty ?? l.qp,3)}</td><td>${num(l.factQty ?? l.qf,3)}</td><td>${l.qty == null ? "—" : num(l.qty,3)}</td></tr>`).join("") + '</tbody></table></div>';
+    const uso = (D.usoWk?.orders || []).filter(o => String(o.order) === String(number) && (!hint.site || o.site === hint.site) && (!hint.unit || o.unit === hint.unit));
+    card.innerHTML = `<button class="mclose" id="mCloseBtn" aria-label="Закрыть карточку">✕</button><h2 id="modalTitle">Заказ ТОРО ${esc(number)}</h2>
+      <p class="hint">Полный состав заказа в загруженной витрине. Фильтры вкладки не скрывают строки карточки.</p>
+      ${orders.map(o => `<h3>${esc(o.unit)} · ${esc(siteNameOf(o.site) || o.site)}</h3><p>Дата начала: ${o.date ? dmy(o.date) : "не указана"} · ${o.closed ? "Закрыт фактом" : "Открыт"} · покрытие ${num(o.coverage,1)}%</p>${lineTable(o.lines || [])}`).join("")}
+      ${historical.length ? '<h3>История ТОРО</h3><p>Начало: ' + [...new Set(historical.map(r => r.start).filter(Boolean))].map(dmy).join(", ") + '</p>' + lineTable(historical) : ""}
+      ${uso.map(o => '<h3>МТР подрядчика (УСО)</h3>' + lineTable((o.lines || []).map(l => ({...l, planQty:l.qp, factQty:l.qf})))).join("")}
+      ${!orders.length && !historical.length && !uso.length ? '<p class="hint">Заказ не найден в загруженных данных.</p>' : ""}`;
+    byId("mCloseBtn").onclick = closeModal; finishEntityCard(); byId("mCloseBtn").focus();
+  } catch (e) {
+    if (seq !== CARD_SEQ || card.hidden) return;
+    card.insertAdjacentHTML("beforeend", callout("bad", "Не удалось загрузить заказ: " + esc(e.message)));
+    finishEntityCard();
+  }
+}
+function initEntityLinks() { document.addEventListener("click", e => {
+  const b = e.target.closest('[data-entity],button.pn-link[data-code],button[data-inter-part],span.pn-link[data-art]');
+  if (!b) return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (b.dataset.entity) routeEntity(b.dataset.entity,b.dataset.id,{site:b.dataset.site,unit:b.dataset.unit});
+  else if (b.dataset.code) openCodeDetail(b.dataset.code);
+  else openPartCard(b.dataset.interPart || b.dataset.art);
+}, true); }
+
 function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, limit, onRowClick, csv, csvName }) {
   let key = sortKey || (cols.find(c => c.numeric) || cols[0]).key;
   let dir = sortDir;
@@ -287,7 +406,8 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
     const tbody = `<tbody>${shown.map((r, ri) => {
       const cls = rowClass ? rowClass(r) : "";
       return `<tr class="${cls}" data-ri="${ri}"${onRowClick ? ' tabindex="0" role="button"' : ""}>${cols.map(c => {
-        const v = c.fmt ? c.fmt(r[c.key], r) : esc(r[c.key]);
+        const raw = c.fmt ? c.fmt(r[c.key], r) : esc(r[c.key]);
+        const v = entityCell(c, r, raw);
         return `<td class="${c.numeric ? "n" : ""} ${c.cls || ""}">${v}</td>`;
       }).join("")}</tr>`;
     }).join("")}</tbody>`;
@@ -306,8 +426,8 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
     });
     if (onRowClick) {
       qsa("tbody tr", container).forEach(tr => {
-        tr.onclick = () => onRowClick(shown[+tr.dataset.ri]);
-        tr.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onRowClick(shown[+tr.dataset.ri]); } };
+        tr.onclick = e => { if (!e.target.closest("button,a,input,select,textarea")) onRowClick(shown[+tr.dataset.ri]); };
+        tr.onkeydown = e => { if(e.target !== tr) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onRowClick(shown[+tr.dataset.ri]); } };
       });
     }
     if (csv) {
@@ -470,7 +590,7 @@ let PROVISION_ORDER_BY_ID = new Map();
 function interKey(value) { return String(value || "").trim().toUpperCase().replace(/\s+/g, " "); }
 function provisionCoverage(row) { return row.needQty > 0 ? 100 * (row.fromStock + row.fromBuy) / row.needQty : 0; }
 function interPartLink(part) {
-  return CATALOG_BY_ART.has(part) ? `<button type="button" class="minibtn mono" data-inter-part="${esc(part)}">${esc(part)}</button>` : esc(part);
+  return entityLink("part", part);
 }
 function wireInterLinks(container) {
   container.onclick = e => {
@@ -501,7 +621,7 @@ function catalogByEkmtr(code) {
 }
 function wireCodeLinks(host) {
   if (!host) return;
-  qsa("[data-code]", host).forEach(el => {
+  qsa("button.pn-link[data-code]", host).forEach(el => {
     el.onclick = e => { e.stopPropagation(); openCodeDetail(el.dataset.code); };
   });
 }
@@ -1483,8 +1603,8 @@ function loRenderMain() {
             return `<tr data-item="${esc(r.item || "")}" data-part="${esc(r.part || "")}">
               <td class="c-pos">${esc(r.item || "")}</td>
               <td class="mono">${sup.art
-                ? `<span class="pn-link" data-art="${esc(sup.art)}" title="Открыть карточку детали">${esc(r.part || "")}</span>`
-                : esc(r.part || "")}</td>
+                ? entityLink("part",sup.art)
+                : entityLink("part",r.part || "")}</td>
               <td class="wrap">${esc(r.name || "")}</td>
               <td class="n">${r.qty != null ? num(r.qty) : ""}</td>
               <td>${sup.ekmtr}</td>
@@ -3060,6 +3180,7 @@ function renderUpdate(host) {
 /* ===================== КАРТОЧКА ДЕТАЛИ (модалка) ===================== */
 let MODAL_RETURN_FOCUS = null;
 function closeModal() {
+  CARD_SEQ++; CARD_TRAIL = [];
   if (byId("modalCard").hidden) return;
   byId("modalBack").hidden = true;
   byId("modalCard").hidden = true;
@@ -3093,7 +3214,7 @@ function materialOrders(code) {
 }
 function materialOrdersHtml(code) {
   const orders = materialOrders(code);
-  return '<h3>Обеспеченность по заказам ТОРО</h3>' +
+  return '<h3 data-section="toro">Обеспеченность по заказам ТОРО</h3>' +
     (orders.length ? `<p class="hint">Заказы по выбранному контексту. Количества относятся только к этому материалу; нажмите номер, чтобы открыть весь заказ.</p>
     <div class="twrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>Заказ ТОРО</th><th>Дата начала</th><th>Машина / площадка</th><th>Состояние</th><th>Потребность</th><th>Со склада</th><th>Закупка к сроку</th><th>Не покрыто к сроку</th></tr></thead><tbody>
     ${orders.map(o => `<tr><td><button class="minibtn mono" data-material-order="${esc(o.id)}">${esc(o.order)}</button></td>
@@ -3109,7 +3230,7 @@ function purchaseDocumentButton(r) {
 function materialPurchasesHtml(code) {
   const purchase = (STOCK_BY_CODE.get(String(code)) || {}).purchase;
   const rows = (purchase || {}).documents || [];
-  return '<h3>Документы закупки и даты поставки</h3>' + (rows.length ?
+  return '<h3 data-section="purchase">Документы закупки и даты поставки</h3>' + (rows.length ?
     `<p class="hint">Дата поставки — по заказу поставщику, при отсутствии — требуемая дата. Фактический приход показан отдельно. Показаны также закрытые строки.</p>
     <div class="twrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>Документ закупки / заявка</th><th>Позиция</th><th>Дата поставки</th><th>Факт поставки</th><th>Поставщик</th><th>Ещё поставить</th><th>ЕИ</th></tr></thead><tbody>
     ${rows.map(r => `<tr><td>${purchaseDocumentButton(r)}</td><td>${esc(r.position || r.requestPosition || "—")}</td>
@@ -3122,17 +3243,13 @@ function wireMaterialDrilldowns(card, code) {
   qsa("[data-material-order]", card).forEach(b => b.onclick = () => {
     const o = [...(D.provision.orders || []), ...(D.provision.closedOrders || [])].find(o => o.id === b.dataset.materialOrder);
     if (!o) return;
-    closeModal();
-    G.site = o.site; G.model = o.model || ""; G.unit = o.unit; G.order = String(o.order);
-    G.ekmtr = ""; G.part = "";
-    PROV_FILTER = { year: "", from: "", to: "", status: o.closed ? "closed" : "", q: "" };
-    PROV_SELECTED = o.id;
-    renderGlobalFilters();
-    navigateTo("provision");
+    openToroCard(o.order, {site:o.site,unit:o.unit});
+
   });
 }
 function openPurchaseDocument(type, id, returnCode) {
   if (!["document", "request"].includes(type) || !id) return;
+  beginEntityCard(type, [id, {code:returnCode}]);
   const rows = (D.stock.items || []).flatMap(i => ((i.purchase || {}).documents || [])
     .filter(r => String(r[type] || "") === String(id)).map(r => ({ ...r, code: i.code, name: i.name })));
   const card = byId("modalCard");
@@ -3142,11 +3259,13 @@ function openPurchaseDocument(type, id, returnCode) {
     <button class="minibtn" id="purchaseBack">← К материалу ${esc(returnCode)}</button>
     <div class="twrap" style="margin-top:12px"><table><thead><tr><th>Позиция</th><th>ЕКМТР</th><th>Материал</th><th>Документ закупки</th><th>Заявка</th><th>Дата заявки</th><th>Заказ создан</th><th>Требуемая дата</th><th>Поставка по заказу</th><th>Факт поставки</th><th>Завод</th><th>Статус</th><th>Поставщик</th><th>Количество</th><th>Ещё поставить</th><th>В пути</th><th>Поставлено</th><th>ЕИ</th><th>Стоимость в плановых ценах, ₽</th><th>Валюта заказа</th></tr></thead><tbody>
     ${rows.map(r => `<tr><td>${esc(r.position || r.requestPosition || "—")}</td><td>${codeLink(r.code)}</td><td>${esc(r.name)}</td>
-      <td>${esc(r.document || "—")}</td><td>${esc(r.request || "—")}</td><td>${r.requestDate ? dmy(r.requestDate) : "Не указана"}</td><td>${r.orderCreatedDate ? dmy(r.orderCreatedDate) : "—"}</td><td>${r.requiredDate ? dmy(r.requiredDate) : "—"}</td><td>${r.orderDeliveryDate ? dmy(r.orderDeliveryDate) : "Не указана"}</td><td>${r.actualDeliveryDate ? dmy(r.actualDeliveryDate) : "—"}</td><td>${esc(r.plant || "—")}</td><td>${esc(r.status || "—")}</td>
+      <td>${r.document ? entityLink("document",r.document) : "—"}</td><td>${r.request ? entityLink("request",r.request) : "—"}</td><td>${r.requestDate ? dmy(r.requestDate) : "Не указана"}</td><td>${r.orderCreatedDate ? dmy(r.orderCreatedDate) : "—"}</td><td>${r.requiredDate ? dmy(r.requiredDate) : "—"}</td><td>${r.orderDeliveryDate ? dmy(r.orderDeliveryDate) : "Не указана"}</td><td>${r.actualDeliveryDate ? dmy(r.actualDeliveryDate) : "—"}</td><td>${esc(r.plant || "—")}</td><td>${esc(r.status || "—")}</td>
       <td>${esc(r.supplier || "—")}</td><td>${num(r.qty, 3)}</td><td>${num(r.openQty, 3)}</td><td>${num(r.transitQty, 3)}</td><td>${r.deliveredQty == null ? "—" : num(r.deliveredQty, 3)}</td><td>${esc(r.unit || "—")}</td><td>${num(r.value, 2)}</td><td>${esc(r.currency || "—")}</td></tr>`).join("")}
     </tbody></table></div>`;
   byId("mCloseBtn").onclick = closeModal;
+  byId("purchaseBack").hidden = !returnCode;
   byId("purchaseBack").onclick = () => openCodeDetail(returnCode);
+  finishEntityCard();
   wireCodeLinks(card);
   byId("mCloseBtn").focus();
 }
@@ -3154,13 +3273,13 @@ function openPurchaseDocument(type, id, returnCode) {
 function openCodeDetail(code, needDate) {
   const c = String(code || "");
   if (!c) return;
+  beginEntityCard("material", [code, needDate]);
   const stock = STOCK_BY_CODE.get(c);
   const cat = catalogByEkmtr(c);
   const prov = ((D.provision && D.provision.items) || []).find(i => String(i.code) === c);
   const need = needDate || (prov && prov.firstNeed) || "";
   const vs = purchaseAgainstDate(stock && stock.purchase, need);
   const rate = getRate();
-  MODAL_RETURN_FOCUS = document.activeElement;
   const back = byId("modalBack"), card = byId("modalCard");
   back.hidden = false; card.hidden = false;
   document.body.classList.add("modal-open");
@@ -3172,12 +3291,12 @@ function openCodeDetail(code, needDate) {
     <h2 class="mono" id="modalTitle">${esc(c)}</h2>
     <p class="sub" style="margin:0">${esc((cat && cat.nameRu) || (stock && stock.name) || (prov && prov.name) || "")}</p>
     <dl class="dl">
-      ${cat ? `<dt>Каталожный №</dt><dd class="mono">${esc(cat.art)} · ${esc(cat.model || "")}</dd>
+      ${cat ? `<dt>Каталожный №</dt><dd class="mono">${entityLink("part",cat.art)} · ${esc(cat.model || "")}</dd>
       <dt>Цена ДП</dt><dd>${cny(cat.priceCNY)}${rate && cat.priceCNY != null ? ` · ${rub(cat.priceCNY * rate)}` : ""}</dd>
       <dt>Цена УСО</dt><dd>${cny(cat.priceUsoCNY)}</dd>` : `<dt>Прайс</dt><dd class="dim">нет в прайсе ДП</dd>`}
       <dt>ЕКМТР</dt><dd class="mono">${esc(c)}</dd>
     </dl>
-    <h3 style="font-size:12.5px;margin:16px 0 6px">Наличие по складам</h3>
+    <h3 data-section="stock" style="font-size:12.5px;margin:16px 0 6px">Наличие по складам</h3>
     ${stock ? `
       <dl class="dl">
         <dt>Остаток</dt><dd>${num(stock.qty, 1)} ед. · ${rub(stock.value)}</dd>
@@ -3220,6 +3339,7 @@ function openCodeDetail(code, needDate) {
   byId("mCloseBtn").onclick = closeModal;
   wireCartButtons(card);
   wireMaterialDrilldowns(card, c);
+  finishEntityCard(c);
   const artBtn = byId("mOpenArt");
   if (artBtn) artBtn.onclick = () => openDetail(cat.art);
   byId("mCloseBtn").focus();
@@ -3228,6 +3348,7 @@ function openCodeDetail(code, needDate) {
 function openDetail(art) {
   const item = CATALOG_BY_ART.get(art);
   if (!item) return;
+  beginEntityCard("part", [art]);
   const stock = item.ekmtr ? STOCK_BY_CODE.get(item.ekmtr) : null;
   const group = INTER_GROUP_OF.get(interKey(item.art));
   const drawings = (D.drawings && D.drawings.byNum && (D.drawings.byNum[item.art] ||
@@ -3235,7 +3356,6 @@ function openDetail(art) {
   const linkomeRows = linkomeRowsFor(item.art) ||
     (item.tree[0] ? linkomeRowsFor(item.tree[0].num) : null);
 
-  MODAL_RETURN_FOCUS = document.activeElement;
   const back = byId("modalBack"), card = byId("modalCard");
   back.hidden = false; card.hidden = false;
   document.body.classList.add("modal-open");
@@ -3252,7 +3372,7 @@ function openDetail(art) {
       <dt>ТНВЭД</dt><dd class="mono">${esc(item.tnved || "—")}</dd>
       <dt>Цена ДП</dt><dd>${cny(item.priceCNY)}${getRate() && item.priceCNY != null ? ` · ${rub(item.priceCNY * getRate())}` : ""}</dd>
       <dt>Цена УСО</dt><dd>${cny(item.priceUsoCNY)} ${item.priceDiffCNY != null ? `<span class="badge warn">Δ ${cny(item.priceDiffCNY)}</span>` : ""}</dd>
-      <dt>Код ЕКМТР</dt><dd class="mono">${item.ekmtr ? esc(item.ekmtr) + (item.ekmtrAmbiguous ? ' <span class="badge warn">неоднозначно</span>' : "") : '<span class="badge bad">не кодифицировано</span>'}</dd>
+      <dt>Код ЕКМТР</dt><dd class="mono">${item.ekmtr ? codeLink(item.ekmtr) + (item.ekmtrAmbiguous ? ' <span class="badge warn">неоднозначно</span>' : "") : '<span class="badge bad">не кодифицировано</span>'}</dd>
       ${item.artNew ? `<dt>Артикул обн.</dt><dd class="mono">${esc(item.artNew)}</dd>` : ""}
     </dl>
     ${item.ekmtr ? `<p class="hint">Локально по коду ${esc(item.ekmtr)}: склад и закупка, обеспеченность, график план-факт.</p>
@@ -3299,6 +3419,7 @@ function openDetail(art) {
       !drawings ? '<p class="hint">Ни чертежа, ни строки в LinkOme для этого номера нет.</p>' : ""}
   `;
   byId("mCloseBtn").onclick = closeModal;
+  finishEntityCard(item.ekmtr);
   wireInterLinks(card);
   wireMaterialDrilldowns(card, item.ekmtr);
   const codeBtn = qs("[data-open-code]", card);
@@ -3447,7 +3568,7 @@ function supplyCells(part) {
     orderHtml = `<span class="sup-pill order" title="${esc(`в закупке ${num(p.qty, 1)}, поставщик ${p.topSupplier || "—"}${years ? "\n" + years : ""}`)}">едет ${num(p.openQty, 1)}</span>`;
   }
   return {
-    ekmtr: item.ekmtr ? `<span class="mono">${esc(item.ekmtr)}</span>` : '<span class="dim">—</span>',
+    ekmtr: item.ekmtr ? codeLink(item.ekmtr) : '<span class="dim">—</span>',
     stock: stockHtml, price: priceHtml, order: orderHtml, art: item.art,
     // в заявку кладём по коду ЕКМТР, а без кода — по артикулу прайса:
     // иначе позиция без кодификации в заявку вообще не попадёт
@@ -3570,8 +3691,8 @@ function renderKB(host) {
       h.push(kbSection("Детали прайса ДП", r.parts.length, `<div class="twrap"><table>
         <thead><tr><th>Артикул</th><th>Наименование</th><th>Модель</th><th>ЕКМТР</th><th>Цена, ¥</th></tr></thead>
         <tbody>${r.parts.slice(0, KB_LIMIT).map(i => `<tr class="mrow" data-art="${esc(i.art)}">
-          <td class="mono">${kbMark(i.art, q)}</td><td class="wrap">${kbMark(i.nameRu || "", q)}</td>
-          <td>${esc(i.model || "")}</td><td class="mono">${i.ekmtr ? esc(i.ekmtr) : '<span class="dim">—</span>'}</td>
+          <td class="mono">${entityLink("part",i.art)}</td><td class="wrap">${kbMark(i.nameRu || "", q)}</td>
+          <td>${esc(i.model || "")}</td><td class="mono">${i.ekmtr ? codeLink(i.ekmtr) : '<span class="dim">—</span>'}</td>
           <td class="n">${i.priceCNY == null ? "" : cny(i.priceCNY)}</td></tr>`).join("")}</tbody>
         </table></div>`, KB_LIMIT));
     }
@@ -3581,7 +3702,7 @@ function renderKB(host) {
         <tbody>${r.linkome.slice(0, KB_LIMIT).map(([, rows]) => {
           const f = rows[0];
           return `<tr class="mrow" data-book="${esc(f.book)}" data-page="${esc(f.page)}">
-            <td class="mono">${kbMark(f.raw, q)}</td><td class="wrap">${kbMark(f.name || "", q)}</td>
+            <td class="mono">${entityLink("part",f.raw)}</td><td class="wrap">${kbMark(f.name || "", q)}</td>
             <td class="wrap"><span class="badge info">${esc(f.book)}</span> ${esc(f.pageTitle || f.page)}${rows.length > 1 ? ` <span class="dim">+${rows.length - 1}</span>` : ""}</td></tr>`;
         }).join("")}</tbody></table></div>`, KB_LIMIT));
     }
@@ -3597,8 +3718,8 @@ function renderKB(host) {
       h.push(kbSection("Коды ЕКМТР", r.ekmtr.length, `<div class="twrap"><table>
         <thead><tr><th>Код</th><th>Наименование</th><th>Каталожный</th><th>Изготовитель</th></tr></thead>
         <tbody>${r.ekmtr.slice(0, KB_LIMIT).map(e => `<tr>
-          <td class="mono">${kbMark(e.code, q)}</td><td class="wrap">${kbMark(e.name || "", q)}</td>
-          <td class="mono">${esc(e.cat || "")}</td><td>${esc(e.mf || "")}</td></tr>`).join("")}</tbody>
+          <td class="mono">${codeLink(e.code)}</td><td class="wrap">${kbMark(e.name || "", q)}</td>
+          <td class="mono">${e.cat ? entityLink("part",e.cat) : "—"}</td><td>${esc(e.mf || "")}</td></tr>`).join("")}</tbody>
         </table></div>`, KB_LIMIT));
     }
     if (r.fleet.length) {
@@ -3732,15 +3853,15 @@ function cmdRender(q) {
   }
   const r = kbFindAll(needle);
   const rows = [];
-  r.parts.slice(0, 8).forEach(i => rows.push({ kind: "Деталь", title: i.art, sub: i.nameRu || "", run: () => { cmdClose(); G.part = i.art; if (i.ekmtr) G.ekmtr = String(i.ekmtr); openSchemeOr("catalog"); } }));
-  r.ekmtr.slice(0, 6).forEach(e => rows.push({ kind: "ЕКМТР", title: e.code, sub: e.name || "", run: () => { cmdClose(); G.ekmtr = e.code; const cat = catalogByEkmtr(e.code); if (cat) G.part = cat.art; openSchemeOr("catalog"); } }));
+  r.parts.slice(0, 8).forEach(i => rows.push({ kind: "Деталь", title: i.art, sub: i.nameRu || "", run: () => { cmdClose(); openPartCard(i.art); } }));
+  r.ekmtr.slice(0, 6).forEach(e => rows.push({ kind: "ЕКМТР", title: e.code, sub: e.name || "", run: () => { cmdClose(); openCodeDetail(e.code); } }));
   r.fleet.slice(0, 6).forEach(u => rows.push({ kind: "Борт", title: u.name, sub: `${u.siteName || u.site || ""} · ${u.model || ""}`, run: () => { cmdClose(); G.site = u.site || ""; G.model = u.model || ""; G.unit = u.name; writeHash(false); renderGlobalFilters(); navigateTo("fleet"); } }));
   if (D.provision && D.provision.orders) {
     const lo = needle.toLowerCase();
     D.provision.orders.filter(o => String(o.order).toLowerCase().includes(lo)).slice(0, 5)
-      .forEach(o => rows.push({ kind: "Заказ", title: o.order, sub: o.unit || "", run: () => { cmdClose(); G.order = o.order; G.unit = o.unit || G.unit; G.site = o.site || G.site; openSchemeOr("provision"); } }));
+      .forEach(o => rows.push({ kind: "Заказ", title: o.order, sub: o.unit || "", run: () => { cmdClose(); openToroCard(o.order, {site:o.site,unit:o.unit}); } }));
     (D.provision.closedOrders || []).filter(o => String(o.order).toLowerCase().includes(lo)).slice(0, 3)
-      .forEach(o => rows.push({ kind: "Заказ", title: o.order, sub: (o.unit || "") + " · закрыт", run: () => { cmdClose(); G.order = o.order; G.unit = o.unit || G.unit; G.site = o.site || G.site; openSchemeOr("provision"); } }));
+      .forEach(o => rows.push({ kind: "Заказ", title: o.order, sub: (o.unit || "") + " · закрыт", run: () => { cmdClose(); openToroCard(o.order, {site:o.site,unit:o.unit}); } }));
   }
   r.nodes.slice(0, 5).forEach(n => rows.push({ kind: "Узел", title: n.num, sub: n.nameRu || "", run: () => { cmdClose(); LO.book = n.book; LO.current = n.num; LO.index = null; navigateTo("linkone"); } }));
   r.docs.slice(0, 5).forEach(d => rows.push({ kind: "Документ", title: d.name, sub: d.class || "", run: () => { cmdClose(); KB_SEARCH_QUERY = needle; navigateTo("kb"); } }));
@@ -3886,5 +4007,6 @@ document.addEventListener("keydown", e => {
   else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
 });
 
+initEntityLinks();
 initNav();
 boot();
