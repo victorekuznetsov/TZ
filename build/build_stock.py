@@ -3,7 +3,7 @@
 """
 Строит запасы, ограниченный запас и закупки по номенклатуре WK.
 
-Источники (все — свежие выгрузки SAP из репозитория for_update):
+Источники (все — свежие выгрузки SAP из TOPO, ветка rawdata, папка Запас-Закупка):
   Остатки_*.xlsx                          — BW MM-M03, остаток по складам
   Запас с ограниченным использованием*.xlsx — позиции, которые ЕСТЬ на
                                               складе, но НЕЛЬЗЯ взять в ремонт
@@ -133,10 +133,16 @@ def parse_purchase(path, wk_codes):
     def exact(names):
         return next((i for name in names for i, h in enumerate(hdr) if h.lower() == name), -1)
     doc = exact(["документ закупки", "номер документа закупки", "№ документа закупки", "заказ на поставку"])
-    req = exact(["заявка", "заявка на закупку", "номер заявки"])
+    req = exact(["заявка", "заявка на закупку", "номер заявки", "№ заявки"])
     pos = exact(["позиция документа закупки", "позиция заказа", "позиция"])
     req_pos = exact(["позиция заявки"])
     unit = exact(["единица измерения", "еи", "е.и.", "базовая единица измерения"])
+    order_date = exact(["дата поставки по заказу"])
+    actual_date = exact(["фактическая дата поставки"])
+    created_date = exact(["дата создания заказа"])
+    plant = exact(["завод"])
+    status = exact(["описание"])
+    delivered = exact(["кол-во факт поставки в базисной еи"])
     rows_total = 0
     # byMonth/years — это ОТКРЫТОЕ КОЛИЧЕСТВО («еще поставить») по сроку
     # поставки, а не число строк: для обеспеченности важно, сколько и когда
@@ -168,9 +174,16 @@ def parse_purchase(path, wk_codes):
         da, db = as_date(r[rq]), as_date(r[di])
         def txt(i):
             return str(r[i]).strip() if 0 <= i < len(r) and r[i] is not None else ""
+        def date_cell(i):
+            value = as_date(r[i]) if 0 <= i < len(r) else None
+            return value.strftime("%Y-%m-%d") if value else ""
         e["documents"].append({
             "document": txt(doc), "request": txt(req), "position": txt(pos), "requestPosition": txt(req_pos),
-            "deliveryDate": db.strftime("%Y-%m-%d") if db else "",
+            "deliveryDate": date_cell(order_date) or (db.strftime("%Y-%m-%d") if db else ""),
+            "requiredDate": db.strftime("%Y-%m-%d") if db else "",
+            "orderDeliveryDate": date_cell(order_date), "actualDeliveryDate": date_cell(actual_date),
+            "orderCreatedDate": date_cell(created_date), "plant": txt(plant), "status": txt(status),
+            "deliveredQty": N(r[delivered]) if delivered >= 0 else None,
             "requestDate": da.strftime("%Y-%m-%d") if da else "", "supplier": txt(si),
             "qty": N(r[qn]), "openQty": N(r[li]), "transitQty": N(r[ti]), "value": N(r[vi]),
             "currency": txt(cu), "unit": txt(unit), "sourceRow": rows_total + 1,

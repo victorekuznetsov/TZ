@@ -3110,10 +3110,10 @@ function materialPurchasesHtml(code) {
   const purchase = (STOCK_BY_CODE.get(String(code)) || {}).purchase;
   const rows = (purchase || {}).documents || [];
   return '<h3>Документы закупки и даты поставки</h3>' + (rows.length ?
-    `<p class="hint">Дата поставки — плановая дата строки выгрузки, не подтверждение фактического прихода. Показаны также закрытые строки.</p>
-    <div class="twrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>Документ закупки / заявка</th><th>Позиция</th><th>Дата поставки</th><th>Поставщик</th><th>Ещё поставить</th><th>ЕИ</th></tr></thead><tbody>
+    `<p class="hint">Дата поставки — по заказу поставщику, при отсутствии — требуемая дата. Фактический приход показан отдельно. Показаны также закрытые строки.</p>
+    <div class="twrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>Документ закупки / заявка</th><th>Позиция</th><th>Дата поставки</th><th>Факт поставки</th><th>Поставщик</th><th>Ещё поставить</th><th>ЕИ</th></tr></thead><tbody>
     ${rows.map(r => `<tr><td>${purchaseDocumentButton(r)}</td><td>${esc(r.position || r.requestPosition || "—")}</td>
-    <td>${r.deliveryDate ? dmy(r.deliveryDate) : "Не указана"}</td><td>${esc(r.supplier || "—")}</td><td>${num(r.openQty, 3)}</td><td>${esc(r.unit || "—")}</td></tr>`).join("")}
+    <td>${r.deliveryDate ? dmy(r.deliveryDate) : "Не указана"}${r.orderDeliveryDate ? "" : r.deliveryDate ? " (требуемая)" : ""}</td><td>${r.actualDeliveryDate ? dmy(r.actualDeliveryDate) : "—"}</td><td>${esc(r.supplier || "—")}</td><td>${num(r.openQty, 3)}</td><td>${esc(r.unit || "—")}</td></tr>`).join("")}
     </tbody></table></div>` : `<p class="hint">${purchase ? "Текущая витрина содержит только суммы по месяцам. Номера документов и точные даты не загружены. Загрузите исходную выгрузку закупки в разделе «Обновление данных»." : "Закупка по материалу в выгрузке не найдена."}</p>`);
 }
 function wireMaterialDrilldowns(card, code) {
@@ -3140,10 +3140,10 @@ function openPurchaseDocument(type, id, returnCode) {
     <h2 id="modalTitle">${type === "document" ? "Документ закупки" : "Заявка"} ${esc(id)}</h2>
     <p class="hint">Все строки этого документа в витрине WK, независимо от фильтров отчёта. Другие материалы документа могут отсутствовать в витрине. Строк: ${num(rows.length)}.</p>
     <button class="minibtn" id="purchaseBack">← К материалу ${esc(returnCode)}</button>
-    <div class="twrap" style="margin-top:12px"><table><thead><tr><th>Позиция</th><th>ЕКМТР</th><th>Материал</th><th>Документ закупки</th><th>Заявка</th><th>Дата заявки</th><th>Дата поставки</th><th>Поставщик</th><th>Количество</th><th>Ещё поставить</th><th>В пути</th><th>ЕИ</th><th>Стоимость</th><th>Валюта</th></tr></thead><tbody>
+    <div class="twrap" style="margin-top:12px"><table><thead><tr><th>Позиция</th><th>ЕКМТР</th><th>Материал</th><th>Документ закупки</th><th>Заявка</th><th>Дата заявки</th><th>Заказ создан</th><th>Требуемая дата</th><th>Поставка по заказу</th><th>Факт поставки</th><th>Завод</th><th>Статус</th><th>Поставщик</th><th>Количество</th><th>Ещё поставить</th><th>В пути</th><th>Поставлено</th><th>ЕИ</th><th>Стоимость в плановых ценах, ₽</th><th>Валюта заказа</th></tr></thead><tbody>
     ${rows.map(r => `<tr><td>${esc(r.position || r.requestPosition || "—")}</td><td>${codeLink(r.code)}</td><td>${esc(r.name)}</td>
-      <td>${esc(r.document || "—")}</td><td>${esc(r.request || "—")}</td><td>${r.requestDate ? dmy(r.requestDate) : "Не указана"}</td><td>${r.deliveryDate ? dmy(r.deliveryDate) : "Не указана"}</td>
-      <td>${esc(r.supplier || "—")}</td><td>${num(r.qty, 3)}</td><td>${num(r.openQty, 3)}</td><td>${num(r.transitQty, 3)}</td><td>${esc(r.unit || "—")}</td><td>${num(r.value, 2)}</td><td>${esc(r.currency || "—")}</td></tr>`).join("")}
+      <td>${esc(r.document || "—")}</td><td>${esc(r.request || "—")}</td><td>${r.requestDate ? dmy(r.requestDate) : "Не указана"}</td><td>${r.orderCreatedDate ? dmy(r.orderCreatedDate) : "—"}</td><td>${r.requiredDate ? dmy(r.requiredDate) : "—"}</td><td>${r.orderDeliveryDate ? dmy(r.orderDeliveryDate) : "Не указана"}</td><td>${r.actualDeliveryDate ? dmy(r.actualDeliveryDate) : "—"}</td><td>${esc(r.plant || "—")}</td><td>${esc(r.status || "—")}</td>
+      <td>${esc(r.supplier || "—")}</td><td>${num(r.qty, 3)}</td><td>${num(r.openQty, 3)}</td><td>${num(r.transitQty, 3)}</td><td>${r.deliveredQty == null ? "—" : num(r.deliveredQty, 3)}</td><td>${esc(r.unit || "—")}</td><td>${num(r.value, 2)}</td><td>${esc(r.currency || "—")}</td></tr>`).join("")}
     </tbody></table></div>`;
   byId("mCloseBtn").onclick = closeModal;
   byId("purchaseBack").onclick = () => openCodeDetail(returnCode);

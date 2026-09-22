@@ -3,9 +3,9 @@ import fs from "node:fs";
 import vm from "node:vm";
 import {createRequire} from "node:module";
 const require = createRequire(import.meta.url);
-const headers = ["Код услуги", "еще поставить", "Количество в пути", "Общая стоимость", "Дата поставки", "Имя поставщика", "Количество", "Дата заявки", "Документ закупки", "Заявка", "Позиция", "Валюта", "ЕИ"];
+const headers = ["Код услуги", "еще поставить", "Количество в пути", "Общая стоимость", "Дата поставки", "Имя поставщика", "Количество", "Дата заявки", "Документ закупки", "№ заявки", "Позиция", "Валюта", "ЕИ", "Дата поставки по заказу", "Фактическая дата поставки"];
 const source = [
-  ["001", 2, 1, 120, "2026-10-15", "Поставщик", 3, "2026-09-01", "00450001", "0010001", "00010", "RUB", "шт"],
+  ["001", 2, 1, 120, "2026-10-15", "Поставщик", 3, "2026-09-01", "00450001", "0010001", "00010", "RUB", "шт", "2026-10-20", "2026-10-21"],
   ["001", 1, 0, 40, "", "Поставщик", 1, "", "00450001", "0010001", "00020", "RUB", "шт"],
   ["002", 0, 0, 10, "2026-09-10", "Другой", 1, "", "00450001", "", "00030", "CNY", "кг"],
 ];
@@ -14,8 +14,11 @@ const pipeline = require("../lib/stock_pipeline.js");
 const p = await pipeline.parsePurchase(null, "", new Set(["001","002"]));
 assert.equal(p.byCode["001"].documents.length,2);
 assert.equal(p.byCode["001"].documents[0].document,"00450001");
-assert.equal(p.byCode["001"].documents[0].deliveryDate,"2026-10-15");
+assert.equal(p.byCode["001"].documents[0].deliveryDate,"2026-10-20");
 assert.equal(p.byCode["001"].documents[1].deliveryDate,"");
+assert.equal(p.byCode["001"].documents[0].requiredDate,"2026-10-15");
+assert.equal(p.byCode["001"].documents[0].actualDeliveryDate,"2026-10-21");
+assert.equal(p.byCode["001"].documents[0].request,"0010001");
 assert.equal(p.byCode["001"].byMonth[""],1);
 globalThis.XLSXStream = {streamSheet: async (z,s,cb) => [headers.slice(0,8),source[0].slice(0,8)].forEach(cb)};
 const legacy = await pipeline.parsePurchase(null,"",new Set(["001"]));
