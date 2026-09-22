@@ -614,7 +614,7 @@ function buildIndexes() {
     const key = interKey(part);
     INTER_GROUP_OF.set(key, [...new Set([...(INTER_GROUP_OF.get(key) || []), ...g])]);
   }));
-  PROVISION_ORDER_BY_ID = new Map((D.provision && D.provision.orders || []).map(o => [o.id, o]));
+  PROVISION_ORDER_BY_ID = new Map([...(D.provision && D.provision.orders || []), ...(D.provision && D.provision.closedOrders || [])].map(o => [o.id, o]));
 }
 function catalogByEkmtr(code) {
   return CATALOG_BY_EKMTR.get(String(code || "")) || null;
