@@ -130,6 +130,13 @@ def parse_purchase(path, wk_codes):
     cu = col_index(hdr, "Валюта")
     rq = col_index(hdr, "Дата заявки")
     qn = col_index(hdr, "Количество")
+    def exact(names):
+        return next((i for name in names for i, h in enumerate(hdr) if h.lower() == name), -1)
+    doc = exact(["документ закупки", "номер документа закупки", "№ документа закупки", "заказ на поставку"])
+    req = exact(["заявка", "заявка на закупку", "номер заявки"])
+    pos = exact(["позиция документа закупки", "позиция заказа", "позиция"])
+    req_pos = exact(["позиция заявки"])
+    unit = exact(["единица измерения", "еи", "е.и.", "базовая единица измерения"])
     rows_total = 0
     # byMonth/years — это ОТКРЫТОЕ КОЛИЧЕСТВО («еще поставить») по сроку
     # поставки, а не число строк: для обеспеченности важно, сколько и когда
@@ -138,7 +145,7 @@ def parse_purchase(path, wk_codes):
     by_code = defaultdict(lambda: {"planV": 0.0, "openQty": 0.0, "transitQty": 0.0,
                                     "qty": 0.0, "lines": 0, "suppliers": defaultdict(float),
                                     "years": defaultdict(float), "byMonth": defaultdict(float),
-                                    "lead": []})
+                                    "lead": [], "documents": []})
     for r in it:
         rows_total += 1
         code = r[ci]
@@ -159,6 +166,15 @@ def parse_purchase(path, wk_codes):
         # по УЖЕ ОФОРМЛЕННЫМ строкам (в том числе закрытым) — это единственный
         # в выгрузке замер того, сколько реально идёт позиция.
         da, db = as_date(r[rq]), as_date(r[di])
+        def txt(i):
+            return str(r[i]).strip() if 0 <= i < len(r) and r[i] is not None else ""
+        e["documents"].append({
+            "document": txt(doc), "request": txt(req), "position": txt(pos), "requestPosition": txt(req_pos),
+            "deliveryDate": db.strftime("%Y-%m-%d") if db else "",
+            "requestDate": da.strftime("%Y-%m-%d") if da else "", "supplier": txt(si),
+            "qty": N(r[qn]), "openQty": N(r[li]), "transitQty": N(r[ti]), "value": N(r[vi]),
+            "currency": txt(cu), "unit": txt(unit), "sourceRow": rows_total + 1,
+        })
         if da and db:
             days = (db - da).days
             if 0 < days < 1500:
@@ -177,6 +193,7 @@ def parse_purchase(path, wk_codes):
             "topSupplier": max(e["suppliers"].items(), key=lambda x: x[1])[0] if e["suppliers"] else None,
             "years": {k: round(v, 3) for k, v in sorted(e["years"].items())},
             "byMonth": {k: round(v, 3) for k, v in sorted(e["byMonth"].items())},
+            "documents": e["documents"],
             "leadDays": med(e["lead"]),
             "leadN": len(e["lead"]),
         }

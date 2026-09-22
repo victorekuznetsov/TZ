@@ -3075,6 +3075,82 @@ function jumpToCodeTab(tab, code, extra) {
   renderGlobalFilters();
   navigateTo(tab);
 }
+function materialOrders(code) {
+  const seen = new Set();
+  return [...((D.provision || {}).orders || []), ...((D.provision || {}).closedOrders || [])]
+    .filter(o => {
+      if (seen.has(o.id)) return false;
+      seen.add(o.id);
+      return (!G.site || o.site === G.site) && (!G.model || o.model === G.model)
+        && (!G.unit || o.unit === G.unit) && (!G.order || String(o.order) === String(G.order))
+        && (o.lines || []).some(l => String(l.code) === String(code));
+    }).map(o => {
+      const lines = o.lines.filter(l => String(l.code) === String(code));
+      const sum = k => lines.reduce((s, l) => s + (+l[k] || 0), 0);
+      return { ...o, materialQty: sum("qty"), materialStock: sum("fromStock"),
+        materialBuy: sum("fromBuy"), materialGap: sum("gap") + sum("late") + sum("undated") };
+    }).sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"));
+}
+function materialOrdersHtml(code) {
+  const orders = materialOrders(code);
+  return '<h3>Обеспеченность по заказам ТОРО</h3>' +
+    (orders.length ? `<p class="hint">Заказы по выбранному контексту. Количества относятся только к этому материалу; нажмите номер, чтобы открыть весь заказ.</p>
+    <div class="twrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>Заказ ТОРО</th><th>Дата начала</th><th>Машина / площадка</th><th>Состояние</th><th>Потребность</th><th>Со склада</th><th>Закупка к сроку</th><th>Не покрыто к сроку</th></tr></thead><tbody>
+    ${orders.map(o => `<tr><td><button class="minibtn mono" data-material-order="${esc(o.id)}">${esc(o.order)}</button></td>
+    <td>${o.date ? dmy(o.date) : "Не указана"}</td><td>${esc(o.unit)} · ${esc(siteNameOf(o.site) || o.site)}</td>
+    <td>${o.closed ? "Закрыт фактом" : o.materialQty <= 0 ? "Материал закрыт" : o.materialGap > 0 ? "Не обеспечен к сроку" : "Обеспечен"}</td>
+    <td>${num(o.materialQty, 3)}</td><td>${num(o.materialStock, 3)}</td><td>${num(o.materialBuy, 3)}</td><td>${num(o.materialGap, 3)}</td></tr>`).join("")}
+    </tbody></table></div>` : '<p class="hint">Заказы ТОРО с этим материалом в выбранном контексте не найдены.</p>');
+}
+function purchaseDocumentButton(r) {
+  const type = r.document ? "document" : "request", id = r.document || r.request;
+  return id ? `<button class="minibtn mono" data-purchase-id="${esc(id)}" data-purchase-type="${type}">${type === "request" ? "Заявка " : ""}${esc(id)}</button>` : '<span class="dim">Номер не указан</span>';
+}
+function materialPurchasesHtml(code) {
+  const purchase = (STOCK_BY_CODE.get(String(code)) || {}).purchase;
+  const rows = (purchase || {}).documents || [];
+  return '<h3>Документы закупки и даты поставки</h3>' + (rows.length ?
+    `<p class="hint">Дата поставки — плановая дата строки выгрузки, не подтверждение фактического прихода. Показаны также закрытые строки.</p>
+    <div class="twrap" style="max-height:360px;overflow:auto"><table><thead><tr><th>Документ закупки / заявка</th><th>Позиция</th><th>Дата поставки</th><th>Поставщик</th><th>Ещё поставить</th><th>ЕИ</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${purchaseDocumentButton(r)}</td><td>${esc(r.position || r.requestPosition || "—")}</td>
+    <td>${r.deliveryDate ? dmy(r.deliveryDate) : "Не указана"}</td><td>${esc(r.supplier || "—")}</td><td>${num(r.openQty, 3)}</td><td>${esc(r.unit || "—")}</td></tr>`).join("")}
+    </tbody></table></div>` : `<p class="hint">${purchase ? "Текущая витрина содержит только суммы по месяцам. Номера документов и точные даты не загружены. Загрузите исходную выгрузку закупки в разделе «Обновление данных»." : "Закупка по материалу в выгрузке не найдена."}</p>`);
+}
+function wireMaterialDrilldowns(card, code) {
+  qsa("[data-purchase-id]", card).forEach(b => b.onclick = () =>
+    openPurchaseDocument(b.dataset.purchaseType, b.dataset.purchaseId, code));
+  qsa("[data-material-order]", card).forEach(b => b.onclick = () => {
+    const o = [...(D.provision.orders || []), ...(D.provision.closedOrders || [])].find(o => o.id === b.dataset.materialOrder);
+    if (!o) return;
+    closeModal();
+    G.site = o.site; G.model = o.model || ""; G.unit = o.unit; G.order = String(o.order);
+    G.ekmtr = ""; G.part = "";
+    PROV_FILTER = { year: "", from: "", to: "", status: o.closed ? "closed" : "", q: "" };
+    PROV_SELECTED = o.id;
+    renderGlobalFilters();
+    navigateTo("provision");
+  });
+}
+function openPurchaseDocument(type, id, returnCode) {
+  if (!["document", "request"].includes(type) || !id) return;
+  const rows = (D.stock.items || []).flatMap(i => ((i.purchase || {}).documents || [])
+    .filter(r => String(r[type] || "") === String(id)).map(r => ({ ...r, code: i.code, name: i.name })));
+  const card = byId("modalCard");
+  card.innerHTML = `<button class="mclose" id="mCloseBtn" aria-label="Закрыть карточку">✕</button>
+    <h2 id="modalTitle">${type === "document" ? "Документ закупки" : "Заявка"} ${esc(id)}</h2>
+    <p class="hint">Все строки этого документа в витрине WK, независимо от фильтров отчёта. Другие материалы документа могут отсутствовать в витрине. Строк: ${num(rows.length)}.</p>
+    <button class="minibtn" id="purchaseBack">← К материалу ${esc(returnCode)}</button>
+    <div class="twrap" style="margin-top:12px"><table><thead><tr><th>Позиция</th><th>ЕКМТР</th><th>Материал</th><th>Документ закупки</th><th>Заявка</th><th>Дата заявки</th><th>Дата поставки</th><th>Поставщик</th><th>Количество</th><th>Ещё поставить</th><th>В пути</th><th>ЕИ</th><th>Стоимость</th><th>Валюта</th></tr></thead><tbody>
+    ${rows.map(r => `<tr><td>${esc(r.position || r.requestPosition || "—")}</td><td>${codeLink(r.code)}</td><td>${esc(r.name)}</td>
+      <td>${esc(r.document || "—")}</td><td>${esc(r.request || "—")}</td><td>${r.requestDate ? dmy(r.requestDate) : "Не указана"}</td><td>${r.deliveryDate ? dmy(r.deliveryDate) : "Не указана"}</td>
+      <td>${esc(r.supplier || "—")}</td><td>${num(r.qty, 3)}</td><td>${num(r.openQty, 3)}</td><td>${num(r.transitQty, 3)}</td><td>${esc(r.unit || "—")}</td><td>${num(r.value, 2)}</td><td>${esc(r.currency || "—")}</td></tr>`).join("")}
+    </tbody></table></div>`;
+  byId("mCloseBtn").onclick = closeModal;
+  byId("purchaseBack").onclick = () => openCodeDetail(returnCode);
+  wireCodeLinks(card);
+  byId("mCloseBtn").focus();
+}
+
 function openCodeDetail(code, needDate) {
   const c = String(code || "");
   if (!c) return;
@@ -3127,7 +3203,9 @@ function openCodeDetail(code, needDate) {
       <p class="hint">График — открытое количество «ещё поставить» по месяцу даты поставки из выгрузки закупки, не корзина ATP.</p>
       <div class="toolbar" style="flex-wrap:wrap">${purchaseMonthsHtml(purch)}</div>
     ` : callout("warn", "<b>Не заказано.</b> В открытых заявках и заказах закупки этой позиции нет — это не то же самое, что «дефицит ATP»: ATP мог закрыть строку складом или чужим приходом.")}
-    ${prov ? `<h3 style="font-size:12.5px;margin:16px 0 6px">Обеспеченность плана</h3>
+    ${materialPurchasesHtml(c)}
+    ${materialOrdersHtml(c)}
+    ${prov ? `<h3 style="font-size:12.5px;margin:16px 0 6px">Обеспеченность плана (все площадки)</h3>
       <dl class="dl">
         <dt>Нужно</dt><dd>${num(prov.needQty, 1)} · ${rub(prov.needValue)}</dd>
         <dt>Со склада</dt><dd>${num(prov.fromStock, 1)}</dd>
@@ -3141,6 +3219,7 @@ function openCodeDetail(code, needDate) {
   `;
   byId("mCloseBtn").onclick = closeModal;
   wireCartButtons(card);
+  wireMaterialDrilldowns(card, c);
   const artBtn = byId("mOpenArt");
   if (artBtn) artBtn.onclick = () => openDetail(cat.art);
   byId("mCloseBtn").focus();
@@ -3192,6 +3271,7 @@ function openDetail(art) {
       </dl>
       <div class="toolbar" style="flex-wrap:wrap">${warehouseHtml(stock.byWarehouse, G.site)}</div>` : (item.ekmtr ? '<p class="hint">Остатка по этому коду нет.</p>' : "")}
 
+    ${item.ekmtr ? materialPurchasesHtml(item.ekmtr) + materialOrdersHtml(item.ekmtr) : ""}
     ${item.tree.length ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">В узлах${item.treeMethod === "parent" ? ' <span class="badge info">через родителя</span>' : ""}</h3>
       ${item.treeMethod === "parent" ? `<p class="hint">Номер ${esc(item.art)} сам в ведомости взаимозаменяемости не значится — показан узел-родитель на уровень выше (${esc(item.tree[0].num)}).</p>` : ""}
@@ -3220,6 +3300,7 @@ function openDetail(art) {
   `;
   byId("mCloseBtn").onclick = closeModal;
   wireInterLinks(card);
+  wireMaterialDrilldowns(card, item.ekmtr);
   const codeBtn = qs("[data-open-code]", card);
   if (codeBtn) codeBtn.onclick = () => openCodeDetail(codeBtn.dataset.openCode);
   const jp = qs("[data-jump-provision]", card);
