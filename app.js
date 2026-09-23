@@ -5,11 +5,21 @@
    ============================================================ */
 
 /* ---------- утилиты ---------- */
-const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-}[c]));
-const num = (v, d = 0) => v == null || isNaN(v) ? "—" :
-  Number(v).toLocaleString("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
+const ESC_MAP = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ESC_MAP[c]);
+/* toLocaleString с объектом опций каждый раз собирает форматтер заново.
+   На таблице это тысячи вызовов и самая дорогая функция во всём портале
+   по профилю V8. Кэшируем форматтер на число знаков — вывод тот же. */
+const NUM_FMT = new Map();
+const numFormatter = d => {
+  let f = NUM_FMT.get(d);
+  if (!f) {
+    f = new Intl.NumberFormat("ru-RU", { minimumFractionDigits: d, maximumFractionDigits: d });
+    NUM_FMT.set(d, f);
+  }
+  return f;
+};
+const num = (v, d = 0) => v == null || isNaN(v) ? "—" : numFormatter(d).format(Number(v));
 const rub = v => v == null ? "—" : num(v, 0) + " ₽";
 const mrub = v => v == null ? "—" : num(v / 1e6, 1) + " млн ₽";
 const cny = v => v == null ? "—" : num(v, 2) + " ¥";
@@ -92,7 +102,10 @@ const ROLES = {
 const TAB_NEEDS = {
   sum: [],
   catalog: ["tree", "drawings"],
-  linkone: ["linkome", "linkomeDraw", "kb"],
+  // tree — не украшение: карточка узла читает D.tree.bookModel, чтобы
+  // подобрать документы по модели. Без этой зависимости первый заход
+  // сразу в LinkOne (без каталога) валился на undefined.
+  linkone: ["linkome", "linkomeDraw", "kb", "tree"],
   kb: ["kb", "tree", "linkome"],
   fleet: [],
   repairs: [],
@@ -271,19 +284,34 @@ function entityLink(type, value, row = {}) {
   if (value == null || value === "") return '<span class="dim">—</span>';
   return `<button type="button" class="pn-link mono" data-entity="${esc(type)}" data-id="${esc(value)}" data-site="${esc(row.site || "")}" data-unit="${esc(row.unit || "")}">${esc(value)}</button>`;
 }
+/* Константы вынесены из entityCell: функция вызывается на КАЖДУЮ ячейку
+   (на «Обеспеченности» это ~6 000 вызовов за перерисовку), и создавать
+   в ней шесть регулярных выражений и три массива заново — чистая
+   потеря. Поведение не меняется. */
+const EC_INTERACTIVE = /<(button|a|input|select)\b/i;
+const EC_HAS_TAG = /<[^>]+>/;
+const EC_STOCK_LABEL = /остаток|склад|налич/i;
+const EC_QTY_KEYS = new Set(["qty", "availQty", "restrictedQty", "fromStock", "openQty", "fromBuy"]);
+const EC_PURCHASE_KEYS = new Set(["openQty", "fromBuy"]);
+const EC_STOCK_KEYS = new Set(["qty", "fromStock"]);
+const EC_LABELS = {
+  code: /^(код|код екмтр|екмтр)$/i, ekmtr: /екмтр/i,
+  art: /^(артикул|каталожный.*|номер)$/i, order: /^(заказ|заказ торо)$/i,
+  document: /документ закупки/i, request: /заявка/i,
+};
+const EC_TYPES = { code: "material", ekmtr: "material", art: "part",
+  order: "toro", document: "document", request: "request" };
+
 function entityCell(col, row, fallback) {
-  if (!col.label || /<(button|a|input|select)\b/i.test(fallback)) return fallback;
-  if (row.code && ["qty","availQty","restrictedQty","fromStock","openQty","fromBuy"].includes(col.key)) {
-    const section = ["openQty","fromBuy"].includes(col.key) ? "purchase" : "stock";
-    if (["qty","fromStock"].includes(col.key) && !/остаток|склад|налич/i.test(col.label)) return fallback;
-    if (!/<[^>]+>/.test(fallback)) return entityLink(section,row.code).replace(">" + esc(row.code) + "</button>", ">" + fallback + "</button>");
+  if (!col.label || EC_INTERACTIVE.test(fallback)) return fallback;
+  if (row.code && EC_QTY_KEYS.has(col.key)) {
+    const section = EC_PURCHASE_KEYS.has(col.key) ? "purchase" : "stock";
+    if (EC_STOCK_KEYS.has(col.key) && !EC_STOCK_LABEL.test(col.label)) return fallback;
+    if (!EC_HAS_TAG.test(fallback)) return entityLink(section,row.code).replace(">" + esc(row.code) + "</button>", ">" + fallback + "</button>");
   }
   if (col.numeric) return fallback;
-  const labels = {code:/^(код|код екмтр|екмтр)$/i, ekmtr:/екмтр/i,
-    art:/^(артикул|каталожный.*|номер)$/i, order:/^(заказ|заказ торо)$/i,
-    document:/документ закупки/i, request:/заявка/i};
-  if (!labels[col.key]?.test(col.label.trim())) return fallback;
-  const type = {code:"material", ekmtr:"material", art:"part", order:"toro", document:"document", request:"request"}[col.key];
+  if (!EC_LABELS[col.key]?.test(col.label.trim())) return fallback;
+  const type = EC_TYPES[col.key];
   return row[col.key] == null || row[col.key] === "" ? fallback : entityLink(type, row[col.key], row);
 }
 let CARD_TRAIL = [], CARD_REPLAY = false, CARD_SEQ = 0;
@@ -385,11 +413,15 @@ function initEntityLinks() { document.addEventListener("click", e => {
   else openPartCard(b.dataset.interPart || b.dataset.art);
 }, true); }
 
+const RU_COLLATOR = new Intl.Collator("ru");
 function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, limit, onRowClick, csv, csvName }) {
   let key = sortKey || (cols.find(c => c.numeric) || cols[0]).key;
   let dir = sortDir;
   let shownLimit = limit || rows.length;
   function draw() {
+    // localeCompare создаёт правила сравнения на КАЖДЫЙ вызов; на таблице
+    // в сотни строк это тысячи вызовов. Один Collator на модуль — та же
+    // сортировка, но кратно дешевле.
     const sorted = [...rows].sort((a, b) => {
       const va = key === "coverage" ? provisionCoverage(a) : a[key];
       const vb = key === "coverage" ? provisionCoverage(b) : b[key];
@@ -397,20 +429,22 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
       if (va == null) return 1;
       if (vb == null) return -1;
       if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
-      return String(va).localeCompare(String(vb), "ru") * dir;
+      return RU_COLLATOR.compare(String(va), String(vb)) * dir;
     });
     const shown = shownLimit ? sorted.slice(0, shownLimit) : sorted;
-    const thead = `<thead><tr>${cols.map(c =>
-      `<th class="${c.numeric ? "n" : ""} ${c.key === key ? "sorted" : ""}" data-k="${c.key}" tabindex="0" role="columnheader" aria-sort="${c.key === key ? (dir > 0 ? "ascending" : "descending") : "none"}">${esc(c.label)}${c.key === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`
-    ).join("")}</tr></thead>`;
-    const tbody = `<tbody>${shown.map((r, ri) => {
+    // Разметка строки вынесена из цикла — используется и при сортировке.
+    const rowHtml = (r, ri) => {
       const cls = rowClass ? rowClass(r) : "";
       return `<tr class="${cls}" data-ri="${ri}"${onRowClick ? ' tabindex="0" role="button"' : ""}>${cols.map(c => {
         const raw = c.fmt ? c.fmt(r[c.key], r) : esc(r[c.key]);
         const v = entityCell(c, r, raw);
         return `<td class="${c.numeric ? "n" : ""} ${c.cls || ""}">${v}</td>`;
       }).join("")}</tr>`;
-    }).join("")}</tbody>`;
+    };
+    const thead = `<thead><tr>${cols.map(c =>
+      `<th class="${c.numeric ? "n" : ""} ${c.key === key ? "sorted" : ""}" data-k="${c.key}" tabindex="0" role="columnheader" aria-sort="${c.key === key ? (dir > 0 ? "ascending" : "descending") : "none"}">${esc(c.label)}${c.key === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`
+    ).join("")}</tr></thead>`;
+    const tbody = `<tbody>${shown.map(rowHtml).join("")}</tbody>`;
     container.innerHTML =
       (csv ? `<div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button class="minibtn" id="${container.id}_csv" type="button">⇓ CSV (${num(sorted.length)})</button></div>` : "") +
       `<div class="twrap"><table>${thead}${tbody}</table></div>` +
@@ -425,10 +459,24 @@ function renderTable(container, { rows, cols, sortKey, sortDir = -1, rowClass, l
       th.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sortBy(th); } };
     });
     if (onRowClick) {
-      qsa("tbody tr", container).forEach(tr => {
-        tr.onclick = e => { if (!e.target.closest("button,a,input,select,textarea")) onRowClick(shown[+tr.dataset.ri]); };
-        tr.onkeydown = e => { if(e.target !== tr) return; if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onRowClick(shown[+tr.dataset.ri]); } };
-      });
+      // Один обработчик на контейнер вместо двух на каждую строку: на
+      // таблице в 500 строк это 1 000 замыканий за перерисовку, которые
+      // к тому же пересоздаются при каждой сортировке.
+      container.onclick = e => {
+        const tr = e.target.closest("tbody tr");
+        if (!tr || !container.contains(tr)) return;
+        if (e.target.closest("button,a,input,select,textarea")) return;
+        const row = shown[+tr.dataset.ri];
+        if (row) onRowClick(row);
+      };
+      container.onkeydown = e => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const tr = e.target.closest("tbody tr");
+        if (!tr || e.target !== tr) return;
+        e.preventDefault();
+        const row = shown[+tr.dataset.ri];
+        if (row) onRowClick(row);
+      };
     }
     if (csv) {
       const btn = byId(container.id + "_csv");
@@ -1396,7 +1444,7 @@ function loPathTo(targetId) {
 }
 
 function kbDocsForNode(page) {
-  const model = (D.tree.bookModel || {})[LO.book] || "";
+  const model = ((D.tree || {}).bookModel || {})[LO.book] || "";
   const id = normArt(page.id);
   const tokens = normText(page.title || page.name || "").split(/[^a-zа-я0-9]+/i).filter(x => x.length >= 5);
   return D.kb.docs.map(d => {
