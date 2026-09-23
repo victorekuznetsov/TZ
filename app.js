@@ -2224,6 +2224,21 @@ function renderProvision(host) {
   const pmPlan = orders.reduce((s, o) => s + (o.planValue || 0), 0);
   const pmFact = orders.reduce((s, o) => s + (o.factValue || 0), 0);
 
+  /* Разрез по годам с их статусом — иначе один итог по 2026-2027 читается
+     как текущий кризис. На деле открытый год обеспечен почти полностью, а
+     весь дефицит — это план ненаступившего года, по которому закупка ещё
+     не начиналась. Статус берём из витрины (правило TOPO: год без факта —
+     «план»), а суммы считаем по отфильтрованным заказам, чтобы разрез
+     уважал контекст, как остальные блоки вкладки. */
+  const yearStatus = {};
+  (m.byYear || []).forEach(r => { if (r.status) yearStatus[String(r.key)] = r.status; });
+  const yearCut = provisionOrderCut(orders, o => String((o.years || [])[0] || "без года"));
+  const YEAR_HINT = {
+    "план": "год не начался: факта нет ни по одной площадке, закупка под него ещё не размещалась",
+    "открыт": "год идёт: факт продолжает поступать, цифры ещё изменятся",
+    "закрыт": "год завершён: факт сформирован полностью",
+  };
+
 
   host.innerHTML = `
     <h1>Обеспеченность плана ТОиР 2026–2027</h1>
@@ -2240,6 +2255,24 @@ function renderProvision(host) {
       ${kpi("Обеспечено к сроку", mrub(w.fromStock + w.fromBuy) + ` <span class="kpi-sub">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}%</span>`, "good")}
       ${kpi("Не обеспечено", mrub(gapTotal) + ` <span class="kpi-sub">${num(100 * gapTotal / T, 0)}%</span>`, "bad")}
     </div>
+    ${yearCut.length > 1 ? `
+    <h2>Обеспеченность по годам плана</h2>
+    <p class="sub">Итог выше складывает два разных года. Открытый год — это то, что обеспечивается
+      сейчас; год со статусом «план» ещё не начался, и незакрытая потребность по нему — не срыв,
+      а объём предстоящей закупки.</p>
+    <div class="twrap"><table><thead><tr>
+      <th>Год</th><th>Статус</th><th class="n">Потребность</th><th class="n">Со склада</th>
+      <th class="n">Закупка к сроку</th><th class="n">Обеспечено</th><th class="n">Дефицит</th>
+    </tr></thead><tbody>${yearCut.map(r => {
+      const t = r.value || 1, on = r.fromStock + r.fromBuy, st = yearStatus[String(r.key)] || "";
+      const tone = st === "план" ? "n" : st === "открыт" ? "w" : "g";
+      return `<tr><td><b>${esc(r.key)}</b></td>
+        <td>${st ? `<span class="tag ${tone}" title="${esc(YEAR_HINT[st] || "")}">${esc(st)}</span>` : "—"}</td>
+        <td class="n">${mrub(r.value)}</td><td class="n">${mrub(r.fromStock)}</td>
+        <td class="n">${mrub(r.fromBuy)}</td>
+        <td class="n"><b>${num(100 * on / t, 0)}%</b></td>
+        <td class="n">${mrub(r.gap)}</td></tr>`;
+    }).join("")}</tbody></table></div>` : ""}
     ${um.orders ? `<div class="kpis">
       ${kpi("Заказов УСО WK", num(ut.orders))}
       ${kpi("МТР подрядчика, план", mrub(ut.planValue))}

@@ -91,3 +91,51 @@ class ProvisionAllocationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class YearStatusTest(unittest.TestCase):
+    """Статус периода: «план» / «открыт» / «закрыт» — правило TOPO."""
+
+    @staticmethod
+    def _dir(td, years):
+        for name, payload in years.items():
+            Path(td, name).write_text(json.dumps(payload), encoding="utf-8")
+        return BP.year_status(td)
+
+    @staticmethod
+    def _year(y, plan, fact, uso_plan=0, uso_fact=0):
+        return {"y": y, "s": "1100", "n": 1, "e": [], "ei": [],
+                "p": [plan], "a": [fact], "up": [uso_plan], "uf": [uso_fact]}
+
+    def test_year_without_any_fact_is_plan(self):
+        with tempfile.TemporaryDirectory() as td:
+            st = self._dir(td, {"1100_2026.json": self._year(2026, 100, 90),
+                                "1100_2027.json": self._year(2027, 100, 0)})
+        # Ненаступивший год не «сорван»: по нему просто нет факта.
+        self.assertEqual(st["2027"]["status"], "план")
+
+    def test_last_year_with_fact_below_threshold_is_open(self):
+        with tempfile.TemporaryDirectory() as td:
+            st = self._dir(td, {"1100_2025.json": self._year(2025, 100, 90),
+                                "1100_2026.json": self._year(2026, 100, 40)})
+        self.assertEqual(st["2025"]["status"], "закрыт")
+        self.assertEqual(st["2026"]["status"], "открыт")
+
+    def test_high_execution_closes_even_the_frontier_year(self):
+        with tempfile.TemporaryDirectory() as td:
+            st = self._dir(td, {"1100_2026.json": self._year(2026, 100, 80)})
+        self.assertEqual(st["2026"]["status"], "закрыт")
+
+    def test_earlier_year_with_low_execution_is_closed_not_open(self):
+        # Низкое исполнение в прошлом году — результат, а не незавершённость.
+        with tempfile.TemporaryDirectory() as td:
+            st = self._dir(td, {"1100_2025.json": self._year(2025, 100, 10),
+                                "1100_2026.json": self._year(2026, 100, 20)})
+        self.assertEqual(st["2025"]["status"], "закрыт")
+        self.assertEqual(st["2026"]["status"], "открыт")
+
+    def test_uso_fact_alone_counts_as_execution(self):
+        with tempfile.TemporaryDirectory() as td:
+            st = self._dir(td, {"1100_2026.json": self._year(2026, 0, 0, 100, 90)})
+        self.assertEqual(st["2026"]["status"], "закрыт")
+        self.assertAlmostEqual(st["2026"]["factShare"], 0.9)

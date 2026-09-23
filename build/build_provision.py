@@ -240,6 +240,52 @@ def cut(rows, keyfn, sort_by_value=False, limit=None):
     return out[:limit] if limit else out
 
 
+def year_status(topo_dir):
+    """Статус периода по правилу TOPO: «план» / «открыт» / «закрыт».
+
+    Год без факта вообще — это «план»: исполнение по нему не считается,
+    и нулевой факт в нём не признак срыва, а признак ненаступившего года.
+    Последний год, по которому факт уже есть, но освоено меньше 75 %, —
+    «открыт»: период ещё идёт. Остальные годы с фактом закрыты, низкое
+    исполнение в них — результат, а не незавершённость.
+
+    Считается по ВСЕМУ контуру ТОиР (все площадки и вся номенклатура), а
+    не по одной технике WK: статус — свойство периода, а не выборки.
+    Та же формула, что в TOPO index.html, чтобы два портала не
+    расходились в оценке одного и того же года.
+    """
+    agg = defaultdict(lambda: {"p": 0.0, "a": 0.0, "up": 0.0, "uf": 0.0})
+    pattern = os.path.join(topo_dir, "[0-9][0-9][0-9][0-9]_20[0-9][0-9].json")
+    for fp in sorted(glob.glob(pattern)):
+        with open(fp, encoding="utf-8") as source:
+            d = json.load(source)
+        year = str(d.get("y") or "")
+        if not year:
+            continue
+        cell = agg[year]
+        for key in ("p", "a", "up", "uf"):
+            cell[key] += sum(N(x) for x in d.get(key, []))
+        del d
+    years = sorted(agg)
+    with_fact = [y for y in years if agg[y]["a"] + agg[y]["uf"] > 0]
+    frontier = with_fact[-1] if with_fact else None
+    out = {}
+    for y in years:
+        c = agg[y]
+        plan = c["p"] + c["up"]
+        share = (c["a"] + c["uf"]) / plan if plan else 0.0
+        if c["a"] == 0 and c["uf"] == 0:
+            st = "план"
+        elif y == frontier and share < 0.75:
+            st = "открыт"
+        else:
+            st = "закрыт"
+        out[y] = {"status": st, "planValue": round(plan, 2),
+                  "factValue": round(c["a"] + c["uf"], 2),
+                  "factShare": round(share, 4)}
+    return out
+
+
 def order_id(site, unit, order):
     raw = json.dumps((site, unit, str(order)), ensure_ascii=False).encode()
     return hashlib.sha256(raw).hexdigest()[:18]
@@ -306,6 +352,7 @@ def main():
     today = as_of(sj["meta"])
     lead_default = sj["meta"].get("leadMedianDays") or 0
 
+    ystat = year_status(topo_dir)
     need, closed_rows, nocode_rows, nocode_v = load_need(topo_dir)
     need = allocate(need, stock, today)
     known = [r for r in need if r["code"] in stock]
@@ -445,7 +492,8 @@ def main():
             "notWkParts": {"lines": len(other),
                            "value": round(sum(r["value"] for r in other), 2)},
             "wk": totals(known),
-            "byYear": cut(known, lambda r: str(r["year"])),
+            "byYear": [dict(r, **ystat.get(str(r["key"]), {}))
+                       for r in cut(known, lambda r: str(r["year"]))],
             "bySite": cut(known, lambda r: str(r["site"])),
             "byHalf": cut(known, lambda r: (r["date"][:4] + (" I" if r["date"][5:7] <= "06" else " II")) if r["date"] else "без срока"),
             "byKind": cut(known, lambda r: r["kind"] or "не присвоено", sort_by_value=True, limit=8),
@@ -468,6 +516,10 @@ def main():
           f"позиций WK {m['positions']}")
     print(f"потребность WK: {M(w['value'])} млн ₽ ({w['lines']} строк); "
           f"прочая номенклатура {M(m['notWkParts']['value'])} млн ₽ — не считаем")
+    for r in m["byYear"]:
+        cov = 100 * (r["fromStock"] + r["fromBuy"]) / (r["value"] or 1)
+        print(f"  {r['key']} ({r.get('status', '?')}): потребность {M(r['value'])} млн ₽, "
+              f"обеспечено к сроку {cov:.0f}%, дефицит {M(r['gap'])} млн ₽")
     for k, label in (("fromStock", "покрыто доступным остатком"),
                      ("fromBuy", "закупка успевает к сроку"),
                      ("late", "закупка придёт позже срока"),
