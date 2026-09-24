@@ -170,19 +170,18 @@ def need_site(r):
 def allocate(need, stock, today=None, lead_default=0):
     """Распределение остатка и приходов закупки с привязкой к площадкам.
 
-    Остаток лежит на конкретной площадке (stock.bySite). Порядок покрытия:
-      проход 0  склад СВОЕЙ площадки под её работы, которые начнутся
-                раньше, чем придёт закупка, заказанная сегодня (дата
-                снимка + фактический срок поставки кода): эту потребность
-                новой закупкой уже не закрыть, её запас защищён;
-      проход 1  по дате работ: свой склад, затем склад ДРУГОЙ площадки
-                (перемещение, поле transfer), затем приходы закупки,
-                успевающие к сроку;
+    Остаток лежит на конкретной площадке (stock.bySite) и покрывает только
+    потребность СВОЕЙ площадки. Порядок покрытия:
+      проход 1  по дате начала работ: склад своей площадки, затем приходы
+                закупки, успевающие к сроку;
       проход 2  остатки приходов закрывают то, что не успели.
-    Так запас одной площадки не уходит на другую, если он нужен ей самой
-    в пределах срока поставки, но и не лежит под дальнюю потребность,
-    когда ранняя работа на соседней площадке встаёт без детали.
     Закупка общая: документ закупки не привязан к площадке потребности.
+
+    Перемещение запаса между площадками ограничено (логистика, согласование
+    БЕ), поэтому в обеспеченность НЕ входит. Отдельно считается возможность:
+    сколько непокрытой к сроку потребности (опоздание, без срока, дефицит)
+    мог бы закрыть запас других площадок, оставшийся после их собственной
+    потребности, — поля transferPotential и transferFrom.
 
     Открытый приход с плановым месяцем раньше даты снимка уже просрочен.
     Его дата больше не является надёжным обещанием, поэтому такой объём
@@ -207,25 +206,9 @@ def allocate(need, stock, today=None, lead_default=0):
     need.sort(key=lambda r: (r["date"] or "9999", r["code"]))
     for r in need:
         r.update(fromStock=0.0, fromBuy=0.0, late=0.0, undated=0.0,
-                 gap=0.0, transfer=0.0, transferFrom={}, left=r["qty"])
+                 gap=0.0, transferPotential=0.0, transferFrom={}, left=r["qty"])
 
-    def horizon(code):
-        lead = ((stock.get(code) or {}).get("purchase") or {}).get("leadDays") or lead_default
-        return (today + timedelta(days=lead)).strftime("%Y-%m-%d") if today else "9999"
-
-    # проход 0 — склад своей площадки под работы в пределах срока поставки
-    for r in need:
-        if not r["date"] or r["date"] > horizon(r["code"]):
-            continue
-        pool = avail.get(r["code"], {})
-        own = need_site(r)
-        take = min(r["left"], pool.get(own, 0.0))
-        if take > 0:
-            pool[own] -= take
-            r["fromStock"] += take
-            r["left"] -= take
-
-    # проход 1 — свой склад, склад другой площадки (перемещение), закупка к сроку
+    # проход 1 — склад своей площадки, затем закупка к сроку
     for r in need:
         c = r["code"]
         pool = avail.get(c, {})
@@ -234,17 +217,6 @@ def allocate(need, stock, today=None, lead_default=0):
         if take > 0:
             pool[own] -= take
             r["fromStock"] += take
-            r["left"] -= take
-        for st in sorted(pool, key=lambda x: (-pool[x], x)):
-            if r["left"] <= 0:
-                break
-            take = min(r["left"], pool[st])
-            if st == own or take <= 0:
-                continue
-            pool[st] -= take
-            r["fromStock"] += take
-            r["transfer"] += take
-            r["transferFrom"][st] = r["transferFrom"].get(st, 0.0) + take
             r["left"] -= take
         month = (r["date"] or "")[:7]
         # «Резерв./заявка = Никогда»: позиция не попадает в закупочную
@@ -278,6 +250,25 @@ def allocate(need, stock, today=None, lead_default=0):
             r["undated" if not m else "late"] += take
             r["left"] -= take
 
+    # возможность (не покрытие): запас других площадок, оставшийся после их
+    # собственной потребности, против непокрытого к сроку, по дате работ
+    for r in need:
+        open_q = r["left"] + r["late"] + r["undated"]
+        if open_q <= 0:
+            continue
+        pool = avail.get(r["code"], {})
+        own = need_site(r)
+        for st in sorted(pool, key=lambda x: (-pool[x], x)):
+            if open_q <= 0:
+                break
+            take = min(open_q, pool[st])
+            if st == own or take <= 0:
+                continue
+            pool[st] -= take
+            open_q -= take
+            r["transferPotential"] += take
+            r["transferFrom"][st] = r["transferFrom"].get(st, 0.0) + take
+
     for r in need:
         r["gap"] = r["left"]
     return need
@@ -291,7 +282,7 @@ def totals(rows):
     t = {"value": round(sum(r["value"] for r in rows), 2),
          "qty": round(sum(r["qty"] for r in rows), 3),
          "lines": len(rows)}
-    for k in KEYS + ("transfer",):
+    for k in KEYS + ("transferPotential",):
         t[k] = round(sum(val(r, k) for r in rows if k in r), 2)
         t[k + "Qty"] = round(sum(r.get(k, 0.0) for r in rows), 3)
     return t
@@ -523,8 +514,8 @@ def build_orders(rows, names):
                 "ppm": r.get("ppm", "immediate"),
                 **{k: round(r[k], 3) for k in KEYS},
                 **{k + "Value": round(val(r, k), 2) for k in KEYS},
-                "transfer": round(r.get("transfer", 0.0), 3),
-                "transferValue": round(val(r, "transfer") if "transfer" in r else 0.0, 2),
+                "transferPotential": round(r.get("transferPotential", 0.0), 3),
+                "transferPotentialValue": round(val(r, "transferPotential") if "transferPotential" in r else 0.0, 2),
                 "transferFrom": {st: round(q, 3) for st, q in (r.get("transferFrom") or {}).items()},
             })
         years = sorted({str(r["year"]) for r in lines})
@@ -594,7 +585,7 @@ def main():
         if r["code"] not in wk_names:
             continue
         r.update(fromStock=0.0, fromBuy=0.0, late=0.0, undated=0.0, gap=0.0,
-                 transfer=0.0, transferFrom={}, left=0.0)
+                 transferPotential=0.0, transferFrom={}, left=0.0)
         wk_closed.append(r)
 
     # --- по позициям ----------------------------------------------------
@@ -606,7 +597,7 @@ def main():
         a = agg[r["code"]]
         a["needQty"] += r["qty"]
         a["needValue"] += r["value"]
-        for k in KEYS + ("transfer",):
+        for k in KEYS + ("transferPotential",):
             a[k] += r[k]
             a[k + "Value"] += val(r, k)
         for st, q in r["transferFrom"].items():
@@ -691,7 +682,8 @@ def main():
             "gapValue": round(a["gapValue"] + a["lateValue"] + a["undatedValue"], 2),
             "availQty": s.get("availQty") or 0.0,
             "availBySite": {st: o.get("availQty", 0.0) for st, o in (s.get("bySite") or {}).items()},
-            "transfer": round(a["transfer"], 3), "transferValue": round(a["transferValue"], 2),
+            "transferPotential": round(a["transferPotential"], 3),
+            "transferPotentialValue": round(a["transferPotentialValue"], 2),
             "transferFrom": {st: round(q, 3) for st, q in transfer_from[code].items()},
             "openQty": p.get("openQty") or 0.0,
             "restricted": bool(s.get("fullyRestricted")),
@@ -774,10 +766,10 @@ def main():
         cov = 100 * (r["fromStock"] + r["fromBuy"]) / (r["value"] or 1)
         print(f"  {r['key']} ({r.get('status', '?')}): потребность {M(r['value'])} млн ₽, "
               f"обеспечено к сроку {cov:.0f}%, дефицит {M(r['gap'])} млн ₽")
-    print(f"  в т.ч. со склада другой площадки (перемещение): {M(w['transfer'])} млн ₽")
+    print(f"  возможность перемещения с других площадок (в покрытие не входит): {M(w['transferPotential'])} млн ₽")
     for r in m["bySite"]:
-        print(f"  площадка {r['key']}: потребность {M(r['value'])} млн ₽, склад {M(r['fromStock'])} "
-              f"(перемещение {M(r['transfer'])}), не покрыто {M(r['gap'])}")
+        print(f"  площадка {r['key']}: потребность {M(r['value'])} млн ₽, свой склад {M(r['fromStock'])}, "
+              f"не покрыто к сроку {M(r['late'] + r['undated'] + r['gap'])}, из них можно перемещением {M(r['transferPotential'])}")
     for k, label in (("fromStock", "покрыто доступным остатком"),
                      ("fromBuy", "закупка успевает к сроку"),
                      ("late", "закупка придёт позже срока"),

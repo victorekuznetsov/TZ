@@ -67,8 +67,9 @@ def main():
     if bad_site: errors.append(f"stock: site split does not reconcile: {bad_site[:10]}")
     if no_wh: errors.append(f"stock: warehouse missing in meta.warehouses: {sorted(no_wh)[:10]}")
     if no_site: warnings.append(f"stock: warehouse without site: {sorted(no_site)[:10]}")
-    # обеспеченность: перемещение — часть «со склада»; с площадки не взято
-    # больше доступного на ней остатка
+    # обеспеченность: склад покрывает только свою площадку; возможность
+    # перемещения не больше непокрытого к сроку и не больше остатка других
+    # площадок после их собственной потребности
     sys.path.insert(0, str(ROOT / "build"))
     from sites import plant_site
     avail_site = {(str(i["code"]), st): o["availQty"] for i in stock["items"] for st, o in (i.get("bySite") or {}).items()}
@@ -76,15 +77,17 @@ def main():
     for order in provision.get("orders", []) + provision.get("closedOrders", []):
         own = plant_site(order.get("site")) or str(order.get("site"))
         for line in order.get("lines", []):
-            tr = line.get("transfer", 0) or 0
-            if tr > line.get("fromStock", 0) + 1e-6 or not near(tr, sum((line.get("transferFrom") or {}).values()), 1e-3):
+            tr = line.get("transferPotential", 0) or 0
+            open_q = line.get("late", 0) + line.get("undated", 0) + line.get("gap", 0)
+            if tr > open_q + 1e-6 or not near(tr, sum((line.get("transferFrom") or {}).values()), 1e-3) \
+                    or own in (line.get("transferFrom") or {}):
                 bad_tr.append(f'{order.get("order")}:{line.get("code")}')
             k = (str(line.get("code")), own)
-            used[k] = used.get(k, 0) + line.get("fromStock", 0) - tr
+            used[k] = used.get(k, 0) + line.get("fromStock", 0)
             for st, q in (line.get("transferFrom") or {}).items():
                 used[(str(line.get("code")), st)] = used.get((str(line.get("code")), st), 0) + q
     over = [f"{c}@{st}" for (c, st), q in used.items() if avail_site and q > avail_site.get((c, st), 0) + 1e-6]
-    if bad_tr: errors.append(f"provision: transfer inconsistent with fromStock: {bad_tr[:10]}")
+    if bad_tr: errors.append(f"provision: transfer potential inconsistent: {bad_tr[:10]}")
     if over: errors.append(f"provision: stock taken over site availability: {over[:10]}")
     if bad_stock: errors.append(f"stock: gross != available + restricted: {bad_stock[:10]}")
     if bad_warehouse: errors.append(f"stock: warehouse quantities do not reconcile: {bad_warehouse[:10]}")

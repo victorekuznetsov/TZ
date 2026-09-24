@@ -1,23 +1,110 @@
 {
-  "comment": "Распределение остатка по площадкам: свой склад защищён под работы в пределах срока поставки (276 дн. от 14.09.2026 = до 17.06.2027), остальное можно переместить под более раннюю работу другой площадки. Завод 1200 — площадка Сухой Лог (2400).",
+  "comment": "Склад покрывает только свою площадку (завод 1200 — площадка Сухой Лог, 2400). Перемещение между площадками ограничено и в покрытие не входит: transferPotential — сколько непокрытой к сроку потребности мог бы закрыть запас других площадок, оставшийся после их собственной потребности.",
   "today": "2026-09-14",
   "leadDays": 276,
   "stock": {
-    "A": {"availQty": 6, "bySite": {"1100": {"availQty": 5}, "1400": {"availQty": 1}}, "purchase": {"leadDays": 276, "byMonth": {}}},
-    "B": {"availQty": 4, "bySite": {"1100": {"availQty": 4}}, "purchase": {"leadDays": 276, "byMonth": {}}}
+    "A": {
+      "availQty": 6,
+      "bySite": {
+        "1100": {
+          "availQty": 5
+        },
+        "1400": {
+          "availQty": 1
+        }
+      },
+      "purchase": {
+        "leadDays": 276,
+        "byMonth": {}
+      }
+    },
+    "B": {
+      "availQty": 4,
+      "bySite": {
+        "1100": {
+          "availQty": 4
+        }
+      },
+      "purchase": {
+        "leadDays": 276,
+        "byMonth": {}
+      }
+    }
   },
   "need": [
-    {"id": "A-1400", "code": "A", "site": "1400", "date": "2026-10-01", "qty": 3, "value": 300},
-    {"id": "A-1100-near", "code": "A", "site": "1100", "date": "2026-11-01", "qty": 2, "value": 200},
-    {"id": "A-1100-far", "code": "A", "site": "1100", "date": "2027-12-01", "qty": 5, "value": 500},
-    {"id": "B-1100", "code": "B", "site": "1100", "date": "2026-12-01", "qty": 3, "value": 300},
-    {"id": "B-1200", "code": "B", "site": "1200", "date": "2026-10-01", "qty": 3, "value": 300}
+    {
+      "id": "A-1400",
+      "code": "A",
+      "site": "1400",
+      "date": "2026-10-01",
+      "qty": 3,
+      "value": 300
+    },
+    {
+      "id": "A-1100-near",
+      "code": "A",
+      "site": "1100",
+      "date": "2026-11-01",
+      "qty": 2,
+      "value": 200
+    },
+    {
+      "id": "A-1100-far",
+      "code": "A",
+      "site": "1100",
+      "date": "2027-12-01",
+      "qty": 5,
+      "value": 500
+    },
+    {
+      "id": "B-1100",
+      "code": "B",
+      "site": "1100",
+      "date": "2026-12-01",
+      "qty": 3,
+      "value": 300
+    },
+    {
+      "id": "B-1200",
+      "code": "B",
+      "site": "1200",
+      "date": "2026-10-01",
+      "qty": 3,
+      "value": 300
+    }
   ],
   "expected": {
-    "A-1400": {"fromStock": 3, "transfer": 2, "transferFrom": {"1100": 2}, "gap": 0},
-    "A-1100-near": {"fromStock": 2, "transfer": 0, "transferFrom": {}, "gap": 0},
-    "A-1100-far": {"fromStock": 1, "transfer": 0, "transferFrom": {}, "gap": 4},
-    "B-1100": {"fromStock": 3, "transfer": 0, "transferFrom": {}, "gap": 0},
-    "B-1200": {"fromStock": 1, "transfer": 1, "transferFrom": {"1100": 1}, "gap": 2}
+    "A-1400": {
+      "fromStock": 1,
+      "gap": 2,
+      "transferPotential": 0,
+      "transferFrom": {}
+    },
+    "A-1100-near": {
+      "fromStock": 2,
+      "gap": 0,
+      "transferPotential": 0,
+      "transferFrom": {}
+    },
+    "A-1100-far": {
+      "fromStock": 3,
+      "gap": 2,
+      "transferPotential": 0,
+      "transferFrom": {}
+    },
+    "B-1100": {
+      "fromStock": 3,
+      "gap": 0,
+      "transferPotential": 0,
+      "transferFrom": {}
+    },
+    "B-1200": {
+      "fromStock": 0,
+      "gap": 3,
+      "transferPotential": 1,
+      "transferFrom": {
+        "1100": 1
+      }
+    }
   }
 }

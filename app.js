@@ -662,12 +662,12 @@ let PROVISION_ORDER_BY_ID = new Map();
 // Exact identity: punctuation and dimensional suffixes are significant.
 function interKey(value) { return String(value || "").trim().toUpperCase().replace(/\s+/g, " "); }
 function provTransfer(orders) {
-  return (orders || []).reduce((s, o) => s + (o.lines || []).reduce((x, l) => x + (l.transferValue || 0), 0), 0);
+  return (orders || []).reduce((s, o) => s + (o.lines || []).reduce((x, l) => x + (l.transferPotentialValue || 0), 0), 0);
 }
 function transferNote(l) {
   const from = Object.entries((l && l.transferFrom) || {}).filter(([, q]) => q > 0);
   if (!from.length) return "";
-  return `<div class="sup-sub"><span class="badge warn">перемещение</span> ${from.map(([st, q]) => `${num(q, 1)} из ${esc((siteNameOf(st) || st || "?").split(" ")[0])}`).join(", ")}</div>`;
+  return `<div class="sup-sub" title="Перемещение между площадками ограничено: в обеспеченность не входит, это возможность её улучшить"><span class="badge">можно переместить</span> ${from.map(([st, q]) => `${num(q, 1)} из ${esc((siteNameOf(st) || st || "?").split(" ")[0])}`).join(", ")}</div>`;
 }
 function provisionCoverage(row) { return row.needQty > 0 ? 100 * (row.fromStock + row.fromBuy) / row.needQty : 0; }
 function interPartLink(part) {
@@ -2188,8 +2188,8 @@ function provisionOrderRows() {
   return open.concat(closed.filter(o => !seen.has(o.id)));
 }
 function provisionOrderTotals(orders) {
-  const t={value:0,qty:0,lines:0}; for(const k of ['fromStock','fromBuy','late','undated','gap']){t[k]=0;t[k+'Qty']=0}
-  orders.forEach(o=>{t.value+=o.value;t.qty+=o.qty;t.lines+=o.lines.length;for(const k of ['fromStock','fromBuy','late','undated','gap']){t[k]+=o[k];t[k+'Qty']+=o[k+'Qty']}}); return t;
+  const t={value:0,qty:0,lines:0}; for(const k of ['fromStock','fromBuy','late','undated','gap','transferPotential']){t[k]=0;t[k+'Qty']=0}
+  orders.forEach(o=>{t.value+=o.value;t.qty+=o.qty;t.lines+=o.lines.length;for(const k of ['fromStock','fromBuy','late','undated','gap','transferPotential']){t[k]+=o[k]||0;t[k+'Qty']+=o[k+'Qty']||0}}); return t;
 }
 function provisionOrderCut(orders,keyfn){const m=new Map;orders.forEach(o=>{const k=keyfn(o);if(!m.has(k))m.set(k,[]);m.get(k).push(o)});return [...m].map(([key,a])=>({key,...provisionOrderTotals(a)})).sort((a,b)=>String(a.key).localeCompare(String(b.key),'ru'))}
 /* Статусы SAP в витрине обеспеченности (PM06_STATUSES.md): стадия жизненного
@@ -2338,10 +2338,10 @@ function renderProvision(host) {
       ${kpi("Закрытых фактом", num(closedN), "good")}
       ${kpi("Потребность WK", mrub(w.value))}
       ${kpi("Обеспечено к сроку", mrub(w.fromStock + w.fromBuy) + ` <span class="kpi-sub">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}%</span>`, "good")}
-      ${kpi("в т.ч. перемещение", mrub(provTransfer(orders)), provTransfer(orders) > 0 ? "warn" : "")}
+      ${kpi("Возможность перемещения*", mrub(provTransfer(orders)) + ` <span class="kpi-sub">не входит</span>`, "")}
       ${kpi("Не обеспечено", mrub(gapTotal) + ` <span class="kpi-sub">${num(100 * gapTotal / T, 0)}%</span>`, "bad")}
     </div>
-    ${provTransfer(orders) > 0 ? callout("info", `Склад привязан к площадке (по заводу строки остатков). Потребность сначала берёт склад <b>своей</b> площадки; запас другой площадки идёт в покрытие только перемещением — <b>${mrub(provTransfer(orders))}</b> в выбранном контексте. Свой запас площадки защищён под её работы, которые начнутся раньше, чем придёт закупка, заказанная сегодня.`) : ""}
+    ${callout("info", `Склад привязан к площадке (по заводу строки остатков) и покрывает только <b>свою</b> площадку. *Перемещение между площадками ограничено, поэтому в обеспеченность не входит. Отдельно показана <b>возможность</b> её улучшить: запас других площадок, оставшийся после их собственной потребности, против непокрытого к сроку — <b>${mrub(provTransfer(orders))}</b> в выбранном контексте. Это верхняя оценка: логистика и согласование перемещения не учтены.`)}
     ${yearCut.length > 1 ? `
     <h2>Обеспеченность по годам плана</h2>
     <p class="sub">Итог выше складывает два разных года. Открытый год — это то, что обеспечивается
@@ -2349,7 +2349,7 @@ function renderProvision(host) {
       а объём предстоящей закупки.</p>
     <div class="twrap"><table><thead><tr>
       <th>Год</th><th>Статус</th><th class="n">Потребность</th><th class="n">Со склада</th>
-      <th class="n">Закупка к сроку</th><th class="n">Обеспечено</th><th class="n">Дефицит</th>
+      <th class="n">Закупка к сроку</th><th class="n">Обеспечено</th><th class="n">Дефицит</th><th class="n" title="Перемещение ограничено: в обеспеченность не входит">Можно перемещением*</th>
     </tr></thead><tbody>${yearCut.map(r => {
       const t = r.value || 1, on = r.fromStock + r.fromBuy, st = yearStatus[String(r.key)] || "";
       const tone = st === "план" ? "n" : st === "открыт" ? "w" : "g";
@@ -2358,7 +2358,8 @@ function renderProvision(host) {
         <td class="n">${mrub(r.value)}</td><td class="n">${mrub(r.fromStock)}</td>
         <td class="n">${mrub(r.fromBuy)}</td>
         <td class="n"><b>${num(100 * on / t, 0)}%</b></td>
-        <td class="n">${mrub(r.gap)}</td></tr>`;
+        <td class="n">${mrub(r.gap)}</td>
+        <td class="n">${r.transferPotential > 0 ? `${mrub(r.transferPotential)} <span class="dim">→ до ${num(100 * (on + r.transferPotential) / t, 0)}%</span>` : "—"}</td></tr>`;
     }).join("")}</tbody></table></div>` : ""}
     ${sapRemovedHtml(m)}
     ${ppmVisibilityHtml(orders)}
@@ -2510,7 +2511,7 @@ function renderProvision(host) {
       {key:'planQty',label:'План',numeric:true,fmt:(v,r)=>num(r.planQty,3)},
       {key:'factQty',label:'Факт',numeric:true,fmt:(v,r)=>num(r.factQty,3)},
       {key:'qty',label:'Ещё нужно',numeric:true,fmt:v=>num(v,3)},
-      {key:'fromStock',label:'Склад',numeric:true,fmt:(v,r)=>{const st=STOCK_BY_CODE.get(String(r.code)); return `${num(v,3)}${transferNote(r)}${st?`<div class="sup-sub">${warehouseHtml(st.byWarehouse,o.site)}</div>`:""}`;}},
+      {key:'fromStock',label:'Склад',numeric:true,fmt:(v,r)=>{const st=STOCK_BY_CODE.get(String(r.code)); return `${num(v,3)}${st?`<div class="sup-sub">${warehouseHtml(st.byWarehouse,o.site)}</div>`:""}`;}},
       {key:'code',label:'Закупка',cls:'wrap',plain:(v,r)=>{const st=STOCK_BY_CODE.get(String(v)); const vs=purchaseAgainstDate(st&&st.purchase, r.date||o.date); return vs.label;},fmt:(v,r)=>{
         const st=STOCK_BY_CODE.get(String(v)); const vs=purchaseAgainstDate(st&&st.purchase, r.date||o.date);
         if(vs.status==='none') return '<span class="badge bad">не заказано</span>';
@@ -2518,6 +2519,7 @@ function renderProvision(host) {
         return `<span class="badge ${cls}">${esc(vs.label)}</span><div class="sup-sub">${purchaseMonthsHtml(st&&st.purchase)}${vs.supplier? " · "+esc(vs.supplier):""}</div>`;
       }},
       {key:'fromBuy',label:'К сроку ATP',numeric:true,fmt:v=>num(v,3)},
+      {key:'transferPotential',label:'Можно переместить*',numeric:true,plain:v=>v||0,fmt:(v,r)=>v>0?`${num(v,3)}${transferNote(r)}`:'—'},
       {key:'gap',label:'Не покрыто ATP',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>{const g=r.late+r.undated+r.gap; return g>0?`<b style="color:var(--bad)">${num(g,3)}</b>`:"—";}},
       {key:'code',label:'',plain:()=>'',fmt:(v,r)=>cartAddBtn({code:v,name:r.name,value:r.value,source:`Заказ ${o.order}`,order:o.order,unit:o.unit,site:o.site})}
     ]});
@@ -2570,10 +2572,10 @@ function renderProvision(host) {
     const scoped = new Map(), asOfDate = new Date(m.asOf + 'T00:00:00');
     orders.flatMap(o=>o.lines).forEach(l=>{
       const k=String(l.code), item=provisionItemByCode.get(k)||{}, lead=item.leadDays||m.leadMedianDays||0;
-      const a=scoped.get(k)||{needQty:0,needValue:0,fromStock:0,fromBuy:0,late:0,undated:0,gap:0,gapValue:0,canOrder:0,tooLate:0,orderBy:'',transfer:0,transferFrom:{}};
+      const a=scoped.get(k)||{needQty:0,needValue:0,fromStock:0,fromBuy:0,late:0,undated:0,gap:0,gapValue:0,canOrder:0,tooLate:0,orderBy:'',transferPotential:0,transferFrom:{}};
       a.needQty+=l.qty; a.needValue+=l.value;
       for(const x of ['fromStock','fromBuy','late','undated','gap']) a[x]+=l[x];
-      a.transfer+=l.transfer||0; for(const [st,q] of Object.entries(l.transferFrom||{})) a.transferFrom[st]=(a.transferFrom[st]||0)+q;
+      a.transferPotential+=l.transferPotential||0; for(const [st,q] of Object.entries(l.transferFrom||{})) a.transferFrom[st]=(a.transferFrom[st]||0)+q;
       const openValue=l.lateValue+l.undatedValue+l.gapValue;
       a.gapValue+=openValue;
       if(openValue>0){
@@ -2602,8 +2604,7 @@ function renderProvision(host) {
         { key: "code", label: "Код ЕКМТР", cls: "mono" },
         { key: "name", label: "Наименование", cls: "wrap" },
         { key: "needQty", label: "Нужно", numeric: true, fmt: v => num(v, 0) },
-        { key: "fromStock", label: "Со склада", numeric: true, fmt: (v, r) => num(v, 0) + transferNote(r) },
-        { key: "transfer", label: "в т.ч. перемещение", numeric: true, fmt: v => v > 0 ? num(v, 0) : "—" },
+        { key: "fromStock", label: "Со своего склада", numeric: true, fmt: v => num(v, 0) },
         { key: "fromBuy", label: "Закупка к сроку", numeric: true, fmt: v => num(v, 0) },
         {
           key: "coverage", label: "Покрытие", numeric: true,
@@ -2618,7 +2619,7 @@ function renderProvision(host) {
           plain: (v, r) => num(v + r.late + r.undated, 0),
           fmt: (v, r) => {
             const g = v + r.late + r.undated;
-            return g > 0 ? `<b style="color:var(--bad)">${num(g, 0)}</b>` : "—";
+            return g > 0 ? `<b style="color:var(--bad)">${num(g, 0)}</b>${transferNote(r)}` : "—";
           }
         },
         { key: "gapValue", label: "Дефицит, ₽", numeric: true, fmt: rub },
@@ -2699,7 +2700,7 @@ function renderStock(host) {
   }));
   const siteRows = [...bySite.values()].sort((a, b) => b.value - a.value);
   const transferValue = ((D.provision && D.provision.items) || []).filter(it => stockRows.some(r => String(r.code) === String(it.code)))
-    .reduce((s, it) => s + (it.transferValue || 0), 0);
+    .reduce((s, it) => s + (it.transferPotentialValue || 0), 0);
   const totalQty = stockRows.reduce((s, i) => s + stockSiteVal(i, "qty"), 0);
   const availQty = stockRows.reduce((s, i) => s + stockSiteVal(i, "availQty"), 0);
   const restrictedQty = stockRows.reduce((s, i) => s + stockSiteVal(i, "restrictedQty"), 0);
@@ -2717,7 +2718,7 @@ function renderStock(host) {
     <p class="hint">KPI, склады и реестр — по выбранному контексту.</p>
     <p class="sub">Остаток по номенклатуре WK на дату выгрузки (${esc(m.srcStock)}). Ограниченный и блокированный запас вычтен из доступного и подсвечен отдельно.
       ${G.site ? `Площадка <b>${esc(siteNameOf(G.site))} (${esc(G.site)})</b>: KPI — только склады этой площадки; в реестре позиции с наличием здесь или потребностью её машин.` : "Площадка склада — по заводу строки выгрузки (MM‑M03), не по названию склада."}
-      Обеспеченность сначала берёт склад своей площадки; запас другой площадки — только перемещением.</p>
+      Склад покрывает потребность только своей площадки; перемещение между площадками ограничено и показывается как возможность, а не как покрытие.</p>
     <div class="kpis">
       ${kpi("Кодов с остатком", num(stockRows.filter(i => i.qty > 0).length))}
       ${kpi("Остаток всего", mrub(totalValue))}
@@ -2736,7 +2737,7 @@ function renderStock(host) {
     <section class="card"><h3>Запас по площадкам</h3>
       <p class="hint">${esc(D.stock.meta.siteRule || "")}. WK в Иркутской области работают только на Сухом Логе, заказы его бортов планирует завод 1200 — поэтому склады Вернинского и «Развитие» Иркутские активы относятся к Сухому Логу. Нажмите строку, чтобы выбрать площадку.</p>
       <div id="stkSites"></div>
-      ${transferValue > 0 ? `<p class="hint">Под потребность 2026–2027 со склада другой площадки (перемещение) берётся <b>${mrub(transferValue)}</b> — подробности во вкладке «Обеспеченность».</p>` : ""}
+      ${transferValue > 0 ? `<p class="hint">Возможность (ограниченная): запас других площадок, оставшийся после их собственной потребности, мог бы закрыть ещё до <b>${mrub(transferValue)}</b> непокрытой потребности 2026–2027. В обеспеченность не входит — подробности во вкладке «Обеспеченность».</p>` : ""}
     </section>
     <div class="prov-audit-grid">
       <section class="card"><h3>Крупнейшие места хранения</h3><p class="hint">${hasWhValue ? "Стоимость по строкам MM‑M03; склад — пара «завод/код», площадка — по заводу." : "Справочная сумма количества разных МТР из MM‑M03, без сопоставления единиц измерения."}</p>${hasWhValue ? supplyBars(warehouseRows, "value", "name", v => mrub(v)) : supplyBars(warehouseRows, "qty", "name", v => num(v, 0) + " ед.")}</section>
@@ -3017,8 +3018,9 @@ function renderDoc(host) {
     <div class="card"><h3>Обеспеченность: как считается</h3>
       <p class="hint">Потребность — открытый остаток строк плана ТОиР 2026–2027 по технике WK: количество = max(план − факт, 0), стоимость пропорциональна. Распределение — как в MRP/ATP, в два прохода.</p>
       <ul>
-        <li><b>Проход 0.</b> Склад <b>своей</b> площадки резервируется под её работы, которые начнутся раньше, чем придёт закупка, заказанная сегодня (дата снимка + фактический срок поставки кода): такую потребность новой закупкой уже не закрыть.</li>
-        <li><b>Проход 1.</b> Потребность, отсортированная по дате начала работ, забирает остаток своей площадки, затем остаток другой площадки — это <b>перемещение</b> (показывается отдельно), затем приходы закупки, чей месяц поставки не раньше даты снимка и не позже месяца начала работ («успевает»). Закупка общая: документ закупки не привязан к площадке потребности.</li>
+        <li><b>Склад — только своей площадке.</b> Остаток лежит на конкретной площадке и покрывает потребность только её машин.</li>
+        <li><b>Проход 1.</b> Потребность, отсортированная по дате начала работ, забирает остаток своей площадки, затем — те приходы закупки, чей месяц поставки не раньше даты снимка и не позже месяца начала работ («успевает»). Закупка общая: документ закупки не привязан к площадке потребности.</li>
+        <li><b>Возможность перемещения.</b> Перемещение между площадками ограничено (логистика, согласование БЕ), поэтому в обеспеченность не входит. Отдельно показано, сколько непокрытой к сроку потребности мог бы закрыть запас других площадок, оставшийся после их собственной потребности, — верхняя оценка улучшения.</li>
         <li><b>Проход 2.</b> Остатками приходов закрывается то, что не успели, — это «опоздание».</li>
         <li>Два прохода здесь принципиальны: в один проход ранняя потребность забирает поздний приход и помечает его опозданием, хотя тот же приход мог бы вовремя закрыть более позднюю потребность. На этих данных разница почти вдвое по доле «закупка успевает».</li>
         <li><b>Срок поставки</b> — медиана «дата поставки − дата заявки» по той же выгрузке закупки (${num(D.provision.meta.leadMeasurements)} замеров по ${num(D.provision.meta.leadCodes)} кодам). Для позиции со своей статистикой берётся её собственный срок, иначе — медиана по WK (${num(D.provision.meta.leadMedianDays)} дн.).</li>

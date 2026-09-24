@@ -19,7 +19,7 @@ FIX = json.loads((ROOT / "tests" / "fixtures" / "site_allocation.json").read_tex
 
 
 class SiteAllocationTest(unittest.TestCase):
-    def test_own_site_protected_within_lead_time(self):
+    def test_stock_covers_own_site_transfer_is_potential(self):
         need = copy.deepcopy(FIX["need"])
         out = BP.allocate(need, copy.deepcopy(FIX["stock"]), datetime.strptime(FIX["today"], "%Y-%m-%d"), FIX["leadDays"])
         got = {r["id"]: r for r in out}
