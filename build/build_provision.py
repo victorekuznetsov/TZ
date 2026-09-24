@@ -81,7 +81,7 @@ def as_of(meta):
     return best or datetime.now()
 
 
-def load_need(topo_dir):
+def load_need(topo_dir, orders_out=None):
     """Открытые строки плана ТОиР по технике WK за 2026-2027.
 
     PM-06 хранит план и факт отдельными строками одного заказа и материала.
@@ -127,6 +127,14 @@ def load_need(topo_dir):
             g["factValue"] += N(cell(d.get("a"), i))
             g["usoPlan"] += N(cell(d.get("up"), i))
             g["usoFact"] += N(cell(d.get("uf"), i))
+            if orders_out is not None:
+                # Итоги заказа по ВСЕМ строкам WK, включая строки без кода
+                # материала (услуги, МТР подрядчика): воронка исполнения
+                # считается по полному плану заказа, а не только по МТР.
+                acc = orders_out.setdefault((str(d["y"]), str(order)), {
+                    "site": d["s"], "unit": g["unit"], "plan": 0.0, "fact": 0.0})
+                acc["plan"] += N(cell(d.get("p"), i)) + N(cell(d.get("up"), i))
+                acc["fact"] += N(cell(d.get("a"), i)) + N(cell(d.get("uf"), i))
             if cell(d.get("u"), i, ""):
                 g["method"] = cell(d.get("u"), i, "")
         for g in grains.values():
@@ -184,7 +192,10 @@ def allocate(need, stock, today=None):
             r["fromStock"] += take
             r["left"] -= take
         month = (r["date"] or "")[:7]
-        sched = inflow.get(c)
+        # «Резерв./заявка = Никогда»: позиция не попадает в закупочную
+        # заявку, приход закупки под неё не идёт — покрыть её может только
+        # складской остаток.
+        sched = None if r.get("ppm") == "never" else inflow.get(c)
         if not sched or r["left"] <= 0 or not month:
             continue
         for m in sorted(x for x in sched if x and x <= month):
@@ -199,7 +210,7 @@ def allocate(need, stock, today=None):
 
     # проход 2 — остатки приходов закрывают то, что не успели
     for r in need:
-        sched = inflow.get(r["code"])
+        sched = None if r.get("ppm") == "never" else inflow.get(r["code"])
         if not sched or r["left"] <= 0:
             continue
         for m in sorted(sched, key=lambda x: x or "9999"):
@@ -286,6 +297,148 @@ def year_status(topo_dir):
     return out
 
 
+PPM_KEYS = ("immediate", "onRelease", "never")
+PPM_BY_FLAG = {0: "onRelease", 1: "never"}      # индексы meta.flags в ppm_flags
+
+
+def load_pm06_meta(meta_dir, years=("2026", "2027")):
+    """Статусы заказов и признаки ППМ из TOPO/pm06_meta.
+
+    Ключ — (год, номер заказа): номера заказов уникальны между площадками
+    (проверено на всех выгрузках), а разбивка по площадкам в pm06_meta
+    (1200/2400 по балансовой единице) может не совпадать с data/*.json.
+    """
+    status, ppm, src = {}, {}, []
+    for year in years:
+        for fp in sorted(glob.glob(os.path.join(meta_dir, "order_status", f"*_{year}.json"))):
+            with open(fp, encoding="utf-8") as f:
+                d = json.load(f)
+            src.append(d["meta"].get("source", os.path.basename(fp)))
+            for o, (si, ui, ki, ph, orig) in d["o"].items():
+                status[(year, o)] = {"sys": d["sys"][si], "usr": d["usr"][ui],
+                                     "kind": d["kind"][ki], "phase": ph,
+                                     "copyOriginal": bool(orig)}
+        for fp in sorted(glob.glob(os.path.join(meta_dir, "ppm_flags", f"*_{year}.json"))):
+            with open(fp, encoding="utf-8") as f:
+                d = json.load(f)
+            for o, codes in d["o"].items():
+                for code, idx in codes.items():
+                    ppm[(year, o, code)] = PPM_BY_FLAG.get(idx, "immediate")
+    return {"status": status, "ppm": ppm, "sources": sorted(set(src))}
+
+
+def order_stage(st, fact=0.0):
+    """Стадия жизненного цикла заказа по статусам SAP.
+
+    Фаза — один системный код (ОТКР / ДЕБЛ / ТЗКР / ЗАКР, КД .52), внутри
+    фаз стадию уточняют пользовательские статусы цепочек согласования и
+    закрытия (ТОиР-77, ТОиР-84). Заказ без статуса — позиция графика ППР,
+    в план не входит. Деблокированный заказ с проведённым фактом (списаны
+    МТР, счёт УСО) — «в работе», даже если операции ещё не подтверждены.
+    """
+    if st is None:
+        return "unknown"
+    ph = st["phase"]
+    usr = set(st["usr"].split())
+    sysc = set(st["sys"].split())
+    if ph == 0:
+        return "noOrder"
+    if ph == 4:
+        return "closed"
+    if ph == 3:
+        if "ВСБЕ" in usr:
+            return "billed"
+        if "ПРСЗ" in usr:
+            return "accepted"
+        if "НПСЗ" in usr:
+            return "rejected"
+        return "techClosed"
+    if ph == 2:
+        if "ФХСМ" in usr:
+            return "factDone"
+        if "ПРНТ" in usr or sysc & {"ПДТВ", "ЧПДТ"} or fact > 0:
+            return "inWork"
+        return "released"
+    return "approved" if "СГГС" in usr else "approving"
+
+
+STAGES = [  # порядок и подписи для портала
+    ("approving", "Открыт, на согласовании"), ("approved", "Открыт, согласован (СГГС)"),
+    ("released", "Деблокирован: ни факта, ни подтверждений"), ("inWork", "В работе: есть факт, подтверждения или ПРНТ"),
+    ("factDone", "Факт проведён полностью (ФХСМ)"), ("techClosed", "Технически закрыт (ТЗКР)"),
+    ("rejected", "ТЗКР, не принят службой заказчика (НПСЗ)"), ("accepted", "ТЗКР, принят службой заказчика (ПРСЗ)"),
+    ("billed", "ТЗКР, выставлен в БЕ (ВСБЕ)"), ("closed", "Закрыт коммерчески (ЗАКР)"),
+    ("unknown", "Нет в выгрузке статусов"),
+]
+
+
+def apply_sap_rules(need, closed, meta):
+    """Правила статусов SAP поверх расчёта «план − факт».
+
+    * позиция графика ППР без заказа (фаза 0) — не заказ и не в плане:
+      строка исключается целиком;
+    * заказ закрыт в SAP (ТЗКР, ЗАКР) — остаток плана не потребность;
+    * оригинал БЕ, перенесённый копией в АО «Развитие», — его неисполненный
+      план дублирует копию и не считается;
+    * каждой строке присваивается признак ППМ («Резерв./заявка»).
+
+    Возвращает новые списки открытых и закрытых строк и сводку снятого.
+    """
+    removed = {k: {"value": 0.0, "qty": 0.0, "lines": 0, "orders": set()}
+               for k in ("planPosition", "closedInSap", "migrationCopy")}
+    keep_need, keep_closed = [], list(closed)
+    for r in need:
+        key = (str(r["year"]), str(r["order"]))
+        st = meta["status"].get(key)
+        r["stage"] = order_stage(st)
+        r["ppm"] = meta["ppm"].get((key[0], key[1], r["code"]), "immediate")
+        reason = None
+        if st is not None:
+            if st["phase"] == 0:
+                reason = "planPosition"
+            elif st["phase"] in (3, 4):
+                reason = "closedInSap"
+            elif st["copyOriginal"]:
+                reason = "migrationCopy"
+        if reason is None:
+            keep_need.append(r)
+            continue
+        b = removed[reason]
+        b["value"] += r["value"]
+        b["qty"] += r["qty"]
+        b["lines"] += 1
+        b["orders"].add(key)
+        if reason != "planPosition":
+            r["qty"], r["value"] = 0.0, 0.0
+            r["sapReason"] = reason
+            keep_closed.append(r)
+    keep_closed = [r for r in keep_closed
+                   if meta["status"].get((str(r["year"]), str(r["order"])), {}).get("phase") != 0]
+    for r in keep_closed:
+        key = (str(r["year"]), str(r["order"]))
+        r.setdefault("stage", order_stage(meta["status"].get(key)))
+        r.setdefault("ppm", meta["ppm"].get((key[0], key[1], r["code"]), "immediate"))
+    summary = {k: {"value": round(v["value"], 2), "qty": round(v["qty"], 3),
+                   "lines": v["lines"], "orders": len(v["orders"])} for k, v in removed.items()}
+    return keep_need, keep_closed, summary
+
+
+def execution_rows(order_totals, meta):
+    """Все заказы WK 2026–2027 со стадией, планом и фактом — для воронки
+    исполнения. Оригиналы, перенесённые копией в «Развитие», помечаются:
+    их план в воронку не входит (его несёт копия), факт — настоящий."""
+    out = []
+    for (year, order), t in sorted(order_totals.items()):
+        st = meta["status"].get((year, order))
+        m = re.search(r"WK-?(\d+C?)", t["unit"] or "", re.I)
+        out.append({"year": year, "order": order, "site": t["site"], "unit": t["unit"],
+                    "model": "WK-" + m.group(1).upper() if m else "",
+                    "stage": order_stage(st, t["fact"]),
+                    "copyOriginal": bool(st and st["copyOriginal"]),
+                    "plan": round(t["plan"], 2), "fact": round(t["fact"], 2)})
+    return out
+
+
 def order_id(site, unit, order):
     raw = json.dumps((site, unit, str(order)), ensure_ascii=False).encode()
     return hashlib.sha256(raw).hexdigest()[:18]
@@ -312,6 +465,7 @@ def build_orders(rows, names):
                 "method": r.get("method") or "",
                 "usoPlan": round(r.get("usoPlan") or 0, 2),
                 "usoFact": round(r.get("usoFact") or 0, 2),
+                "ppm": r.get("ppm", "immediate"),
                 **{k: round(r[k], 3) for k in KEYS},
                 **{k + "Value": round(val(r, k), 2) for k in KEYS},
             })
@@ -331,6 +485,10 @@ def build_orders(rows, names):
             "kind": next((r["kind"] for r in lines if r["kind"]), ""),
             "method": methods[0] if len(methods) == 1 else ("+".join(methods) if methods else ""),
             "status": status, "closed": closed,
+            "stage": next((r["stage"] for r in lines if r.get("stage")), ""),
+            "sapReason": next((r["sapReason"] for r in lines if r.get("sapReason")), ""),
+            "ppmValue": {k: round(sum(r["value"] for r in lines if r.get("ppm", "immediate") == k), 2)
+                         for k in PPM_KEYS},
             "planValue": plan_value, "factValue": fact_value,
             "coverage": 100.0 if closed else (round(100 * on_time / t["value"], 1) if t["value"] else 0),
             **t, "lines": detail,
@@ -339,11 +497,17 @@ def build_orders(rows, names):
 
 
 def main():
-    if len(sys.argv) < 5:
+    args = sys.argv[1:]
+    meta_dir = None
+    if "--pm06-meta" in args:
+        i = args.index("--pm06-meta")
+        meta_dir = args[i + 1]
+        del args[i:i + 2]
+    if len(args) < 4:
         print("usage: build_provision.py <topo_data_dir> <ekmtr_wk.json> "
-              "<stock.json> <out_dir>", file=sys.stderr)
+              "<stock.json> <out_dir> [--pm06-meta <TOPO/pm06_meta>]", file=sys.stderr)
         sys.exit(1)
-    topo_dir, ekmtr_path, stock_path, out_dir = sys.argv[1:5]
+    topo_dir, ekmtr_path, stock_path, out_dir = args[:4]
     os.makedirs(out_dir, exist_ok=True)
 
     wk_names = {e["code"]: e["name"] for e in json.load(open(ekmtr_path, encoding="utf-8"))["items"]}
@@ -353,7 +517,17 @@ def main():
     lead_default = sj["meta"].get("leadMedianDays") or 0
 
     ystat = year_status(topo_dir)
-    need, closed_rows, nocode_rows, nocode_v = load_need(topo_dir)
+    order_totals = {}
+    need, closed_rows, nocode_rows, nocode_v = load_need(topo_dir, order_totals)
+    pm06 = load_pm06_meta(meta_dir) if meta_dir else None
+    removed = None
+    if pm06:
+        need, closed_rows, removed = apply_sap_rules(need, closed_rows, pm06)
+    if pm06:
+        stage_of = {(y, o): order_stage(pm06["status"].get((y, o)), t["fact"])
+                    for (y, o), t in order_totals.items()}
+        for r in need + closed_rows:
+            r["stage"] = stage_of.get((str(r["year"]), str(r["order"])), r.get("stage", "unknown"))
     need = allocate(need, stock, today)
     known = [r for r in need if r["code"] in stock]
     other = [r for r in need if r["code"] not in stock]
@@ -498,12 +672,19 @@ def main():
             "byHalf": cut(known, lambda r: (r["date"][:4] + (" I" if r["date"][5:7] <= "06" else " II")) if r["date"] else "без срока"),
             "byKind": cut(known, lambda r: r["kind"] or "не присвоено", sort_by_value=True, limit=8),
             "feasible": feas,
+            "sapStatus": bool(pm06),
+            "sapSources": pm06["sources"] if pm06 else [],
+            "sapRemoved": removed or {},
+            "byPpm": [dict(r, year=r["key"][0], ppm=r["key"][1], key="|".join(r["key"]))
+                      for r in cut(known, lambda r: (str(r["year"]), r.get("ppm", "immediate")))],
+            "stages": [{"key": k, "label": l} for k, l in STAGES],
             "arrivals": [{"month": m, "qty": round(q, 3)}
                          for m, q in sorted(bym.items(), key=lambda kv: kv[0] or "9999")],
         },
         "items": items,
         "orders": orders,
         "closedOrders": closed_orders,
+        "execution": execution_rows(order_totals, pm06) if pm06 else [],
     }
     with open(os.path.join(out_dir, "provision.json"), "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, separators=(",", ":"))
@@ -516,6 +697,14 @@ def main():
           f"позиций WK {m['positions']}")
     print(f"потребность WK: {M(w['value'])} млн ₽ ({w['lines']} строк); "
           f"прочая номенклатура {M(m['notWkParts']['value'])} млн ₽ — не считаем")
+    if m["sapRemoved"]:
+        for k, label in (("planPosition", "позиции ППР без заказа (вне плана)"),
+                         ("closedInSap", "заказ закрыт в SAP (ТЗКР/ЗАКР)"),
+                         ("migrationCopy", "оригинал перенесён копией в «Развитие»")):
+            b = m["sapRemoved"][k]
+            print(f"  снято: {label:<42}{M(b['value']):>6} млн ₽, заказов {b['orders']}, строк {b['lines']}")
+        for r in m["byPpm"]:
+            print(f"  {r['year']} ППМ «{r['ppm']}»: потребность {M(r['value'])} млн ₽, не покрыто {M(r['gap'])} млн ₽")
     for r in m["byYear"]:
         cov = 100 * (r["fromStock"] + r["fromBuy"]) / (r["value"] or 1)
         print(f"  {r['key']} ({r.get('status', '?')}): потребность {M(r['value'])} млн ₽, "

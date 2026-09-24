@@ -139,3 +139,93 @@ class YearStatusTest(unittest.TestCase):
             st = self._dir(td, {"1100_2026.json": self._year(2026, 0, 0, 100, 90)})
         self.assertEqual(st["2026"]["status"], "закрыт")
         self.assertAlmostEqual(st["2026"]["factShare"], 0.9)
+
+
+class SapStatusRulesTest(unittest.TestCase):
+    """Правила статусов SAP (PM06_STATUSES.md)."""
+
+    @staticmethod
+    def _row(order, code="100", qty=4.0, value=400.0, year=2026):
+        return {"order": order, "year": year, "code": code, "qty": qty, "value": value,
+                "date": "2026-10-01", "site": "1100", "unit": "WK-35 №1"}
+
+    @staticmethod
+    def _meta(status, ppm=None):
+        return {"status": status, "ppm": ppm or {}, "sources": []}
+
+    @staticmethod
+    def _st(phase, usr="#", sys_="#", orig=False):
+        return {"phase": phase, "usr": usr, "sys": sys_, "kind": "APP1", "copyOriginal": orig}
+
+    def test_stage_follows_phase_and_user_statuses(self):
+        cases = [(self._st(0), "noOrder"), (self._st(1, "ПЛАН ГОД"), "approving"),
+                 (self._st(1, "СГГС ГОД"), "approved"), (self._st(2), "released"),
+                 (self._st(2, "ПРНТ"), "inWork"), (self._st(2, sys_="ДЕБЛ ЧПДТ"), "inWork"),
+                 (self._st(2, "ПРНТ ФХСМ"), "factDone"), (self._st(3), "techClosed"),
+                 (self._st(3, "НПСЗ"), "rejected"), (self._st(3, "ПРСЗ"), "accepted"),
+                 (self._st(3, "ПРСЗ ВСБЕ"), "billed"), (self._st(4, "ВСБЕ"), "closed"),
+                 (None, "unknown")]
+        for st, expected in cases:
+            self.assertEqual(BP.order_stage(st), expected)
+
+    def test_released_order_with_posted_fact_is_in_work(self):
+        # списание МТР или счёт УСО — работа идёт, даже без подтверждений
+        self.assertEqual(BP.order_stage(self._st(2), fact=100.0), "inWork")
+        self.assertEqual(BP.order_stage(self._st(2), fact=0.0), "released")
+
+    def test_plan_position_without_order_is_dropped_entirely(self):
+        meta = self._meta({("2026", "110000000001"): self._st(0)})
+        need, closed, removed = BP.apply_sap_rules([self._row("110000000001")], [], meta)
+        self.assertEqual((need, closed), ([], []))
+        self.assertEqual(removed["planPosition"]["value"], 400.0)
+
+    def test_order_closed_in_sap_has_no_remaining_need(self):
+        meta = self._meta({("2026", "1"): self._st(3, "ПРСЗ"), ("2026", "2"): self._st(4)})
+        need, closed, removed = BP.apply_sap_rules([self._row("1"), self._row("2")], [], meta)
+        self.assertEqual(need, [])
+        self.assertEqual([r["qty"] for r in closed], [0.0, 0.0])
+        self.assertEqual(removed["closedInSap"]["orders"], 2)
+
+    def test_migration_original_plan_is_not_counted_twice(self):
+        meta = self._meta({("2026", "1"): self._st(1, "СГГС", orig=True),
+                           ("2026", "2"): self._st(1, "СГГС")})
+        need, closed, removed = BP.apply_sap_rules([self._row("1"), self._row("2")], [], meta)
+        self.assertEqual([r["order"] for r in need], ["2"])
+        self.assertEqual(closed[0]["sapReason"], "migrationCopy")
+        self.assertEqual(removed["migrationCopy"]["value"], 400.0)
+
+    def test_open_order_keeps_need_and_gets_ppm_flag(self):
+        meta = self._meta({("2026", "1"): self._st(1, "СГГС")},
+                          {("2026", "1", "100"): "onRelease"})
+        need, _, _ = BP.apply_sap_rules([self._row("1"), self._row("1", code="200")], [], meta)
+        self.assertEqual([r["ppm"] for r in need], ["onRelease", "immediate"])
+        self.assertEqual(need[0]["stage"], "approved")
+
+    def test_order_missing_from_status_export_is_kept(self):
+        need, _, _ = BP.apply_sap_rules([self._row("9")], [], self._meta({}))
+        self.assertEqual(len(need), 1)
+        self.assertEqual(need[0]["stage"], "unknown")
+
+    def test_never_flag_is_not_covered_by_purchase(self):
+        stock = {"100": {"availQty": 1, "purchase": {"byMonth": {"2026-09": 10}}}}
+        rows = [dict(self._row("1"), ppm="never"), dict(self._row("2"), ppm="immediate")]
+        out = BP.allocate(rows, stock, datetime(2026, 9, 1))
+        never = next(r for r in out if r["order"] == "1")
+        normal = next(r for r in out if r["order"] == "2")
+        self.assertEqual(never["fromBuy"] + never["late"] + never["undated"], 0)
+        self.assertEqual(never["fromStock"] + never["gap"], 4)
+        self.assertEqual(normal["fromBuy"], 4)
+
+    def test_pm06_meta_files_are_read_by_year_and_order(self):
+        with tempfile.TemporaryDirectory() as td:
+            Path(td, "order_status").mkdir()
+            Path(td, "ppm_flags").mkdir()
+            Path(td, "order_status", "1100_2026.json").write_text(json.dumps({
+                "meta": {"source": "M06_1100_2026"}, "sys": ["ДЕБЛ"], "usr": ["ПРНТ"],
+                "kind": ["APP1"], "o": {"55": [0, 0, 0, 2, 1]}}), encoding="utf-8")
+            Path(td, "ppm_flags", "1100_2026.json").write_text(json.dumps({
+                "meta": {}, "o": {"55": {"100": 1}}}), encoding="utf-8")
+            meta = BP.load_pm06_meta(td)
+        self.assertEqual(meta["status"][("2026", "55")]["phase"], 2)
+        self.assertTrue(meta["status"][("2026", "55")]["copyOriginal"])
+        self.assertEqual(meta["ppm"][("2026", "55", "100")], "never")

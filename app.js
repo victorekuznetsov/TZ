@@ -2158,6 +2158,57 @@ function provisionOrderTotals(orders) {
   orders.forEach(o=>{t.value+=o.value;t.qty+=o.qty;t.lines+=o.lines.length;for(const k of ['fromStock','fromBuy','late','undated','gap']){t[k]+=o[k];t[k+'Qty']+=o[k+'Qty']}}); return t;
 }
 function provisionOrderCut(orders,keyfn){const m=new Map;orders.forEach(o=>{const k=keyfn(o);if(!m.has(k))m.set(k,[]);m.get(k).push(o)});return [...m].map(([key,a])=>({key,...provisionOrderTotals(a)})).sort((a,b)=>String(a.key).localeCompare(String(b.key),'ru'))}
+/* Статусы SAP в витрине обеспеченности (PM06_STATUSES.md): стадия жизненного
+   цикла заказа, признак ППМ строк и что снято правилами статусов. */
+const PPM_LABEL={immediate:'Немедленно — закупка видит',onRelease:'Начиная с деблокирования — закупка пока не видит',never:'Никогда — в закупку не попадает'};
+function stageLabel(key){const st=((D.provision.meta||{}).stages||[]).find(x=>x.key===key);return st?st.label:(key||'—')}
+function executionContextRows(){
+  return (D.provision.execution||[]).filter(r=>(!G.site||r.site===G.site)&&(!G.model||r.model===G.model)&&(!G.unit||r.unit===G.unit)&&(!G.order||String(r.order)===String(G.order)));
+}
+function executionFunnelHtml(){
+  const rows=executionContextRows(); if(!rows.length) return '';
+  const stages=(D.provision.meta.stages||[]).filter(s=>s.key!=='unknown'||rows.some(r=>r.stage==='unknown'));
+  const years=[...new Set(rows.map(r=>r.year))].sort();
+  const block=y=>{
+    const inPlan=rows.filter(r=>r.year===y&&r.stage!=='noOrder'&&!r.copyOriginal);
+    const tot=inPlan.reduce((a,r)=>a+r.plan,0)||1, done=inPlan.filter(r=>['techClosed','rejected','accepted','billed','closed'].includes(r.stage));
+    const by=new Map(stages.map(s=>[s.key,{n:0,plan:0,fact:0}]));
+    inPlan.forEach(r=>{const b=by.get(r.stage)||by.get('unknown');if(b){b.n++;b.plan+=r.plan;b.fact+=r.fact}});
+    const noOrder=rows.filter(r=>r.year===y&&r.stage==='noOrder'), copies=rows.filter(r=>r.year===y&&r.copyOriginal&&r.stage!=='noOrder');
+    const body=stages.map((s,i)=>{const b=by.get(s.key);if(!b||!b.n)return'';const share=b.plan/tot;
+      // одна шкала акцентного цвета: чем дальше стадия, тем насыщеннее
+      const op=(0.3+0.7*i/Math.max(1,stages.length-2)).toFixed(2);
+      return `<tr title="${esc(s.label)} · ${num(b.n)} заказов · план ${mrub(b.plan)} · факт ${mrub(b.fact)}"><td class="wrap exec-stage">${esc(s.label)}</td><td class="n">${num(b.n)}</td><td class="n">${mrub(b.plan)}</td><td class="n">${mrub(b.fact)}</td><td class="n" style="white-space:nowrap"><span class="bar stage-bar"><i style="width:${(100*share).toFixed(1)}%;opacity:${op}"></i></span> ${num(100*share,0)}%</td></tr>`}).join('');
+    return `<div><h3>${esc(y)}: ${num(inPlan.length)} заказов, план ${mrub(tot)}</h3>
+      <p class="sub">Закрыто (ТЗКР и далее): ${num(done.length)} заказов, ${num(100*done.reduce((a,r)=>a+r.plan,0)/tot,0)}% плана.</p>
+      <div class="twrap"><table><thead><tr><th>Стадия</th><th class="n">Заказов</th><th class="n">План</th><th class="n">Факт</th><th class="n">Доля плана</th></tr></thead><tbody>${body}</tbody></table></div>
+      ${noOrder.length?`<p class="hint">Вне плана: ${num(noOrder.length)} позиций графика ППР без заказа SAP на ${mrub(noOrder.reduce((a,r)=>a+r.plan,0))} — не заказы, в план и потребность не входят.</p>`:''}
+      ${copies.length?`<p class="hint">Не учтены: ${num(copies.length)} оригиналов БЕ, перенесённых копией в «Развитие» (план ${mrub(copies.reduce((a,r)=>a+r.plan,0))}, факт ${mrub(copies.reduce((a,r)=>a+r.fact,0))}) — их план несёт копия.</p>`:''}</div>`;
+  };
+  return `<h2>Исполнение программы ремонтов по статусам SAP</h2>
+    <p class="sub">Все заказы WK выгрузки PM-06 по стадиям жизненного цикла: фаза ОТКР → ДЕБЛ → ТЗКР → ЗАКР и пользовательские статусы согласования и приёмки. План и факт — МТР и УСО заказа. Контекст (площадка, машина) учитывается.</p>
+    <div class="exec-grid">${years.map(block).join('')}</div>`;
+}
+function ppmVisibilityHtml(orders){
+  const acc=new Map();
+  orders.forEach(o=>(o.lines||[]).forEach(l=>{const y=(o.years||[])[0]||'',k=y+'|'+(l.ppm||'immediate');const a=acc.get(k)||{year:y,ppm:l.ppm||'immediate',value:0,stock:0,buy:0,late:0,gap:0,orders:new Set()};
+    a.value+=l.value;a.stock+=l.fromStockValue||0;a.buy+=l.fromBuyValue||0;a.late+=(l.lateValue||0)+(l.undatedValue||0);a.gap+=l.gapValue||0;a.orders.add(o.order);acc.set(k,a)}));
+  const rows=[...acc.values()].sort((a,b)=>a.year.localeCompare(b.year)||['immediate','onRelease','never'].indexOf(a.ppm)-['immediate','onRelease','never'].indexOf(b.ppm));
+  if(!rows.length||rows.every(r=>r.ppm==='immediate')&&!D.provision.meta.sapStatus) return '';
+  return `<h2>Видит ли закупка потребность</h2>
+    <p class="sub">Признак «Резерв./заявка» строки заказа — релевантность для ППМ. «Начиная с деблокирования»: потребность попадёт в закупку только после деблокирования заказа. «Никогда»: в закупочную заявку не попадает, покрыть её может только склад — поэтому приходы закупки таким строкам не распределяются.</p>
+    <div class="twrap"><table><thead><tr><th>Год</th><th>Признак ППМ</th><th class="n">Заказов</th><th class="n">Потребность</th><th class="n">Со склада</th><th class="n">Закупка к сроку</th><th class="n">Закупка позже / без срока</th><th class="n">Не покрыто</th></tr></thead><tbody>
+    ${rows.map(r=>`<tr><td>${esc(r.year)}</td><td>${esc(PPM_LABEL[r.ppm]||r.ppm)}</td><td class="n">${num(r.orders.size)}</td><td class="n">${mrub(r.value)}</td><td class="n">${mrub(r.stock)}</td><td class="n">${mrub(r.buy)}</td><td class="n">${r.late>0?mrub(r.late):'—'}</td><td class="n">${r.gap>0?`<b style="color:var(--bad)">${mrub(r.gap)}</b>`:'—'}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+function sapRemovedHtml(m){
+  const r=m.sapRemoved||{}; if(!m.sapStatus) return '';
+  const part=(k,t)=>r[k]&&r[k].orders?`<li>${t}: ${num(r[k].orders)} заказов, ${mrub(r[k].value)}</li>`:'';
+  return callout('info',`Потребность очищена по статусам заказов SAP из исходных выгрузок PM-06:<ul>
+    ${part('planPosition','позиции графика ППР без заказа — не заказы и вне плана')}
+    ${part('closedInSap','заказ закрыт в SAP (ТЗКР или ЗАКР) — остаток «план − факт» не потребность')}
+    ${part('migrationCopy','оригинал БЕ перенесён копией в «Развитие» — его план несёт копия')}</ul>`);
+}
 function provisionMonthChart(orders){const by=new Map;orders.forEach(o=>{const k=o.date?o.date.slice(0,7):'без даты';if(!by.has(k))by.set(k,[]);by.get(k).push(o)});const rows=[...by].map(([month,a])=>({month,...provisionOrderTotals(a),orders:a.length})).sort((a,b)=>a.month.localeCompare(b.month)),max=Math.max(1,...rows.map(r=>r.value));return `<div class="prov-months">${rows.map(r=>`<button data-prov-month="${esc(r.month)}" title="${esc(r.month)} · ${num(r.orders)} заказов · ${mrub(r.value)}"><b>${esc(r.month.replace(/^20/,''))}</b><i style="height:${Math.max(3,100*r.value/max)}%"></i><span>${num(r.orders)}</span></button>`).join('')}</div>`}
 
 function usoForOrder(order) {
@@ -2247,7 +2298,7 @@ function renderProvision(host) {
     <p class="sub">${num(orders.length)} открытых заказов в текущем контексте, ${num(w.lines)} строк потребности.
       План и факт PM-06 слиты в зерно «заказ × материал» — закрытый заказ больше не висит дефицитом.
       Покрытие — доступный остаток Полюса и уже размещённая закупка. Данные на ${dmy(m.asOf)}.</p>
-    ${callout("info", `В SAP план и факт одной позиции — <b>разные строки</b> (qp на одной, qf на другой). Без слияния закрытый заказ висит дефицитом: так выглядел 1200407027 (WK-20C №6, Магадан, 24.07.2026) — все 5 МТР уже с фактом. Введите номер в «Заказ» или фильтр «Закрытые фактом». МТР подрядчика (УСО) — отдельная выгрузка, её коды не обязаны совпадать с МТР Полюса.`)}
+    ${callout("info", `В SAP план и факт одной позиции — <b>разные строки</b> (qp на одной, qf на другой). Без слияния закрытый заказ висит дефицитом: так выглядел 1200407027 (WK-20C №6, Магадан, 24.07.2026) — все 5 МТР уже с фактом. Введите номер в «Заказ» или фильтр «Закрытые (факт или SAP)». МТР подрядчика (УСО) — отдельная выгрузка, её коды не обязаны совпадать с МТР Полюса.`)}
     <div class="kpis">
       ${kpi("Открытых заказов", num(orders.filter(o=>o.status!=='closed').length))}
       ${kpi("Закрытых фактом", num(closedN), "good")}
@@ -2273,6 +2324,9 @@ function renderProvision(host) {
         <td class="n"><b>${num(100 * on / t, 0)}%</b></td>
         <td class="n">${mrub(r.gap)}</td></tr>`;
     }).join("")}</tbody></table></div>` : ""}
+    ${sapRemovedHtml(m)}
+    ${ppmVisibilityHtml(orders)}
+    ${executionFunnelHtml()}
     ${um.orders ? `<div class="kpis">
       ${kpi("Заказов УСО WK", num(ut.orders))}
       ${kpi("МТР подрядчика, план", mrub(ut.planValue))}
@@ -2293,7 +2347,7 @@ function renderProvision(host) {
       <label>Год<select id="provYear"><option value="">Все</option>${['2026','2027'].map(y=>`<option${PROV_FILTER.year===y?' selected':''}>${y}</option>`).join('')}</select></label>
       <label>Период с<input id="provFrom" type="date" value="${esc(PROV_FILTER.from)}"></label>
       <label>по<input id="provTo" type="date" value="${esc(PROV_FILTER.to)}"></label>
-      <label>Статус<select id="provOrderStatus"><option value="">Открытые</option><option value="full"${PROV_FILTER.status==='full'?' selected':''}>Полностью</option><option value="partial"${PROV_FILTER.status==='partial'?' selected':''}>Частично</option><option value="none"${PROV_FILTER.status==='none'?' selected':''}>Не обеспечен</option><option value="closed"${PROV_FILTER.status==='closed'?' selected':''}>Закрытые фактом</option></select></label>
+      <label>Статус<select id="provOrderStatus"><option value="">Открытые</option><option value="full"${PROV_FILTER.status==='full'?' selected':''}>Полностью</option><option value="partial"${PROV_FILTER.status==='partial'?' selected':''}>Частично</option><option value="none"${PROV_FILTER.status==='none'?' selected':''}>Не обеспечен</option><option value="closed"${PROV_FILTER.status==='closed'?' selected':''}>Закрытые (факт или SAP)</option></select></label>
       <label class="wide">Поиск<input id="provOrderQ" value="${esc(PROV_FILTER.q)}" placeholder="заказ, машина, ЕКМТР, деталь"></label>
       <button class="minibtn" id="provOrderReset">Сбросить период</button>
     </div>
@@ -2399,7 +2453,7 @@ function renderProvision(host) {
   byId('provOrderReset').onclick=()=>{PROV_FILTER={year:'',from:'',to:'',status:'',q:''};PROV_SELECTED=null;rerenderProvision()};
   qsa('[data-prov-month]',host).forEach(b=>b.onclick=()=>{const month=b.dataset.provMonth;if(month==='без даты'){PROV_FILTER.from='';PROV_FILTER.to=''}else{const [y,mn]=month.split('-').map(Number),last=new Date(Date.UTC(y,mn,0)).getUTCDate();PROV_FILTER.year=String(y);PROV_FILTER.from=`${month}-01`;PROV_FILTER.to=`${month}-${String(last).padStart(2,'0')}`}PROV_SELECTED=null;rerenderProvision()});
   renderTable(byId('provOrders'),{rows:orders,limit:100,sortKey:'date',sortDir:1,csv:true,csvName:'wk_provision_orders.csv',onRowClick:o=>{PROV_SELECTED=o.id;showOrder(o)},cols:[
-    {key:'date',label:'Начало'},{key:'site',label:'Площадка',fmt:v=>esc(sites[v]||v)},{key:'unit',label:'Машина',cls:'wrap'},{key:'order',label:'Заказ'},{key:'method',label:'Способ',fmt:v=>v?esc(v):'<span class="dim">—</span>'},{key:'status',label:'Статус',fmt:(v,r)=>r.closed||v==='closed'?'<span class="badge good">закрыт фактом</span>':v==='full'?'<span class="badge good">обеспечен</span>':v==='none'?'<span class="badge bad">не обеспечен</span>':'<span class="badge warn">частично</span>'},{key:'kind',label:'Вид затрат',cls:'wrap'},{key:'value',label:'Открыто',numeric:true,fmt:(v,r)=>r.closed?rub(0):rub(v)},{key:'coverage',label:'Обеспеченность',numeric:true,fmt:(v,r)=>`<span class="prov-cover"><i style="width:${Math.min(100,v)}%"></i></span><small>${num(v,0)}%</small>`},{key:'gap',label:'Не покрыто',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>r.closed?'—':mrub(r.late+r.undated+r.gap)}
+    {key:'date',label:'Начало'},{key:'site',label:'Площадка',fmt:v=>esc(sites[v]||v)},{key:'unit',label:'Машина',cls:'wrap'},{key:'order',label:'Заказ'},{key:'stage',label:'Стадия SAP',cls:'wrap',plain:v=>stageLabel(v),fmt:v=>v?`<span class="dim">${esc(stageLabel(v))}</span>`:'<span class="dim">—</span>'},{key:'method',label:'Способ',fmt:v=>v?esc(v):'<span class="dim">—</span>'},{key:'status',label:'Статус',fmt:(v,r)=>r.closed||v==='closed'?(r.sapReason==='closedInSap'?'<span class="badge good">закрыт в SAP</span>':r.sapReason==='migrationCopy'?'<span class="badge info">перенесён копией</span>':'<span class="badge good">закрыт фактом</span>'):v==='full'?'<span class="badge good">обеспечен</span>':v==='none'?'<span class="badge bad">не обеспечен</span>':'<span class="badge warn">частично</span>'},{key:'kind',label:'Вид затрат',cls:'wrap'},{key:'value',label:'Открыто',numeric:true,fmt:(v,r)=>r.closed?rub(0):rub(v)},{key:'coverage',label:'Обеспеченность',numeric:true,fmt:(v,r)=>`<span class="prov-cover"><i style="width:${Math.min(100,v)}%"></i></span><small>${num(v,0)}%</small>`},{key:'gap',label:'Не покрыто',numeric:true,plain:(v,r)=>r.late+r.undated+r.gap,fmt:(v,r)=>r.closed?'—':mrub(r.late+r.undated+r.gap)}
   ]});
   function showOrder(o){
     const box=byId('provOrderDetail'); if(!box) return;
@@ -2407,8 +2461,9 @@ function renderProvision(host) {
     writeHash(false);
     const uso = usoForOrder(o.order);
     const closed = o.closed || o.status === "closed";
-    box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${esc(o.method||"")} · ${closed ? "закрыт фактом PM-06" : num(o.lines.length)+" открытых строк МТР"}.</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>
-      ${closed ? callout("good", `План ${rub(o.planValue)} · факт ${rub(o.factValue)}. Открытой потребности нет: qp и qf жили на соседних строках SAP, после слияния remaining = 0. Это не «не обеспечено».`) : provBar(o,o.value||1,11)+provLegend(o)}
+    box.innerHTML=`<div class="prov-order-detail"><div class="prov-card-head"><div><h3>Заказ ${esc(o.order)} · ${esc(o.unit)}</h3><p class="hint">${esc(sites[o.site]||o.site)} · начало ${dmy(o.date)} · ${esc(o.method||"")} · ${closed ? (o.sapReason==='closedInSap' ? "закрыт в SAP" : o.sapReason==='migrationCopy' ? "перенесён копией в «Развитие»" : "закрыт фактом PM-06") : num(o.lines.length)+" открытых строк МТР"}.</p></div><button class="minibtn" data-close-prov>Закрыть</button></div>
+      ${o.stage?`<p class="hint">Стадия SAP: <b>${esc(stageLabel(o.stage))}</b>.</p>`:''}
+      ${closed ? callout("good", o.sapReason==='closedInSap' ? `План ${rub(o.planValue)} · факт ${rub(o.factValue)}. Заказ закрыт в SAP (ТЗКР/ЗАКР): остаток «план − факт» больше не спишут, это не потребность.` : o.sapReason==='migrationCopy' ? `План ${rub(o.planValue)} · факт ${rub(o.factValue)}. Заказ перенесён копией в АО «Развитие»: неисполненный план несёт копия, здесь он не считается.` : `План ${rub(o.planValue)} · факт ${rub(o.factValue)}. Открытой потребности нет: qp и qf жили на соседних строках SAP, после слияния remaining = 0. Это не «не обеспечено».`) : provBar(o,o.value||1,11)+provLegend(o)}
       <div id="provOrderLines"></div><div id="provOrderUso">${usoBlockHtml(uso)}</div></div>`;
     renderTable(byId('provOrderLines'),{rows:o.lines,limit:200,sortKey:'value',csv:true,csvName:`order_${o.order}_provision.csv`,onRowClick:l=>openCodeDetail(l.code, o.date),cols:[
       {key:'work',label:'Вид работ',cls:'wrap'},

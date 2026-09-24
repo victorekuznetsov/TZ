@@ -459,3 +459,7 @@ tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--
 
 .entity-card-nav{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;position:sticky;top:0;background:var(--surface);padding:8px 0;z-index:2}
 .pn-link:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+
+/* стадии исполнения: одна шкала акцентного цвета, подпись — текстом */
+.exec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,600px),1fr));gap:16px;align-items:start}.exec-grid > div{min-width:0;background:var(--surface);border:var(--hair);border-radius:var(--radius-lg);padding:14px 16px}.exec-grid h3{margin:0 0 4px}.exec-stage{min-width:150px;max-width:230px;white-space:normal}
+.stage-bar{display:inline-block;width:70px;vertical-align:middle;margin-right:6px}.stage-bar > i{border-radius:99px}

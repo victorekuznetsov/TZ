@@ -25,7 +25,8 @@ python3 build/build_stock.py      data/ekmtr_wk.json <stock.xlsx> \
 python3 build/build_fleet.py      <ktg.json> data/fleet_books.json         data/
 python3 build/build_repairs.py    <topo_data_dir> data/ekmtr_wk.json       data/
 python3 build/build_provision.py  <topo_data_dir> data/ekmtr_wk.json \
-                                   data/stock.json                         data/
+                                   data/stock.json                         data/ \
+                                   --pm06-meta <TOPO>/pm06_meta
 python3 build/build_uso_wk.py     <uso_mtr.json>                          data/
 
 
@@ -104,6 +105,17 @@ python3 build/make_local_js.py data/
   общий крепёж), этот `stock.json` остатка не знает. Они в расчёт не
   берутся вовсе (их итог — в `meta.notWkParts`), а не ложно засчитываются
   в дефицит.
+- **Статусы заказов SAP (`--pm06-meta`).** Каталог `pm06_meta` в TOPO
+  собирается из исходных выгрузок PM-06 скриптом
+  `pm06_meta/build_all.sh`. С ним `build_provision.py` применяет правила из
+  `PM06_STATUSES.md`: позиции графика ППР без заказа исключаются из плана;
+  у заказов, закрытых в SAP (ТЗКР/ЗАКР), остаток «план − факт» не
+  считается потребностью; у оригиналов БЕ, перенесённых копией в
+  «Развитие», не считается неисполненный план; строкам с «Резерв./заявка =
+  Никогда» не распределяются приходы закупки. В витрину добавляются стадия
+  заказа, признак ППМ строк, разрез `byPpm`, сводка снятого `sapRemoved` и
+  список `execution` для воронки исполнения. Без параметра сборка
+  работает как раньше, в `meta.sapStatus` пишется `false`.
 - **Обеспеченность учитывает не только остаток, но и размещённую закупку,
   с привязкой к срокам.** `build_provision.py` распределяет потребность в
   два прохода, как MRP/ATP: сначала остаток и те приходы, чей месяц
