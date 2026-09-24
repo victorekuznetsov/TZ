@@ -244,7 +244,7 @@ ktg_fleet_month = {'plan': [avg([u['ktgByMonth'][i] for u in fleet['units']]) fo
                    'fact': [avg([u['kioByMonth'][i] for u in fleet['units']]) for i in range(len(months))]}
 
 # ── обеспеченность 2026–2027 (вкладка «Обеспеченность»)
-PV = ['fromStock', 'fromBuy', 'late', 'undated', 'gap']
+PV = ['fromStock', 'fromBuy', 'late', 'undated', 'gap', 'transfer']
 
 
 def pv_blank():
@@ -259,42 +259,45 @@ for o in prov['orders']:
     for tgt in (prov_site[s][y], prov_unit[short(o['unit'])][y]):
         tgt['orders'] += 1
         for k in ['value', *PV]:
-            tgt[k] += o[k]
+            tgt[k] += o.get(k, 0.0)
+# перемещения между площадками: откуда → куда, ₽ (стоимость строки делится
+# по количеству, взятому с каждой площадки)
+moves = collections.defaultdict(float)
+move_items = collections.defaultdict(lambda: {'value': 0.0, 'qty': 0.0, 'name': '', 'routes': collections.Counter()})
+for o in prov['orders']:
+    to = unit_site.get(o['unit'], o['site'])
+    for ln in o['lines']:
+        tr = ln.get('transfer') or 0
+        if tr <= 0:
+            continue
+        for frm, q in (ln.get('transferFrom') or {}).items():
+            v = ln['transferValue'] * q / tr
+            moves[(frm, to)] += v
+            mi = move_items[ln['code']]
+            mi['value'] += v
+            mi['qty'] += q
+            mi['name'] = ln['name']
+            mi['routes'][f'{frm}>{to}'] += q
 deficit = sorted(prov['items'], key=lambda i: -(i['gapValue'] or 0))[:12]
 deficit = [{k: i[k] for k in ('code', 'name', 'needQty', 'needValue', 'fromStock', 'fromBuy', 'late', 'undated',
                               'gap', 'gapValue', 'leadDays', 'firstNeed', 'orderBy', 'verdict', 'canOrder', 'tooLate')}
            for i in deficit]
+move_top = sorted(({'code': c, 'name': m['name'], 'value': m['value'], 'qty': m['qty'],
+                    'routes': dict(m['routes'])} for c, m in move_items.items()), key=lambda x: -x['value'])[:10]
 order_today = sorted((i for i in prov['items'] if (i.get('canOrder') or 0) > 0), key=lambda i: -i['canOrder'])
 order_today_sum = sum(i['canOrder'] for i in order_today)
 order_today = [{k: i[k] for k in ('code', 'name', 'gapValue', 'canOrder', 'leadDays', 'orderBy')} for i in order_today[:10]]
 
 # ── запасы (вкладка «Запасы»)
-SITE_RE = [('1400', ('1400', 'магадан', 'янтарь')), ('2400', ('2400', 'сухой')), ('1200', ('1200', 'вернин')),
-           ('1300', ('1300', 'алдан')), ('1100', ('1100', 'еруда', 'благодат', 'ожок', 'бгок', 'карьер', 'восточн', 'бывш'))]
-
-
-def wh_site(name):
-    w = name.lower()
-    if 'консигнац' in w:
-        return 'Консигнация'
-    if w[:4] in ('7101', '7102', '7103', '7104'):
-        return 'Склады подрядчика'
-    for s, keys in SITE_RE:
-        if any(w.startswith(k) if k.isdigit() else k in w for k in keys):
-            return {'1100': 'Красноярск / Еруда', '1400': 'Магадан', '2400': 'Сухой Лог',
-                    '1200': 'Вернинское', '1300': 'Алдан'}[s]
-    return 'Не подписан'
-
-
+# площадка склада — по заводу строки остатков (справочник stock.meta.warehouses)
+WH = stock['meta'].get('warehouses') or {}
 stock_site = collections.Counter()
 stock_wh = collections.Counter()
 for i in stock['items']:
-    tot = sum(i['byWarehouse'].values()) or 0
-    if not tot:
-        continue
-    for wh, q in i['byWarehouse'].items():
-        stock_site[wh_site(wh)] += i['value'] * q / tot
-        stock_wh[wh] += i['value'] * q / tot
+    for wh, v in (i.get('byWarehouseValue') or {}).items():
+        stock_site[(WH.get(wh) or {}).get('site', '')] += v
+        stock_wh[wh] += v
+need_by_site = collections.defaultdict(float)
 need_codes = {str(i['code']) for i in prov['items']}
 stock_need = sum(i['availValue'] for i in stock['items'] if str(i['code']) in need_codes)
 top_stock = sorted(stock['items'], key=lambda i: -i['value'])[:10]
@@ -359,11 +362,15 @@ out = {
     'prov': {'meta': {k: prov['meta'][k] for k in ('wk', 'byYear', 'byKind', 'byPpm', 'feasible', 'arrivals',
                                                      'leadMedianDays', 'positions', 'notWkParts', 'sapRemoved')},
              'site': prov_site, 'unit': dict(prov_unit), 'deficit': deficit,
+             'moves': [[f, t, v] for (f, t), v in sorted(moves.items(), key=lambda x: -x[1])], 'moveTop': move_top,
              'orderToday': order_today, 'orderTodaySum': order_today_sum, 'orderTodayN': sum(1 for i in prov['items'] if (i.get('canOrder') or 0) > 0)},
     'stock': {'meta': {k: stock['meta'][k] for k in ('totalValue', 'totalAvailValue', 'totalRestrictedValue',
                                                        'totalPurchasePlanValue', 'codesWithStock', 'codesWithPurchase',
                                                        'fullyRestrictedCodes', 'leadMedianDays')},
-              'bySite': dict(stock_site), 'byWarehouse': [[w, v, wh_site(w)] for w, v in stock_wh.most_common(10)], 'forNeed': stock_need, 'top': top_stock},
+              'bySite': dict(stock_site), 'sites': stock['meta'].get('sites', {}), 'siteRule': stock['meta'].get('siteRule', ''),
+              'byWarehouse': [[(WH.get(w) or {}).get('name', w), v, (WH.get(w) or {}).get('site', ''), (WH.get(w) or {}).get('plant', ''),
+                               (WH.get(w) or {}).get('kind', '')] for w, v in stock_wh.most_common(10)],
+              'forNeed': stock_need, 'top': top_stock},
     'purchase': {'items': len(pur_items), 'plan': sum(i['purchase']['planV'] for i in pur_items), 'openQty': sum(i['purchase']['openQty'] for i in pur_items), 'transitQty': sum(i['purchase']['transitQty'] for i in pur_items), 'currency': dict(cur),
                  'byMonth': dict(pur_month), 'byStatus': dict(pur_status), 'overdue': overdue_v,
                  'undated': undated_v, 'needCodes': sum(1 for i in pur_items if str(i['code']) in need_codes), 'suppliers': supp.most_common(8), 'nSuppliers': len(supp),
