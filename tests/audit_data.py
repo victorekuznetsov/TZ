@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json, re, subprocess
+import json, re, subprocess, sys
 from collections import Counter
 from pathlib import Path
 
@@ -47,6 +47,45 @@ def main():
         purchase = item.get("purchase")
         if purchase and not near(purchase["openQty"], sum((purchase.get("byMonth") or {}).values())):
             bad_purchase.append(item["code"])
+    # остаток привязан к площадкам: сумма по площадкам = итог позиции,
+    # каждый склад есть в справочнике и имеет площадку
+    whs = stock["meta"].get("warehouses") or {}
+    bad_site, no_wh, no_site = [], set(), set()
+    for item in stock["items"]:
+        by_site = item.get("bySite")
+        if by_site is None:
+            continue
+        if not near(item["qty"], sum(o["qty"] for o in by_site.values()), 1e-3) \
+                or not near(item["value"], sum(o["value"] for o in by_site.values()), .05) \
+                or not near(item["availQty"], sum(o["availQty"] for o in by_site.values()), 1e-3):
+            bad_site.append(item["code"])
+        for key in item.get("byWarehouse") or {}:
+            if key not in whs:
+                no_wh.add(key)
+            elif not whs[key].get("site"):
+                no_site.add(key)
+    if bad_site: errors.append(f"stock: site split does not reconcile: {bad_site[:10]}")
+    if no_wh: errors.append(f"stock: warehouse missing in meta.warehouses: {sorted(no_wh)[:10]}")
+    if no_site: warnings.append(f"stock: warehouse without site: {sorted(no_site)[:10]}")
+    # обеспеченность: перемещение — часть «со склада»; с площадки не взято
+    # больше доступного на ней остатка
+    sys.path.insert(0, str(ROOT / "build"))
+    from sites import plant_site
+    avail_site = {(str(i["code"]), st): o["availQty"] for i in stock["items"] for st, o in (i.get("bySite") or {}).items()}
+    used, bad_tr = {}, []
+    for order in provision.get("orders", []) + provision.get("closedOrders", []):
+        own = plant_site(order.get("site")) or str(order.get("site"))
+        for line in order.get("lines", []):
+            tr = line.get("transfer", 0) or 0
+            if tr > line.get("fromStock", 0) + 1e-6 or not near(tr, sum((line.get("transferFrom") or {}).values()), 1e-3):
+                bad_tr.append(f'{order.get("order")}:{line.get("code")}')
+            k = (str(line.get("code")), own)
+            used[k] = used.get(k, 0) + line.get("fromStock", 0) - tr
+            for st, q in (line.get("transferFrom") or {}).items():
+                used[(str(line.get("code")), st)] = used.get((str(line.get("code")), st), 0) + q
+    over = [f"{c}@{st}" for (c, st), q in used.items() if avail_site and q > avail_site.get((c, st), 0) + 1e-6]
+    if bad_tr: errors.append(f"provision: transfer inconsistent with fromStock: {bad_tr[:10]}")
+    if over: errors.append(f"provision: stock taken over site availability: {over[:10]}")
     if bad_stock: errors.append(f"stock: gross != available + restricted: {bad_stock[:10]}")
     if bad_warehouse: errors.append(f"stock: warehouse quantities do not reconcile: {bad_warehouse[:10]}")
     if bad_purchase: errors.append(f"purchase: schedule does not reconcile to open qty: {bad_purchase[:10]}")

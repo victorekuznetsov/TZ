@@ -171,16 +171,28 @@ function siteNameOf(code) {
   const u = D.fleet.units.find(x => x.site === code);
   return (u && (u.siteName || u.site)) || code;
 }
+/* Склад в stock.json — ключ «завод/код»; справочник с площадкой (по заводу
+   строки выгрузки) — D.stock.meta.warehouses. Эвристика по имени ниже —
+   только для старых данных без справочника. */
+function stockWarehouse(key) {
+  return ((D.stock && D.stock.meta && D.stock.meta.warehouses) || {})[key] || null;
+}
 function warehouseSite(name) {
+  const wh = stockWarehouse(name);
+  if (wh) {
+    const siteLabel = wh.siteName || siteNameOf(wh.site) || "площадка не определена";
+    const label = wh.kind === "consign" ? `консигнация · ${siteLabel}` : wh.kind === "transit" ? `перевалочная база · ${siteLabel}` : siteLabel;
+    return { site: wh.site, kind: wh.kind, label, name: `${wh.name} · ${wh.plant}`, plant: wh.plant, plantName: wh.plantName };
+  }
   const raw = String(name || "").trim();
   const w = raw.toLowerCase();
   if (/консигнац/.test(w)) return { site: "", kind: "consign", label: "консигнация" };
   const plant = (raw.match(/^710\d/) || [])[0];
-  const PLANTS = { "7101": ["1100", "Развитие Красноярск"], "7102": ["1200", "Развитие Иркутск"], "7103": ["1300", "Развитие Алдан"], "7104": ["1400", "Развитие Магадан"] };
+  const PLANTS = { "7101": ["1100", "Развитие Красноярск"], "7102": ["2400", "Развитие Иркутск"], "7103": ["1300", "Развитие Алдан"], "7104": ["1400", "Развитие Магадан"] };
   if (plant && PLANTS[plant]) return { site: PLANTS[plant][0], kind: "contractor", label: PLANTS[plant][1] + " (подрядчик)" };
   if (/^1400\b|магадан|янтарь/.test(w)) return { site: "1400", kind: "site", label: "Магадан" };
   if (/^2400\b|сухой\s*лог/.test(w)) return { site: "2400", kind: "site", label: "Сухой Лог" };
-  if (/^1200\b|вернин/.test(w)) return { site: "1200", kind: "site", label: "Вернинское" };
+  if (/^1200\b|вернин/.test(w)) return { site: "2400", kind: "site", label: "Сухой Лог (Вернинское)" };
   if (/^1300\b|алдан/.test(w)) return { site: "1300", kind: "site", label: "Алдан" };
   if (/^1100\b|еруда|благодат|ожок|бгок|карьер|восточн|вост\.?\s*техн|бывш/.test(w))
     return { site: "1100", kind: "site", label: "Красноярск / Еруда" };
@@ -188,16 +200,29 @@ function warehouseSite(name) {
   return { site: "", kind: "unknown", label: "площадка не подписана" };
 }
 function warehouseBreakdown(byWh) {
-  return Object.entries(byWh || {}).map(([name, qty]) => {
-    const meta = warehouseSite(name);
-    return { name, qty: Number(qty) || 0, site: meta.site, kind: meta.kind, label: meta.label };
+  return Object.entries(byWh || {}).map(([key, qty]) => {
+    const meta = warehouseSite(key);
+    return { key, name: meta.name || key, qty: Number(qty) || 0, site: meta.site, kind: meta.kind, label: meta.label, plantName: meta.plantName || "" };
   }).sort((a, b) => b.qty - a.qty);
+}
+/* Показатель позиции в контексте площадки: при выбранной площадке — только
+   её склады (item.bySite), иначе — по всем площадкам. */
+function stockSiteVal(item, key, site = G.site) {
+  if (!item) return 0;
+  if (!site || !item.bySite) return item[key] || 0;
+  const o = item.bySite[site];
+  return o ? (o[key] || 0) : 0;
 }
 function stockAtSite(item, site, siteName) {
   const byWh = (item && item.byWarehouse) || {};
   const total = item ? (item.availQty != null ? item.availQty : item.qty) : 0;
   const rows = warehouseBreakdown(byWh);
   if (!site) return { siteQty: null, total, matched: false, warehouses: rows.map(r => r.name), rows };
+  if (item && item.bySite) {
+    const siteQty = stockSiteVal(item, "availQty", site);
+    const hit = rows.filter(r => r.site === site);
+    return { siteQty, total, matched: hit.length > 0, warehouses: hit.map(r => r.name), rows, others: rows.filter(r => r.site !== site) };
+  }
   const needle = String(siteName || "").toLowerCase();
   const hit = rows.filter(r => r.site === site || (needle && r.name.toLowerCase().includes(needle)) || r.name.includes(site));
   const siteQty = hit.reduce((s, r) => s + r.qty, 0);
@@ -636,6 +661,14 @@ let INTER_GROUP_OF = new Map(); // каталожный номер -> групп
 let PROVISION_ORDER_BY_ID = new Map();
 // Exact identity: punctuation and dimensional suffixes are significant.
 function interKey(value) { return String(value || "").trim().toUpperCase().replace(/\s+/g, " "); }
+function provTransfer(orders) {
+  return (orders || []).reduce((s, o) => s + (o.lines || []).reduce((x, l) => x + (l.transferValue || 0), 0), 0);
+}
+function transferNote(l) {
+  const from = Object.entries((l && l.transferFrom) || {}).filter(([, q]) => q > 0);
+  if (!from.length) return "";
+  return `<div class="sup-sub"><span class="badge warn">перемещение</span> ${from.map(([st, q]) => `${num(q, 1)} из ${esc((siteNameOf(st) || st || "?").split(" ")[0])}`).join(", ")}</div>`;
+}
 function provisionCoverage(row) { return row.needQty > 0 ? 100 * (row.fromStock + row.fromBuy) / row.needQty : 0; }
 function interPartLink(part) {
   return entityLink("part", part);
@@ -684,8 +717,9 @@ function warehouseHtml(byWh, site) {
   return rows.map(r => {
     const here = site && r.site === site;
     const tag = r.kind === "consign" ? "consign" : here ? "ok" : r.site ? "info" : "";
-    const where = r.site ? `${r.site} ${r.label}` : r.label;
-    return `<span class="sup-pill ${tag}" title="${esc(where)}">${esc(r.name)} · ${num(r.qty, 1)}</span>`;
+    const where = [r.label, r.plantName].filter(Boolean).join(" · ");
+    const short = r.site ? (siteNameOf(r.site) || r.site).split(" ")[0] : r.label;
+    return `<span class="sup-pill ${tag}" title="${esc(where)}">${esc(short)} · ${esc(r.name)} · ${num(r.qty, 1)}</span>`;
   }).join(" ");
 }
 
@@ -1144,8 +1178,8 @@ function renderSum(host) {
   const tooLate = scopedItems.filter(i => (i.tooLate || 0) > 0).reduce((sum, i) => sum + (i.tooLate || 0), 0);
   const catItems = D.catalog.items.filter(catalogInContext);
   const stockRows = (D.stock.items || []).filter(stockInContext);
-  const stockAvail = stockRows.reduce((s, i) => s + (i.availValue || 0), 0);
-  const stockRest = stockRows.reduce((s, i) => s + (i.restrictedValue || 0), 0);
+  const stockAvail = stockRows.reduce((s, i) => s + stockSiteVal(i, "availValue"), 0);
+  const stockRest = stockRows.reduce((s, i) => s + stockSiteVal(i, "restrictedValue"), 0);
   const purchPlan = stockRows.reduce((s, i) => s + ((i.purchase && i.purchase.planV) || 0), 0);
   const catCoded = catItems.filter(i => i.ekmtr).length;
   const ctx = contextHasFilter() ? contextLabel() : "";
@@ -1158,7 +1192,7 @@ function renderSum(host) {
       ${kpi("Парк", units.length + " ед.", "", ` data-sum-tab="fleet" tabindex="0"`)}
       ${kpi("Позиций в прайсе", num(catItems.length), "", ` data-sum-tab="catalog" tabindex="0"`)}
       ${kpi("Кодифицировано", pct(catItems.length ? catCoded / catItems.length : 0), catItems.length && catCoded / catItems.length < 0.5 ? "warn" : "", ` data-sum-tab="catalog" tabindex="0"`)}
-      ${kpi("Остаток WK доступно", mrub(stockAvail), "good", ` data-sum-tab="stock" tabindex="0"`)}
+      ${kpi(G.site ? "Остаток WK на площадке" : "Остаток WK доступно", mrub(stockAvail), "good", ` data-sum-tab="stock" tabindex="0"`)}
       ${kpi("Запас ограничен", mrub(stockRest), stockRest > 0 ? "bad" : "", ` data-sum-tab="stock" tabindex="0"`)}
       ${kpi("Закупка план", mrub(purchPlan), "", ` data-sum-tab="purchase" tabindex="0"`)}
       ${kpi("Ремонт факт 22-27", mrub(repairFact), "", ` data-sum-tab="repairs" tabindex="0"`)}
@@ -2304,8 +2338,10 @@ function renderProvision(host) {
       ${kpi("Закрытых фактом", num(closedN), "good")}
       ${kpi("Потребность WK", mrub(w.value))}
       ${kpi("Обеспечено к сроку", mrub(w.fromStock + w.fromBuy) + ` <span class="kpi-sub">${num(100 * (w.fromStock + w.fromBuy) / T, 0)}%</span>`, "good")}
+      ${kpi("в т.ч. перемещение", mrub(provTransfer(orders)), provTransfer(orders) > 0 ? "warn" : "")}
       ${kpi("Не обеспечено", mrub(gapTotal) + ` <span class="kpi-sub">${num(100 * gapTotal / T, 0)}%</span>`, "bad")}
     </div>
+    ${provTransfer(orders) > 0 ? callout("info", `Склад привязан к площадке (по заводу строки остатков). Потребность сначала берёт склад <b>своей</b> площадки; запас другой площадки идёт в покрытие только перемещением — <b>${mrub(provTransfer(orders))}</b> в выбранном контексте. Свой запас площадки защищён под её работы, которые начнутся раньше, чем придёт закупка, заказанная сегодня.`) : ""}
     ${yearCut.length > 1 ? `
     <h2>Обеспеченность по годам плана</h2>
     <p class="sub">Итог выше складывает два разных года. Открытый год — это то, что обеспечивается
@@ -2474,7 +2510,7 @@ function renderProvision(host) {
       {key:'planQty',label:'План',numeric:true,fmt:(v,r)=>num(r.planQty,3)},
       {key:'factQty',label:'Факт',numeric:true,fmt:(v,r)=>num(r.factQty,3)},
       {key:'qty',label:'Ещё нужно',numeric:true,fmt:v=>num(v,3)},
-      {key:'fromStock',label:'Склад',numeric:true,fmt:(v,r)=>{const st=STOCK_BY_CODE.get(String(r.code)); return `${num(v,3)}${st?`<div class="sup-sub">${warehouseHtml(st.byWarehouse,o.site)}</div>`:""}`;}},
+      {key:'fromStock',label:'Склад',numeric:true,fmt:(v,r)=>{const st=STOCK_BY_CODE.get(String(r.code)); return `${num(v,3)}${transferNote(r)}${st?`<div class="sup-sub">${warehouseHtml(st.byWarehouse,o.site)}</div>`:""}`;}},
       {key:'code',label:'Закупка',cls:'wrap',plain:(v,r)=>{const st=STOCK_BY_CODE.get(String(v)); const vs=purchaseAgainstDate(st&&st.purchase, r.date||o.date); return vs.label;},fmt:(v,r)=>{
         const st=STOCK_BY_CODE.get(String(v)); const vs=purchaseAgainstDate(st&&st.purchase, r.date||o.date);
         if(vs.status==='none') return '<span class="badge bad">не заказано</span>';
@@ -2534,9 +2570,10 @@ function renderProvision(host) {
     const scoped = new Map(), asOfDate = new Date(m.asOf + 'T00:00:00');
     orders.flatMap(o=>o.lines).forEach(l=>{
       const k=String(l.code), item=provisionItemByCode.get(k)||{}, lead=item.leadDays||m.leadMedianDays||0;
-      const a=scoped.get(k)||{needQty:0,needValue:0,fromStock:0,fromBuy:0,late:0,undated:0,gap:0,gapValue:0,canOrder:0,tooLate:0,orderBy:''};
+      const a=scoped.get(k)||{needQty:0,needValue:0,fromStock:0,fromBuy:0,late:0,undated:0,gap:0,gapValue:0,canOrder:0,tooLate:0,orderBy:'',transfer:0,transferFrom:{}};
       a.needQty+=l.qty; a.needValue+=l.value;
       for(const x of ['fromStock','fromBuy','late','undated','gap']) a[x]+=l[x];
+      a.transfer+=l.transfer||0; for(const [st,q] of Object.entries(l.transferFrom||{})) a.transferFrom[st]=(a.transferFrom[st]||0)+q;
       const openValue=l.lateValue+l.undatedValue+l.gapValue;
       a.gapValue+=openValue;
       if(openValue>0){
@@ -2565,7 +2602,8 @@ function renderProvision(host) {
         { key: "code", label: "Код ЕКМТР", cls: "mono" },
         { key: "name", label: "Наименование", cls: "wrap" },
         { key: "needQty", label: "Нужно", numeric: true, fmt: v => num(v, 0) },
-        { key: "fromStock", label: "Со склада", numeric: true, fmt: v => num(v, 0) },
+        { key: "fromStock", label: "Со склада", numeric: true, fmt: (v, r) => num(v, 0) + transferNote(r) },
+        { key: "transfer", label: "в т.ч. перемещение", numeric: true, fmt: v => v > 0 ? num(v, 0) : "—" },
         { key: "fromBuy", label: "Закупка к сроку", numeric: true, fmt: v => num(v, 0) },
         {
           key: "coverage", label: "Покрытие", numeric: true,
@@ -2640,22 +2678,35 @@ function renderStock(host) {
     return { ...i, need, needQty: need ? need.needQty : 0, uncoveredQty, supplyStatus, firstNeed: need ? need.firstNeed : "" };
   });
   const stockRows = allRows.filter(stockInContext);
+  // склады — со стоимостью по строке выгрузки и площадкой по заводу
   const warehouse = new Map();
-  stockRows.forEach(i => Object.entries(i.byWarehouse || {}).forEach(([name, qty]) => {
-    if (G.site) {
-      const meta = warehouseSite(name);
-      if (meta.site && meta.site !== G.site) return;
-    }
-    warehouse.set(name, (warehouse.get(name) || 0) + (+qty || 0));
+  stockRows.forEach(i => Object.entries(i.byWarehouse || {}).forEach(([key, qty]) => {
+    const meta = warehouseSite(key);
+    if (G.site && meta.site !== G.site) return;
+    const w = warehouse.get(key) || { name: `${(siteNameOf(meta.site) || meta.label || "?").split(" ")[0]} · ${meta.name}`, qty: 0, value: 0 };
+    w.qty += +qty || 0;
+    w.value += +((i.byWarehouseValue || {})[key]) || 0;
+    warehouse.set(key, w);
   }));
-  const warehouseRows = [...warehouse].map(([name, qty]) => ({ name, qty })).sort((a, b) => b.qty - a.qty);
-  const totalQty = stockRows.reduce((s, i) => s + i.qty, 0);
-  const availQty = stockRows.reduce((s, i) => s + i.availQty, 0);
-  const restrictedQty = stockRows.reduce((s, i) => s + i.restrictedQty, 0);
+  const hasWhValue = stockRows.some(i => i.byWarehouseValue);
+  const warehouseRows = [...warehouse.values()].sort((a, b) => hasWhValue ? b.value - a.value : b.qty - a.qty).slice(0, 12);
+  // по площадкам — в текущем контексте (модель, код, заказ)
+  const bySite = new Map();
+  stockRows.forEach(i => Object.entries(i.bySite || {}).forEach(([st, o]) => {
+    const t = bySite.get(st) || { site: st, name: siteNameOf(st) || (D.stock.meta.sites || {})[st]?.name || "площадка не определена", codes: 0, value: 0, availValue: 0, restrictedValue: 0 };
+    t.codes += o.qty > 0 ? 1 : 0; t.value += o.value || 0; t.availValue += o.availValue || 0; t.restrictedValue += o.restrictedValue || 0;
+    bySite.set(st, t);
+  }));
+  const siteRows = [...bySite.values()].sort((a, b) => b.value - a.value);
+  const transferValue = ((D.provision && D.provision.items) || []).filter(it => stockRows.some(r => String(r.code) === String(it.code)))
+    .reduce((s, it) => s + (it.transferValue || 0), 0);
+  const totalQty = stockRows.reduce((s, i) => s + stockSiteVal(i, "qty"), 0);
+  const availQty = stockRows.reduce((s, i) => s + stockSiteVal(i, "availQty"), 0);
+  const restrictedQty = stockRows.reduce((s, i) => s + stockSiteVal(i, "restrictedQty"), 0);
   const purchaseQty = stockRows.reduce((s, i) => s + ((i.purchase && i.purchase.openQty) || 0), 0);
-  const totalValue = stockRows.reduce((s, i) => s + (i.value || 0), 0);
-  const availValue = stockRows.reduce((s, i) => s + (i.availValue || 0), 0);
-  const restrictedValue = stockRows.reduce((s, i) => s + (i.restrictedValue || 0), 0);
+  const totalValue = stockRows.reduce((s, i) => s + stockSiteVal(i, "value"), 0);
+  const availValue = stockRows.reduce((s, i) => s + stockSiteVal(i, "availValue"), 0);
+  const restrictedValue = stockRows.reduce((s, i) => s + stockSiteVal(i, "restrictedValue"), 0);
   const fullyRestricted = stockRows.filter(i => i.fullyRestricted).length;
   const purchaseValue = stockRows.reduce((s, i) => s + ((i.purchase && i.purchase.planV) || 0), 0);
   const gapQty = stockRows.reduce((s, i) => s + (i.uncoveredQty || 0), 0);
@@ -2665,7 +2716,8 @@ function renderStock(host) {
     ${contextBanner()}
     <p class="hint">KPI, склады и реестр — по выбранному контексту.</p>
     <p class="sub">Остаток по номенклатуре WK на дату выгрузки (${esc(m.srcStock)}). Ограниченный и блокированный запас вычтен из доступного и подсвечен отдельно.
-      ${G.site ? `Фильтр площадки <b>${esc(siteNameOf(G.site))} (${esc(G.site)})</b>: в реестре позиции с наличием здесь или потребностью машин этой площадки.` : "Остаток глобальный: это обеспеченность номенклатуры, не разрешение забирать с чужой площадки."}</p>
+      ${G.site ? `Площадка <b>${esc(siteNameOf(G.site))} (${esc(G.site)})</b>: KPI — только склады этой площадки; в реестре позиции с наличием здесь или потребностью её машин.` : "Площадка склада — по заводу строки выгрузки (MM‑M03), не по названию склада."}
+      Обеспеченность сначала берёт склад своей площадки; запас другой площадки — только перемещением.</p>
     <div class="kpis">
       ${kpi("Кодов с остатком", num(stockRows.filter(i => i.qty > 0).length))}
       ${kpi("Остаток всего", mrub(totalValue))}
@@ -2681,8 +2733,13 @@ function renderStock(host) {
       ${kpi("Кодов с дефицитом", num(stockRows.filter(i => i.uncoveredQty > 0).length), "bad")}
     </div>
     ${restrictedValue > 0 ? callout("warn", `<b>${num(fullyRestricted)} позиций</b> имеют остаток, весь который ограничен — фактически это дефицит, хотя формально «есть на складе».`) : ""}
+    <section class="card"><h3>Запас по площадкам</h3>
+      <p class="hint">${esc(D.stock.meta.siteRule || "")}. WK в Иркутской области работают только на Сухом Логе, заказы его бортов планирует завод 1200 — поэтому склады Вернинского и «Развитие» Иркутские активы относятся к Сухому Логу. Нажмите строку, чтобы выбрать площадку.</p>
+      <div id="stkSites"></div>
+      ${transferValue > 0 ? `<p class="hint">Под потребность 2026–2027 со склада другой площадки (перемещение) берётся <b>${mrub(transferValue)}</b> — подробности во вкладке «Обеспеченность».</p>` : ""}
+    </section>
     <div class="prov-audit-grid">
-      <section class="card"><h3>Крупнейшие места хранения</h3><p class="hint">Справочная сумма количества разных МТР из MM‑M03, без сопоставления единиц измерения; стоимость по складам источник не раскрывает.</p>${supplyBars(warehouseRows, "qty", "name", v => num(v, 0) + " ед.")}</section>
+      <section class="card"><h3>Крупнейшие места хранения</h3><p class="hint">${hasWhValue ? "Стоимость по строкам MM‑M03; склад — пара «завод/код», площадка — по заводу." : "Справочная сумма количества разных МТР из MM‑M03, без сопоставления единиц измерения."}</p>${hasWhValue ? supplyBars(warehouseRows, "value", "name", v => mrub(v)) : supplyBars(warehouseRows, "qty", "name", v => num(v, 0) + " ед.")}</section>
       <section class="card"><h3>Контур запас → потребность</h3><p class="hint">В выбранном контексте.</p>
         <div class="supply-flow"><div><span>Доступный запас</span><b>${num(availQty, 0)} ед.</b><small>${mrub(availValue)}</small></div><i>+</i><div><span>Открытая закупка</span><b>${num(purchaseQty, 0)} ед.</b><small>${mrub(purchaseValue)}</small></div><i>→</i><div><span>Дефицит плана</span><b>${num(gapQty, 0)} ед.</b><small>${mrub(gapVal)}</small></div></div>
       </section>
@@ -2695,6 +2752,18 @@ function renderStock(host) {
     </div>
     <div id="stkTable"></div>
   `;
+  renderTable(byId("stkSites"), {
+    rows: siteRows, sortKey: "value",
+    onRowClick: r => { if (r.site) { G.site = r.site; renderGlobalFilters(); renderTab(); } },
+    cols: [
+      { key: "name", label: "Площадка", fmt: (v, r) => `${esc(v)} <span class="dim">${esc(r.site || "")}</span>` },
+      { key: "codes", label: "Кодов", numeric: true },
+      { key: "value", label: "Остаток", numeric: true, fmt: mrub },
+      { key: "availValue", label: "Доступно", numeric: true, fmt: mrub },
+      { key: "restrictedValue", label: "Ограничено", numeric: true, fmt: v => v > 0 ? mrub(v) : "—" },
+      { key: "value", label: "Доля", numeric: true, plain: v => v, fmt: v => pct(v / (siteRows.reduce((s, r) => s + r.value, 0) || 1)) },
+    ],
+  });
   let restrOnly = false;
   function apply() {
     const q = (byId("stkQ").value || "").trim().toLowerCase();
@@ -2732,7 +2801,7 @@ function renderStock(host) {
             return a.siteQty ? `<b>${num(a.siteQty, 1)}</b> <span class="dim">из ${num(a.total, 1)}</span>` : '<span class="badge warn">0 на площадке</span>';
           } },
         { key: "byWarehouse", label: "Где лежит", cls: "wrap",
-          plain: v => Object.entries(v || {}).map(([w, q]) => w + ": " + q).join("; "),
+          plain: v => warehouseBreakdown(v).map(w => `${w.label} · ${w.name}: ${w.qty}`).join("; "),
           fmt: (v) => warehouseHtml(v, G.site) },
         { key: "value", label: "Стоимость", numeric: true, fmt: rub },
         { key: "restrictedValue", label: "Ограничено", numeric: true, fmt: v => v > 0 ? `<span class="badge restricted">${rub(v)}</span>` : "" },
@@ -2936,11 +3005,11 @@ function renderDoc(host) {
     <div class="card"><h3>Правила расчёта</h3>
       <ul>
         <li>Цена в юанях — только в разделе «Каталог». Везде далее — рубли, как в выгрузках SAP.</li>
-        <li>Ограниченный и блокированный запас вычитается из остатка: доступно = остаток − ограничено − блокировано − на контроле качества.</li>
+        <li>Ограниченный и блокированный запас вычитается из остатка <b>на том же складе</b>: доступно = остаток − ограничено − блокировано − на контроле качества. У склада своя цена: б/у и неисправный запас часто стоит 0 ₽, поэтому вычитать его по средней цене кода нельзя.</li>
         <li>Обеспеченность считается только по номенклатуре WK (код входит в ППЗ 3.1.2.7 «Запчасти к экскаваторам WK»).</li>
         <li>Дубли карточек КТГ схлопываются по паре (площадка, точное имя борта) — берётся запись с непустым планом КТГ.</li>
         <li>КТГ план = поля p/pm витрины TOPO, КТГ факт = a/am. Это не КИО: коэффициент использования в ktg.json отдельно не приходит.</li>
-        <li>Склад в MM-M03 приходит именем, без кода площадки. Подпись площадки — эвристика по названию (Еруда/Благодатный/ОГОК → 1100, Янтарь/Магадан → 1400). Коды 7101–7104 — заводы подрядчика АО «Развитие», не склады Полюса.</li>
+        <li>Склад — пара «завод/код склада» из MM-M03 (одинаковые названия встречаются на разных заводах). <b>Площадка — по заводу строки:</b> 11xx, 7101, 7106 (перевалочная база КБЕ) — Красноярск / Еруда; 14xx, 7104 — Магадан; 12xx, 24xx, 7102, 7108 — Сухой Лог (WK в Иркутской области работают только там, заказы его бортов планирует завод 1200); 13xx, 7103 — Алдан. 71xx — заводы АО «Развитие» на той же площадке.</li>
         <li>План и факт PM-06 одной позиции приходят разными строками. Обеспеченность сначала сливает зерно заказ × материал, затем remaining = max(план − факт, 0). Иначе закрытый заказ висит дефицитом.</li>
         <li>МТР подрядчика (УСО) — отдельная выгрузка TOPO <code>rawdata/УСО</code>. Она не вычитается из остатка Полюса и не подменяет ATP.</li>
       </ul>
@@ -2948,7 +3017,8 @@ function renderDoc(host) {
     <div class="card"><h3>Обеспеченность: как считается</h3>
       <p class="hint">Потребность — открытый остаток строк плана ТОиР 2026–2027 по технике WK: количество = max(план − факт, 0), стоимость пропорциональна. Распределение — как в MRP/ATP, в два прохода.</p>
       <ul>
-        <li><b>Проход 1.</b> Потребность, отсортированная по дате начала работ, забирает доступный остаток, затем — те приходы закупки, чей месяц поставки не раньше даты снимка и не позже месяца начала работ («успевает»).</li>
+        <li><b>Проход 0.</b> Склад <b>своей</b> площадки резервируется под её работы, которые начнутся раньше, чем придёт закупка, заказанная сегодня (дата снимка + фактический срок поставки кода): такую потребность новой закупкой уже не закрыть.</li>
+        <li><b>Проход 1.</b> Потребность, отсортированная по дате начала работ, забирает остаток своей площадки, затем остаток другой площадки — это <b>перемещение</b> (показывается отдельно), затем приходы закупки, чей месяц поставки не раньше даты снимка и не позже месяца начала работ («успевает»). Закупка общая: документ закупки не привязан к площадке потребности.</li>
         <li><b>Проход 2.</b> Остатками приходов закрывается то, что не успели, — это «опоздание».</li>
         <li>Два прохода здесь принципиальны: в один проход ранняя потребность забирает поздний приход и помечает его опозданием, хотя тот же приход мог бы вовремя закрыть более позднюю потребность. На этих данных разница почти вдвое по доле «закупка успевает».</li>
         <li><b>Срок поставки</b> — медиана «дата поставки − дата заявки» по той же выгрузке закупки (${num(D.provision.meta.leadMeasurements)} замеров по ${num(D.provision.meta.leadCodes)} кодам). Для позиции со своей статистикой берётся её собственный срок, иначе — медиана по WK (${num(D.provision.meta.leadMedianDays)} дн.).</li>

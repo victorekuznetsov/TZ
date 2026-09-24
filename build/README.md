@@ -24,6 +24,8 @@ python3 build/build_stock.py      data/ekmtr_wk.json <stock.xlsx> \
                                    <restricted.xlsx> <purchase.xlsx>        data/
 python3 build/build_fleet.py      <ktg.json> data/fleet_books.json         data/
 python3 build/build_repairs.py    <topo_data_dir> data/ekmtr_wk.json       data/
+# <topo_data_dir> — data/ ветки main TOPO: выгрузка 1200 там разведена на
+# 1200 и 2400 (Сухой Лог); без этого заказы Сухого Лога теряют площадку
 python3 build/build_provision.py  <topo_data_dir> data/ekmtr_wk.json \
                                    data/stock.json                         data/ \
                                    --pm06-meta <TOPO>/pm06_meta
