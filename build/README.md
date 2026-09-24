@@ -50,6 +50,21 @@ python3 build/build_linkome_drawings.py work/linkome media/linkome         data/
 python3 build/make_local_js.py data/
 ```
 
+## Презентации (шаблон АО «Развитие», ветка `rawdata` TOPO)
+
+Собираются из уже готовых витрин `data/` — пересобирать после данных.
+`deck_kit.py` — общие палитра и помощники вёрстки.
+
+```
+# статус программы ремонтов WK: исполнение 2024–2026 и план 2027
+python3 build/build_wk_status_data.py <TOPO>/pm06_meta/order_status wk.json
+python3 build/build_wk_status_deck.py "<Развитие шаблон.pptx>" wk.json \
+  exports/WK_ispolnenie_2024-2026_plan_2027.pptx
+# учебная методичка для планировщиков
+python3 build/build_metodichka.py "<Развитие шаблон.pptx>" \
+  exports/SAP_TORO_metodichka_planirovshika.pptx
+```
+
 `build_tree.py` — первый шаг: даёт `tree.json` (дерево узлов) и
 `fleet_books.json` (книга ↔ борт), которые нужны остальным.
 `build_catalog.py` — второй: даёт `ekmtr_wk.json` (срез НСИ по WK),
