@@ -244,7 +244,7 @@ ktg_fleet_month = {'plan': [avg([u['ktgByMonth'][i] for u in fleet['units']]) fo
                    'fact': [avg([u['kioByMonth'][i] for u in fleet['units']]) for i in range(len(months))]}
 
 # ── обеспеченность 2026–2027 (вкладка «Обеспеченность»)
-PV = ['fromStock', 'fromBuy', 'late', 'undated', 'gap', 'transfer']
+PV = ['fromStock', 'fromBuy', 'late', 'undated', 'gap', 'transferPotential']
 
 
 def pv_blank():
@@ -260,18 +260,18 @@ for o in prov['orders']:
         tgt['orders'] += 1
         for k in ['value', *PV]:
             tgt[k] += o.get(k, 0.0)
-# перемещения между площадками: откуда → куда, ₽ (стоимость строки делится
-# по количеству, взятому с каждой площадки)
+# возможность перемещения между площадками (в обеспеченность не входит):
+# откуда → куда, ₽ (стоимость строки делится по количеству с каждой площадки)
 moves = collections.defaultdict(float)
 move_items = collections.defaultdict(lambda: {'value': 0.0, 'qty': 0.0, 'name': '', 'routes': collections.Counter()})
 for o in prov['orders']:
     to = unit_site.get(o['unit'], o['site'])
     for ln in o['lines']:
-        tr = ln.get('transfer') or 0
+        tr = ln.get('transferPotential') or 0
         if tr <= 0:
             continue
         for frm, q in (ln.get('transferFrom') or {}).items():
-            v = ln['transferValue'] * q / tr
+            v = ln['transferPotentialValue'] * q / tr
             moves[(frm, to)] += v
             mi = move_items[ln['code']]
             mi['value'] += v

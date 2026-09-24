@@ -314,6 +314,11 @@ def sub(s, text, y=Y0 - 0.02):
     tb(s, X0, y, W, 0.3, [text], size=12, color=MUTED)
 
 
+def star_note(s):
+    tb(s, X0, 6.5, 10.6, 0.3, ['* Перемещение между площадками ограничено: в обеспеченность не входит, это возможность улучшения '
+                               '(запас другой площадки сверх её потребности).'], size=9, color=MUTED)
+
+
 # ───────────────────────── вычисляемые выводы
 T = d['total']
 fact3 = {u: sum(U(u, y)['fact'] for y in FACT_YEARS) for u in UNITS}
@@ -377,7 +382,8 @@ msgs = [
      f'деблокированы без факта, {mln(approving26)} млн ₽ ещё на согласовании.'),
     ('Затраты сосредоточены.', f' Пять бортов — {", ".join(top5[:3])} и ещё два — дали {pct(top5_share)} факта 2024–2026.'),
     ('2027 — главный риск по МТР.', f' Не покрыто {mln(unc27)} млн ₽; {mln(on_release27)} млн ₽ закупка не видит до '
-     f'деблокирования. Ещё {mln(pv["wk"]["transfer"])} млн ₽ закрываются только перемещением запаса между площадками.'),
+     f'деблокирования. Перемещение между площадками ограничено: запасом других площадок можно улучшить ещё до '
+     f'{mln(pv["wk"]["transferPotential"])} млн ₽.'),
 ]
 box(s, X0, Y0 + 1.85, W, 3.4, fill=WHITE, radius=0.18)
 for i, (b, t) in enumerate(msgs):
@@ -721,18 +727,31 @@ s = content('Обеспеченность потребности WK по год�
             'Потребность открытых заказов по номенклатуре WK после правил SAP, вкладка «Обеспеченность», остатки на 14.09.2026. '
             'Сначала резервируется склад, затем закупка с датой поставки до потребности. «Опаздывает» — закупка придёт позже; '
             '«без срока» — закупка без даты или просрочена.')
-C_MOVE = '7FD8B4'
-SEG = [('Склад своей площадки', 'own', C_STOCK), ('Перемещение с другой площадки', 'transfer', C_MOVE),
-       ('Закупка к сроку', 'fromBuy', C_BUY), ('Закупка опаздывает / без срока', None, C_LATE), ('Не покрыто', 'gap', C_GAP)]
-SEG_DARK = {1: DARK, 3: DARK}
+star_note(s)
+# Перемещение между площадками ограничено и в обеспеченность НЕ входит.
+# Часть непокрытого к сроку, которую мог бы закрыть запас другой площадки,
+# выделена светлым сегментом «*» — это возможность улучшения, а не покрытие.
+C_POT = 'F2B8BD'
+SEG = [('Склад своей площадки', 'fromStock', C_STOCK), ('Закупка к сроку', 'fromBuy', C_BUY),
+       ('Закупка опаздывает / без срока', 'lateNet', C_LATE),
+       ('Не покрыто, есть на другой площадке*', 'pot', C_POT), ('Не покрыто', 'gapNet', C_GAP)]
+SEG_DARK = {2: DARK, 3: DARK}
 
 
 def seg_vals(p, key):
-    if key is None:
-        return p['late'] + p['undated']
-    if key == 'own':
-        return p['fromStock'] - p.get('transfer', 0.0)
+    pot = p.get('transferPotential', 0.0)
+    pot_gap = min(pot, p['gap'])
+    if key == 'pot':
+        return pot
+    if key == 'gapNet':
+        return p['gap'] - pot_gap
+    if key == 'lateNet':
+        return p['late'] + p['undated'] - (pot - pot_gap)
     return p.get(key, 0.0)
+
+
+def cov_pot(p):
+    return (p['fromStock'] + p['fromBuy'] + p.get('transferPotential', 0.0)) / p['value'] if p['value'] else None
 
 
 lw = 8.2
@@ -743,9 +762,10 @@ chart(s, X0 + 0.1, Y0 + 0.5, lw - 0.2, 4.7, 'barS', [f'2026 · {mln(p26["value"]
       label_colors=SEG_DARK)
 rx = X0 + lw + 0.3
 rw = W - lw - 0.3
-kpi_tile(s, rx, Y0 + 0.05, rw, 1.25, pct(cov26), 'обеспечено к сроку 2026', f'не покрыто {mln(uncovered(p26))} млн ₽', vsize=28)
-kpi_tile(s, rx, Y0 + 1.45, rw, 1.25, pct(cov27), 'обеспечено к сроку 2027', f'не покрыто {mln(unc27)} млн ₽',
-         fill=DARK, vcolor=GREEN, lcolor=WHITE, vsize=28)
+kpi_tile(s, rx, Y0 + 0.05, rw, 1.25, pct(cov26), 'обеспечено к сроку 2026',
+         f'не покрыто {mln(uncovered(p26))} млн ₽ · с перемещением* до {pct(cov_pot(p26))}', vsize=28)
+kpi_tile(s, rx, Y0 + 1.45, rw, 1.25, pct(cov27), 'обеспечено к сроку 2027',
+         f'не покрыто {mln(unc27)} млн ₽ · с перемещением* до {pct(cov_pot(p27))}', fill=DARK, vcolor=GREEN, lcolor=WHITE, vsize=28)
 fz = pv['feasible']
 note(s, rx, Y0 + 2.9, rw, 2.35, [
     {'t': 'Что ещё можно успеть', 'bold': True, 'space': 6},
@@ -758,6 +778,7 @@ note(s, rx, Y0 + 2.9, rw, 2.35, [
 # ═════════════════════════ 22. По площадкам
 s = content('Обеспеченность по площадкам',
             'Потребность открытых заказов WK по площадке машины, млн ₽. Таблица — доля, покрытая складом и закупкой к сроку.')
+star_note(s)
 cats, vals = [], {n: [] for n, _, _ in SEG}
 for site in SITES:
     for y in ('2026', '2027'):
@@ -779,27 +800,31 @@ for site in SITES:
         cv = (p['fromStock'] + p['fromBuy']) / p['value'] if p['value'] else None
         r += [pct(cv)]
         f += [cover_fill(cv)]
-    r.append(mln(d['prov']['site'][site]['2026']['transfer'] + d['prov']['site'][site]['2027']['transfer']))
+    r.append(mln(d['prov']['site'][site]['2026']['transferPotential'] + d['prov']['site'][site]['2027']['transferPotential']))
     f.append(None)
     r.append(mln(uncovered(d['prov']['site'][site]['2027'])))
     f.append(None)
     rows.append(r)
     fl.append(f)
-table(s, rx, Y0 + 0.05, rw, ['Площадка', '2026', '2027', 'Перем.', 'Не покр. 27'], rows, [1.5, 0.7, 0.7, 0.8, 1.0],
+table(s, rx, Y0 + 0.05, rw, ['Площадка', '2026', '2027', 'Перем.*', 'Не покр. 27'], rows, [1.5, 0.7, 0.7, 0.8, 1.0],
       aligns=['l', 'c', 'c', 'r', 'r'], size=10, rh=0.5, fills=lambda r, c: fl[r][c])
 share_1100 = uncovered(d['prov']['site']['1100']['2027']) / unc27
+_sl = [d['prov']['site']['2400'][y] for y in ('2026', '2027')]
+sl_cov = sum(p['fromStock'] + p['fromBuy'] for p in _sl) / sum(p['value'] for p in _sl)
+sl_pot = sum(p['transferPotential'] for p in _sl)
 note(s, rx, Y0 + 2.3, rw, 2.95, [
     {'t': f'{pct(share_1100)} дефицита 2027 — Красноярск', 'bold': True, 'space': 6},
     {'t': f'Больше всего не покрыто у {", ".join(u for u, _ in unc27_units[:5])} — '
           f'{mln(sum(v for _, v in unc27_units[:5]))} млн ₽. Крупнейшая позиция — ковш K1839 ({mln(d["prov"]["deficit"][0]["gapValue"])} млн ₽).', 'space': 6},
-    {'t': f'Сухой Лог держится на чужом запасе: {mln(d["prov"]["site"]["2400"]["2026"]["transfer"] + d["prov"]["site"]["2400"]["2027"]["transfer"])} млн ₽ '
-          'его потребности закрывает перемещение.', 'color': MUTED, 'size': 11},
+    {'t': f'Сухой Лог почти без своего запаса: обеспечено {pct(sl_cov)}; перемещением* можно улучшить ещё до {mln(sl_pot)} млн ₽.',
+     'color': MUTED, 'size': 11},
 ], size=12)
 
 # ═════════════════════════ 23. По бортам 2027
 s = content('Обеспеченность 2027 по бортам',
             'Потребность МТР 2027 открытых заказов каждого борта, млн ₽. Сортировка по непокрытой части. '
             'Борта без открытых заказов с потребностью WK не показаны.')
+star_note(s)
 bu = [u for u, _ in unc27_units if prov_u(u, '2027')['value'] > 0]
 box(s, X0, Y0 + 0.05, W, 5.25, fill=WHITE, radius=0.18)
 chart(s, X0 + 0.1, Y0 + 0.1, W - 0.2, 5.15, 'barS', [f'{u} · {SHORT[site_of(u)]}' for u in bu],
@@ -810,11 +835,12 @@ chart(s, X0 + 0.1, Y0 + 0.1, W - 0.2, 5.15, 'barS', [f'{u} · {SHORT[site_of(u)]
 s = content('Видит ли закупка потребность 2027',
             'Признак «Резерв./заявка» строк заказа: «Немедленно» — потребность сразу в ППМ; «Начиная с деблок.» — только '
             'после деблокирования заказа; «Никогда» — в заявку не попадает (справочные позиции). млн ₽.')
+star_note(s)
 PPM = [('Немедленно', 'immediate'), ('Начиная с деблок.', 'onRelease'), ('Никогда', 'never')]
 lw = 7.4
 box(s, X0, Y0 + 0.05, lw, 5.2, fill=WHITE, radius=0.18)
 tb(s, X0 + 0.25, Y0 + 0.15, lw - 0.5, 0.35, [{'t': '2027 по признаку, млн ₽', 'bold': True}], size=14)
-pp = [ppm.get(f'2027|{k}', {'value': 0, 'fromStock': 0, 'fromBuy': 0, 'late': 0, 'undated': 0, 'gap': 0, 'transfer': 0}) for _, k in PPM]
+pp = [ppm.get(f'2027|{k}', {'value': 0, 'fromStock': 0, 'fromBuy': 0, 'late': 0, 'undated': 0, 'gap': 0, 'transferPotential': 0}) for _, k in PPM]
 chart(s, X0 + 0.1, Y0 + 0.5, lw - 0.2, 4.7, 'barS', [f'{n} · {mln(p["value"])}' for (n, _), p in zip(PPM, pp)],
       [(n, [seg_vals(p, k) / M for p in pp], c) for n, k, c in SEG], size=11, gap=45, min_label=25, label_colors=SEG_DARK)
 rx = X0 + lw + 0.3
@@ -877,6 +903,7 @@ s = content('Запасы WK по площадкам',
             f'Остатки номенклатуры WK на {AS_OF}, вкладка «Запасы». Площадка склада — по заводу строки выгрузки MM-M03: '
             '11xx/7101/7106 — Красноярск, 14xx/7104 — Магадан, 12xx/24xx/7102/7108 — Сухой Лог (WK в Иркутской '
             'области работают только там, их заказы планирует завод 1200). Ограниченный запас вычтен на своём складе по его цене.')
+star_note(s)
 ss_ = st['sites']
 tw4 = (W - 3 * 0.2) / 4
 for i, site in enumerate(SITES):
@@ -899,34 +926,35 @@ rows, fl = [], []
 for site in SITES:
     p26, p27_ = d['prov']['site'][site]['2026'], d['prov']['site'][site]['2027']
     need = p26['value'] + p27_['value']
-    own = p26['fromStock'] + p27_['fromStock'] - p26['transfer'] - p27_['transfer']
-    tr = p26['transfer'] + p27_['transfer']
+    own = p26['fromStock'] + p27_['fromStock']
+    tr = p26['transferPotential'] + p27_['transferPotential']
     unc = uncovered(p26) + uncovered(p27_)
     rows.append([SHORT[site], mln(ss_.get(site, {}).get('value', 0)), mln(need), mln(own), mln(tr), mln(unc)])
     fl.append([None] * 4 + [TINT_A if tr > 0 else None, TINT_R if unc > 0 else None])
-table(s, rx, Y0 + 2.0, rw, ['Площадка', 'Запас', 'Нужно', 'Свой склад', 'Перемещ.', 'Не покр.'], rows,
+table(s, rx, Y0 + 2.0, rw, ['Площадка', 'Запас', 'Нужно', 'Свой склад', 'Перем.*', 'Не покр.'], rows,
       [1.5, 0.9, 0.9, 1.0, 0.95, 0.9], aligns=['l', 'r', 'r', 'r', 'r', 'r'], size=10, rh=0.5, hh=0.34,
       fills=lambda r, c: fl[r][c])
 need_all = sum(d['prov']['site'][x][y]['value'] for x in SITES for y in ('2026', '2027'))
 need_site = {x: sum(d['prov']['site'][x][y]['value'] for y in ('2026', '2027')) for x in SITES}
-tr_site = {x: sum(d['prov']['site'][x][y]['transfer'] for y in ('2026', '2027')) for x in SITES}
-own_sl = sum(d['prov']['site']['2400'][y]['fromStock'] for y in ('2026', '2027')) - tr_site['2400']
+tr_site = {x: sum(d['prov']['site'][x][y]['transferPotential'] for y in ('2026', '2027')) for x in SITES}
+own_sl = sum(d['prov']['site']['2400'][y]['fromStock'] for y in ('2026', '2027'))
 note(s, rx, Y0 + 3.95, rw, 1.3, [
     {'t': [B('Запас лежит не там, где работы. '),
            (f'Магадан держит {pct(ss_["1400"]["value"] / sm["totalValue"])} запаса при {pct(need_site["1400"] / need_all)} потребности; '
-            f'Сухой Лог со своего склада закрывает {mln(own_sl)} млн ₽, перемещением — {mln(tr_site["2400"])} млн ₽.', {})]}], size=11)
+            f'Сухой Лог со своего склада закрывает {mln(own_sl)} млн ₽ из {mln(need_site["2400"])}.', {})]}], size=11)
 tw = tw4
 
 # ═════════════════════════ 28b. Перемещения
-s = content('Перемещения запаса между площадками',
-            'Сколько потребности 2026–2027 покрывается только запасом другой площадки, млн ₽. Свой запас площадки защищён '
-            'под её работы, которые начнутся раньше срока поставки, — перемещается только то, что сверх этого. Решение о '
-            'перевозке и её сроке остаётся за снабжением.')
+s = content('Возможность перемещения между площадками',
+            'Перемещение запаса между площадками ограничено (логистика, согласование БЕ), поэтому в обеспеченность не входит. '
+            'Здесь — верхняя оценка улучшения: сколько непокрытой к сроку потребности 2026–2027 мог бы закрыть запас другой '
+            'площадки, оставшийся после её собственной потребности, млн ₽. Что из этого реально переместить, решает снабжение.')
+star_note(s)
 moves = {(f, t_): v for f, t_, v in d['prov']['moves']}
 tot_moves = sum(moves.values())
 lw = 5.6
 box(s, X0, Y0 + 0.05, lw, 5.2, fill=WHITE, radius=0.18)
-tb(s, X0 + 0.25, Y0 + 0.15, lw - 0.5, 0.35, [{'t': 'Откуда → куда, млн ₽', 'bold': True}], size=14)
+tb(s, X0 + 0.25, Y0 + 0.15, lw - 0.5, 0.35, [{'t': 'Откуда → куда можно, млн ₽', 'bold': True}], size=14)
 rows, fl = [], []
 for f in SITES:
     r = [f'из {SHORT[f]}']
@@ -939,16 +967,16 @@ for f in SITES:
     fr.append(None)
     rows.append(r)
     fl.append(fr)
-rows.append(['получено'] + [mln(sum(moves.get((f, t_), 0) for f in SITES), 1) for t_ in SITES] + [mln(tot_moves, 1)])
+rows.append(['всего в'] + [mln(sum(moves.get((f, t_), 0) for f in SITES), 1) for t_ in SITES] + [mln(tot_moves, 1)])
 fl.append([None] * 5)
-table(s, X0 + 0.2, Y0 + 0.6, lw - 0.4, ['', 'в Красноярск', 'в Магадан', 'в Сухой Лог', 'отдано'], rows,
+table(s, X0 + 0.2, Y0 + 0.6, lw - 0.4, ['', 'в Красноярск', 'в Магадан', 'в Сухой Лог', 'всего из'], rows,
       [1.5, 1.1, 1.0, 1.1, 0.9], aligns=['l', 'r', 'r', 'r', 'r'], size=10.5, rh=0.55, hh=0.4,
       fills=lambda r, c: fl[r][c], bold_cols=(0,))
-kpi_tile(s, X0 + 0.2, Y0 + 3.55, lw - 0.4, 1.5, f'{mln(tot_moves)} млн ₽', 'нужно переместить между площадками',
-         f'{pct(tot_moves / pv["wk"]["value"])} потребности WK 2026–2027', fill=DARK, vcolor=GREEN, lcolor=WHITE, vsize=26)
+kpi_tile(s, X0 + 0.2, Y0 + 3.55, lw - 0.4, 1.5, f'до {mln(tot_moves)} млн ₽', 'можно улучшить перемещением*',
+         f'в обеспеченность не входит · 2027: {pct(cov27)} → до {pct(cov_pot(p27))}', fill=DARK, vcolor=GREEN, lcolor=WHITE, vsize=26)
 rx = X0 + lw + 0.3
 rw = W - lw - 0.3
-tb(s, rx, Y0 + 0.05, rw, 0.35, [{'t': 'Что перемещать: крупнейшие позиции', 'bold': True}], size=14)
+tb(s, rx, Y0 + 0.05, rw, 0.35, [{'t': 'Крупнейшие позиции, которые есть на другой площадке', 'bold': True}], size=14)
 RT = {'1100': 'Красн.', '1400': 'Маг.', '2400': 'СЛ'}
 rows = []
 for x in d['prov']['moveTop'][:10]:
@@ -1057,7 +1085,7 @@ lims = [
     ('Статус — на дату выгрузки', 'Стадия заказов 2024–2025 взята из годовых выгрузок PM-06. Если заказ закрыли позже, '
                                   'в презентации он может быть «в работе».'),
     ('Запас по площадкам', 'Площадка склада — по заводу строки остатков; склады Иркутской области отнесены к Сухому Логу. '
-                           'Перемещение показано как возможность: срок и стоимость перевозки не учтены.'),
+                           'Склад покрывает только свою площадку; перемещение ограничено и показано как возможность*, не как покрытие.'),
     ('Позиции ППР и копии', f'{mln(t27["noOrderPlan"])} млн ₽ позиций ППР 2027 и неисполненный план оригиналов БЕ '
                             'исключены из плана по правилам PM-06.'),
     ('Срок поставки — до месяца', 'Обеспеченность считается по месяцу: приход внутри месяца потребности считается успевающим.'),
@@ -1085,8 +1113,8 @@ acts = [
     ('Заказать сегодня', f'{d["prov"]["orderTodayN"]} позиций на {mln(d["prov"]["orderTodaySum"])} млн ₽ ещё успеваем; по '
                          f'{mln(fz["lateMore"]["value"] + fz["late3"]["value"])} млн ₽ — аналоги или перенос.', C_STOCK),
     ('Просроченные поставки', f'{sp(pu["overdue"])} ед. с прошедшим месяцем поставки — эскалация поставщикам.', C_GAP),
-    ('Перемещения между площадками', f'{mln(pv["wk"]["transfer"])} млн ₽ потребности закрываются чужим запасом — '
-                                     'спланировать перевозку (коронки и зубцедержатели Магадан → Красноярск).', GREY),
+    ('Возможность перемещения', f'До {mln(pv["wk"]["transferPotential"])} млн ₽ дефицита есть на других площадках. '
+                                'Перемещение ограничено — проверить, что реально согласовать и перевезти.', GREY),
 ]
 for i, (t, body, c) in enumerate(acts):
     x = X0 + (i % 2) * ((W - 0.3) / 2 + 0.3)
@@ -1108,8 +1136,8 @@ card(s, X0, Y0 + 0.05, (W - 0.3) / 2, 5.2, 'Как считали', [
     {'t': 'Стадия заказа — по статусам PM-06: ЗАКР > ТЗКР > ДЕБЛ > ОТКР.', 'bullet': True, 'space': 6},
     {'t': 'Площадка — по борту (вкладка «Парк»).', 'bullet': True, 'space': 6},
     {'t': 'Запас — по площадке склада (завод строки остатков).', 'bullet': True, 'space': 6},
-    {'t': 'Обеспеченность: свой склад (защищён под работы в пределах срока поставки), склад другой площадки — '
-          'перемещение, затем закупка с датой до потребности, по месяцам.', 'bullet': True},
+    {'t': 'Обеспеченность: склад своей площадки, затем закупка с датой до потребности, по месяцам. Запас других '
+          'площадок — только возможность улучшения*, в покрытие не входит.', 'bullet': True},
 ], hfill=DARK, bsize=12)
 card(s, X0 + (W - 0.3) / 2 + 0.3, Y0 + 0.05, (W - 0.3) / 2, 5.2, 'Источники', [
     {'t': 'Выгрузки BW PM-M06 2024–2027, площадки 1100, 1200, 1400 (2400 — по бортам)', 'bullet': True, 'space': 6},
