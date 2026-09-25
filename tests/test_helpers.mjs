@@ -34,6 +34,8 @@ assert.equal(parsed.g.order, "77");
 assert.equal(parsed.g.part, "K1801.03.15.00");
 assert.equal(serializeHash("provision", "supply", parsed.g), "#provision&role=supply&site=2400&order=77&part=K1801.03.15.00");
 assert.equal(parseHash("#catalog").tab, "catalog");
+assert.equal(parseHash("#control&pg=dev").g.pg, "dev");
+assert.equal(serializeHash("control", "all", { pg: "500" }), "#control&pg=500");
 assert.equal(parseHash("").tab, "sum");
 
 assert.equal(tabAllowed("purchase", "supply"), true);

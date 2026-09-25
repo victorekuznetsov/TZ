@@ -95,7 +95,7 @@ function downloadCSV(filename, rows, cols) {
 /* ---------- состояние ---------- */
 const D = {}; // сюда лягут все витрины после загрузки
 let TAB = "sum";
-let G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "" };
+let G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", pg: "" };
 let ROLE = "all";
 let LK = { q: "", analogs: true };   // «Поиск по номеру» (lookup.js): запрос живёт в ссылке #lookup&q=…
 let NAV_SEQ = 0;
@@ -131,7 +131,7 @@ const TAB_NEEDS = {
 };
 function parseHash(raw) {
   const text = String(raw == null ? "" : raw).replace(/^#/, "");
-  const out = { tab: "sum", role: "all", q: "", g: { site: "", model: "", unit: "", order: "", ekmtr: "", part: "" } };
+  const out = { tab: "sum", role: "all", q: "", g: { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", pg: "" } };
   if (!text) return out;
   const parts = text.split("&").filter(Boolean);
   for (const part of parts) {
@@ -154,7 +154,7 @@ function serializeHash(tab, role, g, q) {
   const parts = [tab || "sum"];
   if (tab === "lookup" && q) parts.push("q=" + encodeURIComponent(q));
   if (role && role !== "all") parts.push("role=" + encodeURIComponent(role));
-  for (const k of ["site", "model", "unit", "order", "ekmtr", "part"]) {
+  for (const k of ["site", "model", "unit", "order", "ekmtr", "part", "pg"]) {
     if (g && g[k]) parts.push(k + "=" + encodeURIComponent(g[k]));
   }
   return "#" + parts.join("&");
@@ -306,13 +306,29 @@ function renderGlobalFilters() {
     <label>Заказ<input id="gfOrder" value="${esc(G.order)}" placeholder="номер"/></label>
     <label>ЕКМТР<input id="gfEkmtr" value="${esc(G.ekmtr)}" placeholder="код"/></label>
     <label>Каталожный №<input id="gfPart" value="${esc(G.part)}" placeholder="K…"/></label>
+    <label title="Группа планирования ТОРО заказа (PM-06, с 2024 года). «Развитие» — 100 Механика и 200 Энергетика; 300–900 — службы БЕ (заказчика)">Группа планирования<select id="gfPg">${pgFilterOptions().map(([v, l]) => `<option value="${esc(v)}"${G.pg === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
     <button class="minibtn" id="gfReset" type="button">Сбросить</button>`;
   const apply = (k,v) => { G[k]=v; if(k==='site'||k==='model') G.unit=''; writeHash(false); renderGlobalFilters(); renderTab(); };
   byId('gfSite').onchange=e=>apply('site',e.target.value);
   byId('gfModel').onchange=e=>apply('model',e.target.value);
   byId('gfUnit').onchange=e=>apply('unit',e.target.value);
+  byId('gfPg').onchange=e=>apply('pg',e.target.value);
   for (const [id,k] of [['gfOrder','order'],['gfEkmtr','ekmtr'],['gfPart','part']]) byId(id).oninput=debounce(e=>{G[k]=e.target.value.trim();writeHash(false);renderTab()},180);
-  byId('gfReset').onclick=()=>{G={site:'',model:'',unit:'',order:'',ekmtr:'',part:''};writeHash(false);renderGlobalFilters();renderTab()};
+  byId('gfReset').onclick=()=>{G={site:'',model:'',unit:'',order:'',ekmtr:'',part:'',pg:''};writeHash(false);renderGlobalFilters();renderTab()};
+}
+
+/* фильтр «Группа планирования»: группы — из витрины control (если загружена), иначе справочник SAP */
+function pgFilterOptions() {
+  const names = (typeof AnalyticsCore !== "undefined" && AnalyticsCore.PG_NAMES) || {};
+  const seen = new Set(Object.keys(((D.control || {}).meta || {}).planningGroups || {}).map(k => k.split("/").pop()));
+  const groups = (seen.size ? [...seen] : Object.keys(names)).sort((a, b) => (a === "#") - (b === "#") || a.localeCompare(b));
+  return [["", "Все"], ["dev", "Развитие (100, 200)"], ["be", "Службы БЕ (300–900)"],
+    ...groups.map(g => [g, g === "#" ? "не присвоена" : `${g} ${names[g] || ""}`.trim()])];
+}
+function pgFilterLabel(v) { return (pgFilterOptions().find(o => o[0] === v) || [v, v])[1]; }
+/* проходит ли заказ фильтр группы планирования (заказы без группы — 2022–2023 — не проходят) */
+function pgPass(order) {
+  return !G.pg || (typeof AnalyticsCore !== "undefined" && AnalyticsCore.pgMatch(AnalyticsCore.pgOfOrder(order), G.pg));
 }
 
 /* ---------- generic sortable table ---------- */
@@ -814,6 +830,7 @@ function buildIndexes() {
     const key = interKey(part);
     INTER_GROUP_OF.set(key, [...new Set([...(INTER_GROUP_OF.get(key) || []), ...g])]);
   }));
+  if (D.control && D.controlRowsOf !== D.control && typeof AnalyticsCore !== "undefined") { D.controlRows = AnalyticsCore.decodeControl(D.control); D.controlRowsOf = D.control; }
   PROVISION_ORDER_BY_ID = new Map([...(D.provision && D.provision.orders || []), ...(D.provision && D.provision.closedOrders || [])].map(o => [o.id, o]));
 }
 function catalogByEkmtr(code) {
@@ -851,12 +868,13 @@ async function renderTab() {
   applyRoleChrome();
   syncFiltersToContext();
   const need = [...(TAB_NEEDS[TAB] || [])];
+  if (G.pg) need.push("control");     // группа планирования заказа — из витрины control
   if ((TAB === "catalog" || TAB === "kb" || TAB === "provision") && (G.part || G.ekmtr || G.order)) {
     need.push("linkome", "linkomeDraw");
   }
   if (need.some(k => D[k] === undefined)) {
     host.innerHTML = callout("info", "Загрузка раздела…");
-    try { await ensureData(need); }
+    try { await ensureData(need); if (G.pg) renderGlobalFilters(); }
     catch (e) {
       if (seq !== NAV_SEQ) return;
       host.innerHTML = callout("bad", esc(e.message));
@@ -2144,12 +2162,12 @@ function globalPass(o, partCodes, ge, go) {
   if (ge == null) ge = normText(G.ekmtr);
   if (go == null) go = normText(G.order);
   return (!G.site || o.site===G.site) && (!G.model || o.model===G.model) && (!G.unit || o.unit===G.unit)
-    && (!go || normText(o.order).includes(go))
+    && (!go || normText(o.order).includes(go)) && pgPass(o.order)
     && (!ge || (o.lines||[]).some(l=>normText(l.code).includes(ge)))
     && (!G.part || (o.lines||[]).some(l=>partCodes.has(String(l.code))));
 }
 function contextHasFilter() {
-  return !!(G.site || G.model || G.unit || G.order || G.ekmtr || G.part);
+  return !!(G.site || G.model || G.unit || G.order || G.ekmtr || G.part || G.pg);
 }
 function contextOrders() {
   const open = (D.provision.orders || []).filter(o => globalPass(o));
@@ -2166,6 +2184,7 @@ function contextLabel() {
   if (G.order) bits.push("заказ " + G.order);
   if (G.ekmtr) bits.push("ЕКМТР " + G.ekmtr);
   if (G.part) bits.push("№ " + G.part);
+  if (G.pg) bits.push("группа планирования: " + pgFilterLabel(G.pg));
   return bits.join(" · ");
 }
 function contextUnits() {
@@ -2184,11 +2203,13 @@ function contextNeedCodes() {
 }
 function contextBanner() {
   if (!contextHasFilter()) return "";
-  return `<p class="hint">Контекст: <b>${esc(contextLabel())}</b> — таблицы и графики этой вкладки сужены.</p>`;
+  const pgNote = G.pg && ["stock", "purchase", "catalog", "linkone", "kb", "fleet", "codif", "inter", "cart"].includes(TAB)
+    ? " Группа планирования относится к заказам ТОРО — на склад, закупку и справочники она не влияет." : "";
+  return `<p class="hint">Контекст: <b>${esc(contextLabel())}</b> — таблицы и графики этой вкладки сужены.${pgNote}</p>`;
 }
 let LAST_CTX_KEY = null;
 function contextKey() {
-  return [G.site || "", G.model || "", G.unit || "", G.order || "", G.ekmtr || "", G.part || ""].join("\0");
+  return [G.site || "", G.model || "", G.unit || "", G.order || "", G.ekmtr || "", G.part || "", G.pg || ""].join("\0");
 }
 function syncFiltersToContext() {
   const key = contextKey();
@@ -2320,7 +2341,7 @@ function provisionOrderCut(orders,keyfn){const m=new Map;orders.forEach(o=>{cons
 const PPM_LABEL={immediate:'Немедленно — закупка видит',onRelease:'Начиная с деблокирования — закупка пока не видит',never:'Никогда — в закупку не попадает'};
 function stageLabel(key){const st=((D.provision.meta||{}).stages||[]).find(x=>x.key===key);return st?st.label:(key||'—')}
 function executionContextRows(){
-  return (D.provision.execution||[]).filter(r=>(!G.site||r.site===G.site)&&(!G.model||r.model===G.model)&&(!G.unit||r.unit===G.unit)&&(!G.order||String(r.order)===String(G.order)));
+  return (D.provision.execution||[]).filter(r=>(!G.site||r.site===G.site)&&(!G.model||r.model===G.model)&&(!G.unit||r.unit===G.unit)&&(!G.order||String(r.order)===String(G.order))&&pgPass(r.order));
 }
 function executionFunnelHtml(){
   const rows=executionContextRows(); if(!rows.length) return '';
@@ -2376,7 +2397,7 @@ function usoContextOrders() {
     (!G.site || o.site === G.site) &&
     (!G.model || o.model === G.model) &&
     (!G.unit || o.unit === G.unit) &&
-    (!G.order || String(o.order).includes(String(G.order)))
+    (!G.order || String(o.order).includes(String(G.order))) && pgPass(o.order)
   );
 }
 function usoTotals(rows) {
@@ -3155,7 +3176,7 @@ function renderDoc(host) {
       <p class="hint">Витрина <code>data/control.json</code> — заказ ТОРО WK × год выгрузки PM-06 (2024–2027): план и факт МТР и УСО из строк графика, стадия и статусы заказа из выгрузки статусов PM-06 TOPO (<code>build/build_control.py</code>). Расчёты — <code>lib/analytics_core.js</code>, одни и те же для графиков, автовыводов и тестов. Всё пересчитывается по сквозным фильтрам: площадка, модель, машина, заказ.</p>
       <ul>
         <li><b>План</b> = МТР Полюса + МТР подрядчика (УСО). Позиции графика ППР без заказа SAP в план не входят и показываются отдельно. У оригинала БЕ, перенесённого копией в «Развитие», неисполненный план не считается: план = min(план, факт).</li>
-        <li><b>Оценка планирования «Развития»</b> — только заказы групп планирования ТОРО 100 Механика и 200 Энергетика (поле «Заказ Группа планирования ТОРО» PM-06, есть с 2024 года). Группы 300 Метрология, 400 ЗиС, 500 Пожарная охрана, 600 АГиТО, 700 Эксплуатация, 800 ГПМ, 900 КИПиА — службы БЕ (заказчика): их заказы входят в исполнение, бюджет и обеспеченность, но не в показатели и выводы планирования. Раскладка по группам — «Контроль отделов» → «Планирование».</li>
+        <li><b>Оценка планирования «Развития»</b> — только заказы групп планирования ТОРО 100 Механика и 200 Энергетика (поле «Заказ Группа планирования ТОРО» PM-06, есть с 2024 года). Группы 300 Метрология, 400 ЗиС, 500 Пожарная охрана, 600 АГиТО, 700 Эксплуатация, 800 ГПМ, 900 КИПиА — службы БЕ (заказчика): их заказы входят в исполнение, бюджет и обеспеченность, но не в показатели и выводы планирования. Раскладка по группам — «Контроль отделов» → «Планирование». Сквозной фильтр «Группа планирования» (Развитие, службы БЕ или одна группа) сужает всё, что считается по заказам ТОРО: аналитику, контроль отделов, обеспеченность, график план-факт, УСО; заказы 2022–2023 (группы ещё нет в выгрузке) и склад он не делит.</li>
         <li><b>Стадия</b> — по статусам: ЗАКР &gt; ТЗКР (ВСБЕ / ПРСЗ) &gt; ДЕБЛ (ФХСМ / в работе / пусто) &gt; ОТКР (СГГС / на согласовании). Статус — на дату годовой выгрузки PM-06.</li>
         <li><b>Темп года</b> сравнивается с долей прошедшего года на дату данных; «план к дате» — заказы с базисным началом не позже текущего месяца.</li>
         <li><b>Обеспеченность</b> — склад своей площадки и закупка к сроку; перемещение между площадками ограничено и показывается как возможность, а не покрытие.</li>
@@ -3657,7 +3678,7 @@ function materialOrders(code) {
       if (seen.has(o.id)) return false;
       seen.add(o.id);
       return (!G.site || o.site === G.site) && (!G.model || o.model === G.model)
-        && (!G.unit || o.unit === G.unit) && (!G.order || String(o.order) === String(G.order))
+        && (!G.unit || o.unit === G.unit) && (!G.order || String(o.order) === String(G.order)) && pgPass(o.order)
         && (o.lines || []).some(l => String(l.code) === String(code));
     }).map(o => {
       const lines = o.lines.filter(l => String(l.code) === String(code));
@@ -4377,7 +4398,7 @@ function applyHashState(raw, push) {
   const parsed = parseHash(raw);
   TAB = VALID_TABS.has(parsed.tab) ? parsed.tab : "sum";
   if (parsed.role && ROLES[parsed.role]) ROLE = parsed.role;
-  G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", ...parsed.g };
+  G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", pg: "", ...parsed.g };
   if (parsed.tab === "lookup" && typeof LK !== "undefined") LK.q = parsed.q;
   if (!tabAllowed(TAB)) TAB = ((ROLES[ROLE] || ROLES.all).tabs || ["sum"])[0];
   renderGlobalFilters();
@@ -4390,7 +4411,7 @@ function initNav() {
   const parsed = parseHash(location.hash);
   TAB = VALID_TABS.has(parsed.tab) ? parsed.tab : "sum";
   ROLE = ROLES[parsed.role] ? parsed.role : (ROLES[savedRole] ? savedRole : "all");
-  G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", ...parsed.g };
+  G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", pg: "", ...parsed.g };
   if (parsed.tab === "lookup" && typeof LK !== "undefined") LK.q = parsed.q;
   if (!tabAllowed(TAB)) TAB = ((ROLES[ROLE] || ROLES.all).tabs || ["sum"])[0];
   const visibleTabs = () => qsa("#tabs button").filter(b => !b.hidden);

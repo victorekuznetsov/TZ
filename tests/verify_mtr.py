@@ -293,9 +293,18 @@ def profile(codes, analogs):
 
 
 # ---------- эффективность ----------
+PG_OF = {str(r["order"]): r["pg"] for r in CTL if r.get("pg")}
+
+
+def pg_ok(pg, f):
+    g = pg.rsplit("/", 1)[-1] if pg else ""
+    return g in ("100", "200") if f == "dev" else g not in ("100", "200") if f == "be" else g == f
+
+
 def in_ctx(site, model, unit, order, ctx):
     return ((not ctx.get("site") or site == ctx["site"]) and (not ctx.get("model") or model == ctx["model"])
-            and (not ctx.get("unit") or unit == ctx["unit"]) and (not ctx.get("order") or ctx["order"] in str(order)))
+            and (not ctx.get("unit") or unit == ctx["unit"]) and (not ctx.get("order") or ctx["order"] in str(order))
+            and (not ctx.get("pg") or pg_ok(PG_OF.get(str(order), ""), ctx["pg"])))
 
 
 def efficiency(ctx):
@@ -491,6 +500,7 @@ def main():
     ctxs = [{}] + [{"site": s} for s in ("1100", "1400", "2400")] + [{"model": "WK-35"}, {"site": "1100", "model": "WK-20"}]
     units = sorted({u["name"] for u in fleet["units"]})
     ctxs += [{"unit": units[0]}, {"unit": units[len(units) // 2]}]
+    ctxs += [{"pg": "dev"}, {"pg": "be"}, {"site": "1400", "pg": "100"}]
     eff = [{"ctx": c, "eff": efficiency(c)} for c in ctxs]
     h = hashlib.sha256()
     for n in ("catalog", "ekmtr_wk", "interchange", "control", "provision", "stock", "fleet"):

@@ -23,7 +23,7 @@ const CTRL_FACTS = [
 const ctrlFactPred = () => (CTRL_FACTS.find(f => f[0] === CTRL_FACT) || CTRL_FACTS[0])[2];
 
 function anModel() {
-  const ctx = { site: G.site, model: G.model, unit: G.unit, order: G.order };
+  const ctx = { site: G.site, model: G.model, unit: G.unit, order: G.order, pg: G.pg || "" };
   const key = JSON.stringify(ctx);
   // витрины могут подмениться во вкладке «Обновление данных» — кэш сверяем и по ним
   const refs = [D.control, D.provision, D.stock, D.fleet];
@@ -403,7 +403,8 @@ function renderControl(host) {
   let body = "";
   if (CTRL_DEPT === "plan") {
     const annual = P.annual, op = P.operative, acc24 = P.accuracy["2024"], acc25 = P.accuracy["2025"];
-    body = anScopeHtml(m) + `
+    const beOnly = G.pg && !["dev", "100", "200"].includes(G.pg);
+    body = (beOnly ? callout("info", `<b>Выбрана группа планирования «${esc(pgFilterLabel(G.pg))}» — это службы БЕ (заказчика).</b> Оценка планирования «Развития» считается только по группам 100 Механика и 200 Энергетика, поэтому показатели ниже пустые. Исполнение и бюджет этих заказов — на соседних вкладках.`) : "") + anScopeHtml(m) + `
       <div class="kpis">
         ${kpi(`План ${next} согласован`, pct(P.approvedShare), lvl(P.approvedShare, .9, .5))}
         ${kpi(`Утверждён в годовом (УТВГ)`, pct((annual.find(a => a.code === "УТВГ") || {}).share), "")}

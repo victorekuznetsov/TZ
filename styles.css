@@ -104,7 +104,7 @@ a:hover{text-decoration:underline}
 .tabs button.on{color:var(--ink)}
 .tabs button.on::after{content:"";position:absolute;left:8px;right:8px;bottom:-1px;height:2px;background:var(--accent)}
 
-.global-context{display:grid;grid-template-columns:auto repeat(6,minmax(112px,1fr)) auto;gap:8px;align-items:end;
+.global-context{display:grid;grid-template-columns:auto repeat(7,minmax(104px,1fr)) auto;gap:8px;align-items:end;
   max-width:1680px;margin:-2px auto 2px;padding:8px 20px;background:var(--bg)}
 .global-context .gf-title{align-self:center;min-width:140px}.global-context .gf-title span{display:block;color:var(--ink-3);font-size:10.5px}
 .global-context label{display:flex;flex-direction:column;gap:3px;color:var(--ink-3);font-size:10.5px}

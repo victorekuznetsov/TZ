@@ -497,8 +497,8 @@ function dkS08(dk, m) {
   const supOpen = sup.reduce((s, x) => s + x.open, 0), supOver = sup.reduce((s, x) => s + x.overdue, 0);
   const siteNote = m.ctx.site ? `склад площадки ${esc(anSite(m.ctx.site))}` : "все площадки";
   const cls = { A: DK.stock, B: DK.late, C: DK.plan };
-  return dkSlide("Эффективность: где деньги и резервы", `Новые показатели поверх презентации: концентрация расхода, замороженный капитал, цены, точность плана МТР, сроки заказа и дисциплина поставщиков. Окно расхода — ${e.win.join("–").replace(/–.*–/, "–")}; ${siteNote}.`,
-      `<div class="dk-tiles">${dkTile(st.months != null ? num(st.months, 1) : "—", "мес. расхода лежит на складах", `${num(st.total / 1e9, 2)} млрд ₽ при расходе ${dkMln(st.factAvgYear)} млн ₽/год`, true, "var(--good)")}
+  return dkSlide("Эффективность: где деньги и резервы", `Новые показатели поверх презентации: концентрация расхода, замороженный капитал, цены, точность плана МТР, сроки заказа и дисциплина поставщиков. Окно расхода — ${e.win.join("–").replace(/–.*–/, "–")}; ${siteNote}.${m.ctx.pg ? " Фильтр группы планирования сужает расход, план и дефицит по заказам; склад, неликвид и поставщики — общие." : ""}`,
+      `<div class="dk-tiles">${m.ctx.pg ? dkTile("—", "мес. расхода на складах", "склад общий, по группам планирования не делится", true, "var(--good)") : dkTile(st.months != null ? num(st.months, 1) : "—", "мес. расхода лежит на складах", `${num(st.total / 1e9, 2)} млрд ₽ при расходе ${dkMln(st.factAvgYear)} млн ₽/год`, true, "var(--good)")}
         ${dkTile(dkMln(st.dead.value), "млн ₽ запаса без движения", `${num(st.dead.n)} кодов: нет расхода ${e.win[0]}–${cur} и потребности`, false, DK.gap)}
         ${dkTile(dkMln(st.excess.value), "млн ₽ сверх нормы", `${num(st.excess.n)} кодов: запас > план + 2 года расхода`, false, DK.late)}
         ${dkTile(`${num(a.classes.A.n)} из ${num(a.n)}`, "кодов дают 80% расхода (A)", `${num(a.aNoStock)} из них нет на складе`)}

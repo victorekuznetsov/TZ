@@ -382,8 +382,25 @@ def ktg_metrics(fleet, ctx, cur):
     return {"byUnit": rows, "below": below}
 
 
+PG_OF = {}   # заказ → группа планирования (заказы графика с группой из статусов TOPO)
+
+
+def pg_ok(pg, f):
+    """Фильтр «Группа планирования»: dev — 100/200, be — остальные и не присвоенные, иначе код группы."""
+    g = pg.rsplit("/", 1)[-1] if pg else ""
+    if f == "dev":
+        return g in DEV_GROUPS
+    if f == "be":
+        return g not in DEV_GROUPS
+    return g == f
+
+
 def in_ctx(o, ctx):
-    return all(not ctx.get(k) or o.get(k) == ctx[k] for k in ("site", "model", "unit"))
+    if not all(not ctx.get(k) or o.get(k) == ctx[k] for k in ("site", "model", "unit")):
+        return False
+    if ctx.get("pg"):
+        return pg_ok(o["pg"] if "pg" in o else PG_OF.get(str(o["order"]), ""), ctx["pg"])
+    return True
 
 
 def levels(years, ex, pl, bu, pv, ktg, cur, elapsed, units_fact):
@@ -488,7 +505,9 @@ def main():
     if len(ctl) != len(orders):
         diffs.append(f"заказов: control {len(ctl)} ≠ график {len(orders)}")
 
+    PG_OF.update({str(o["order"]): o["pg"] for o in orders if o["pg"]})
     contexts = [{}]
+    contexts += [{"pg": "dev"}, {"pg": "be"}, {"pg": "500"}, {"site": "1100", "pg": "dev"}, {"model": "WK-35", "pg": "be"}]
     contexts += [{"site": s} for s in sorted({o["site"] for o in orders})]
     contexts += [{"model": m} for m in sorted({o["model"] for o in orders})]
     contexts += [{"unit": u} for u in sorted({o["unit"] for o in orders})]
