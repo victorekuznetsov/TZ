@@ -118,7 +118,7 @@ const TAB_NEEDS = {
   linkone: ["linkome", "linkomeDraw", "kb", "tree"],
   kb: ["kb", "tree", "linkome"],
   fleet: [],
-  repairs: [],
+  repairs: ["usoWk", "control", "orderText"],
   provision: ["interchange", "usoWk"],
   stock: [],
   purchase: [],
@@ -497,10 +497,48 @@ function toroProvisionBlock(o, works) {
     <th class="n">Не покрыто</th><th class="n" title="Есть на другой площадке сверх её потребности — ограниченная возможность">Можно перем.*</th><th class="n">Обеспечено</th></tr></thead>
     <tbody>${toroGrouped(lines, works, 12, row)}</tbody></table></div>`;
 }
+/* статус позиции заказа по количеству: в плане / частично / закрыта (факт ≥ план) / вне плана */
+function lineStatus(qp, qf) {
+  qp = +qp || 0; qf = +qf || 0;
+  if (qp > 0 && qf >= qp - 1e-9) return ["закрыта", "good"];
+  if (qp > 0 && qf > 0) return ["частично", "warn"];
+  if (qp > 0) return ["в плане", "info"];
+  if (qf > 0) return ["вне плана", "warn"];
+  return ["—", ""];
+}
+function lineStatusBadge(qp, qf) { const [l, c] = lineStatus(qp, qf); return c ? `<span class="badge ${c}">${l}</span>` : '<span class="dim">—</span>'; }
+/* МТР подрядчика (УСО) по заказу — позиции реестра МТР УСО со стоимостью и статусом.
+   «Факт» реестра — данные подрядчика («Количество / Стоимость факт (подр.)»), а не факт,
+   проведённый в заказе SAP: его показываем отдельно (строка PM-06 «ТОиР. Материалы подрядчика»). */
+const USO_STATUS = { "закрыта": ["закрыта подрядчиком", "good"], "частично": ["частично", "warn"], "в плане": ["в плане", "info"], "вне плана": ["вне плана", "warn"] };
+function usoLinesHtml(usoOrders, pmUso) {
+  if (!usoOrders.length) return pmUso && (pmUso.up || pmUso.uf)
+    ? `<h3>МТР подрядчика (УСО)</h3><p class="hint">В заказе SAP (PM-06) план МТР подрядчика ${rub(pmUso.up)}, факт ${rub(pmUso.uf)} — одной строкой «ТОиР. Материалы подрядчика»; позиций в реестре МТР УСО по этому заказу нет.</p>` : "";
+  const um = (D.usoWk && D.usoWk.meta) || {};
+  return usoOrders.map(o => {
+    const L = (o.lines || []).slice().sort((a, b) => (b.p || 0) - (a.p || 0));
+    const cnt = {}; L.forEach(l => { const k = (USO_STATUS[lineStatus(l.qp, l.qf)[0]] || ["—"])[0]; cnt[k] = (cnt[k] || 0) + 1; });
+    const sp = L.reduce((x, l) => x + (l.p || 0), 0), sa = L.reduce((x, l) => x + (l.a || 0), 0);
+    const badge = l => { const s = USO_STATUS[lineStatus(l.qp, l.qf)[0]]; return s ? `<span class="badge ${s[1]}">${s[0]}</span>` : '<span class="dim">—</span>'; };
+    const pmPlanDiff = pmUso && pmUso.up ? pmUso.up - (o.planValue || 0) : 0;
+    const warn = pmUso && sa > 0 && !(pmUso.uf > 0)
+      ? callout("warn", `<b>Подрядчик отчитался о ${mrub(sa)}, а в заказе SAP факт МТР подрядчика не проведён (0 ₽).</b> Реестр УСО — данные подрядчика; факт в заказе появится после проведения в SAP.`) : "";
+    return `<h3>МТР подрядчика (УСО) · ${num(L.length)} поз.</h3>
+      <div class="kpis toro-kpis">${kpi("План (реестр)", mrub(o.planValue))}${kpi("Факт подрядчика (реестр)", mrub(o.factValue))}
+        ${pmUso ? kpi("План в заказе SAP", mrub(pmUso.up)) + kpi("Факт в заказе SAP", mrub(pmUso.uf), sa > 0 && !(pmUso.uf > 0) ? "warn" : "") : ""}</div>${warn}
+      <p class="hint">Реестр МТР УСО на ${dmy(um.asOf)}${o.year ? `, ${esc(o.year)} год` : ""} · ${o.closed ? "в реестре закрыт" : "в реестре открыт"}${o.openValue ? ` · не закрыто ${mrub(o.openValue)}` : ""} · позиции: ${Object.entries(cnt).map(([k, n]) => `${esc(k)} ${n}`).join(", ")}.
+        Стоимость в рублях; в SAP (заказ → вкладка «МТР подрядчика») та же позиция — в валюте плана (¥).${Math.abs(pmPlanDiff) > 1 ? ` План в заказе SAP отличается от реестра на ${rub(pmPlanDiff)}.` : ""}</p>
+      <div class="twrap"><table class="toro-lines"><thead><tr><th>ЕКМТР</th><th>Материал</th><th class="n">План, шт</th><th class="n" title="Количество факт (подр.)">Факт подр., шт</th><th class="n">План, ₽</th><th class="n" title="Стоимость факт (подр.)">Факт подр., ₽</th><th>Статус в реестре</th></tr></thead><tbody>
+      ${L.map(l => `<tr><td>${l.code ? codeLink(l.code) : '<span class="dim">без кода</span>'}</td><td class="toro-name">${esc(l.name)}</td><td class="n">${toroN(l.qp)}</td><td class="n">${toroN(l.qf)}</td><td class="n">${rub(l.p)}</td><td class="n">${rub(l.a)}</td><td>${badge(l)}</td></tr>`).join("")}
+      <tr class="toro-grp"><td colspan="4">Итого</td><td class="n">${rub(sp)}</td><td class="n">${rub(sa)}</td><td></td></tr></tbody></table></div>`;
+  }).join("");
+}
 function toroPlainTable(lines, works) {
-  const row = l => `<tr><td>${codeLink(l.code)}</td><td class="toro-name">${esc(l.name)}</td><td class="n">${toroN(l.planQty ?? l.qp)}</td><td class="n">${toroN(l.factQty ?? l.qf)}</td><td class="n">${l.qty == null ? "—" : toroN(l.qty)}</td></tr>`;
-  return `<div class="twrap"><table class="toro-lines"><thead><tr><th>ЕКМТР</th><th>Материал</th><th class="n">План</th><th class="n">Факт</th><th class="n">Открытая потребность</th></tr></thead>
-    <tbody>${toroGrouped(lines, works, 5, row)}</tbody></table></div>`;
+  const money = v => (v ? rub(v) : '<span class="dim">·</span>');
+  const row = l => `<tr><td>${l.code ? codeLink(l.code) : '<span class="dim">—</span>'}</td><td class="toro-name">${esc(l.name)}</td><td class="n">${toroN(l.planQty ?? l.qp)}</td><td class="n">${toroN(l.factQty ?? l.qf)}</td>
+    <td class="n">${money(l.p)}</td><td class="n">${money(l.a)}</td><td class="n">${money(l.up)}</td><td class="n">${money(l.uf)}</td><td>${(l.up || l.uf) && !(l.qp || l.qf) ? '<span class="badge">УСО</span>' : lineStatusBadge(l.planQty ?? l.qp, l.factQty ?? l.qf)}</td></tr>`;
+  return `<div class="twrap"><table class="toro-lines"><thead><tr><th>ЕКМТР</th><th>Материал</th><th class="n">План, шт</th><th class="n">Факт, шт</th><th class="n">План МТР</th><th class="n">Факт МТР</th><th class="n" title="МТР подрядчика">План УСО</th><th class="n" title="МТР подрядчика">Факт УСО</th><th>Статус</th></tr></thead>
+    <tbody>${toroGrouped(lines, works, 9, row)}</tbody></table></div>`;
 }
 async function openToroCard(number, hint = {}) {
   beginEntityCard("toro", [number, hint]);
@@ -534,7 +572,7 @@ async function openToroCard(number, hint = {}) {
       ${toroHeader(number, orders, historical, uso, ctl, works)}
       ${orders.map(o => toroProvisionBlock(o, works)).join("")}
       ${historical.length ? '<h3>История ТОРО</h3><p class="hint">Начало: ' + [...new Set(historical.map(r => r.start).filter(Boolean))].map(dmy).join(", ") + '</p>' + toroPlainTable(historical, works) : ""}
-      ${uso.map(o => '<h3>МТР подрядчика (УСО)</h3>' + toroPlainTable((o.lines || []).map(l => ({ ...l, work: l.work || o.work, planQty: l.qp, factQty: l.qf })), works)).join("")}
+      ${usoLinesHtml(uso, ctl.length ? { up: ctl.reduce((x, r) => x + (r.up || 0), 0), uf: ctl.reduce((x, r) => x + (r.uf || 0), 0) } : null)}
       ${!orders.length && !historical.length && !uso.length ? '<p class="hint">Заказ не найден в загруженных данных.</p>' : ""}`;
     byId("mCloseBtn").onclick = closeModal; finishEntityCard(); byId("mCloseBtn").focus();
   } catch (e) {
