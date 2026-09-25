@@ -581,7 +581,7 @@ tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--
 .dk-msgs div{display:flex;gap:12px;align-items:center}
 .dk-msgs i{flex:0 0 30px;height:30px;border-radius:50%;color:#fff;font-style:normal;font-weight:700;display:flex;align-items:center;justify-content:center}
 .dk-msgs p{margin:0;font-size:13.5px;line-height:1.5}
-@media(max-width:1000px){.dk-62,.dk-55,.dk-46,.dk-28,.dk-3{grid-template-columns:1fr}}
+@media(max-width:1000px){.dk-62,.dk-55,.dk-46,.dk-28,.dk-3{grid-template-columns:minmax(0,1fr)}}
 
 /* ---------- Поиск по номеру ---------- */
 .lk-search{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0 8px}
@@ -605,4 +605,6 @@ tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--
 .dk-chev{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:12px}
 .dk-chev header{clip-path:polygon(0 0,calc(100% - 12px) 0,100% 50%,calc(100% - 12px) 100%,0 100%);text-align:center}
 .dk-wrap td{white-space:normal!important}
-@media(max-width:1000px){.dk-acts,.dk-lims{grid-template-columns:1fr}.dk-chev{grid-template-columns:1fr 1fr}}
+@media(max-width:1000px){.dk-acts,.dk-lims{grid-template-columns:minmax(0,1fr)}.dk-chev{grid-template-columns:repeat(2,minmax(0,1fr))}}
+#lkOut .sup-pill{white-space:normal;max-width:100%}
+@media(max-width:520px){.dk-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.dk-tile .v{font-size:20px}}

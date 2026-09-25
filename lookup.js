@@ -7,6 +7,7 @@
 
 try { LK.analogs = localStorage.getItem("wk-lk-analogs") !== "0"; } catch (e) { /* нет хранилища */ }
 const LK_RECENT_KEY = "wk-lk-recent";
+const LK_VERD = { covered: "обеспечено", inTime: "успеем заказать", late: "не успеем", past: "срок прошёл", nodate: "нет срока" };
 const LK_LV = { ok: ["good", "var(--good)"], warn: ["warn", "var(--warn)"], bad: ["bad", "var(--bad)"], info: ["info", "var(--info)"], na: ["", "var(--ink-3)"] };
 
 function lkRecent() { try { return JSON.parse(localStorage.getItem(LK_RECENT_KEY)) || []; } catch (e) { return []; } }
@@ -181,7 +182,7 @@ function lkStatus(p, r) {
       ${dkTile(p.price.factLast ? lkRub(p.price.factLast.price) : "—", "цена факт за шт", p.price.factChange != null ? `${lkChg(p.price.factChange)} к ${p.price.factFirst.year}` : "")}
     </div>
     <div class="dk-grid dk-62"><ul class="lk-sum">${sm.out.map(t => `<li>${t}</li>`).join("")}</ul>
-      ${dkNote(`<b>Что сделать</b><br>${sm.act.length ? sm.act.map(t => "• " + t).join("<br>") : "Действий не требуется: потребность покрыта, запас соответствует расходу."}${p.status.orderBy ? `<br><span class="dim">Крайняя дата заказа по витрине: ${dmy(p.status.orderBy)} · вердикт: ${esc(p.status.verdict || "—")}</span>` : ""}`)}</div>
+      ${dkNote(`<b>Что сделать</b><br>${sm.act.length ? sm.act.map(t => "• " + t).join("<br>") : "Действий не требуется: потребность покрыта, запас соответствует расходу."}${p.status.orderBy ? `<br><span class="dim">Крайняя дата заказа по витрине: ${dmy(p.status.orderBy)} · вердикт: ${esc(LK_VERD[p.status.verdict] || p.status.verdict || "—")}</span>` : ""}`)}</div>
   </section>`;
 }
 function lkHistory(p) {
