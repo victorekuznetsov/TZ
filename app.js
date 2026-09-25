@@ -102,7 +102,7 @@ const ROLES = {
 const TAB_NEEDS = {
   sum: [],
   analytics: ["control"],
-  control: ["control"],
+  control: ["control", "orderText"],
   catalog: ["tree", "drawings"],
   // tree — не украшение: карточка узла читает D.tree.bookModel, чтобы
   // подобрать документы по модели. Без этой зависимости первый заход
