@@ -757,6 +757,10 @@ def main():
             "byKind": cut(known, lambda r: r["kind"] or "не присвоено", sort_by_value=True, limit=8),
             "feasible": feas,
             "contour": contour,
+            # признак ППМ ≠ «Немедленно» по всем строкам заказов WK 2026–2027 —
+            # база для пересборки в браузере без pm06_meta
+            "ppmFlags": {f"{y}|{o}|{c}": v for (y, o, c), v in sorted(pm06["ppm"].items())
+                         if (y, o) in order_totals} if pm06 else {},
             "sapStatus": bool(pm06),
             "sapSources": pm06["sources"] if pm06 else [],
             "sapRemoved": removed or {},
