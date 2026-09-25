@@ -384,11 +384,12 @@ function anScopeHtml(m, compact = false) {
   const sc = m.planScope, cur = m.asOf.slice(0, 4), next = String(+cur + 1);
   const ys = [String(+cur - 1), cur, next];
   const be = sc.groups.filter(g => !g.dev), beNext = be.reduce((s, g) => s + ((g.years[next] || {}).plan || 0), 0);
-  const note = `<b>Оценка планирования «Развития» — только группы планирования ТОРО 100 Механика и 200 Энергетика</b>: ${pct(sc.devShareNext)} плана ${next}${sc.devShareCur != null ? ` и ${pct(sc.devShareCur)} плана ${cur}` : ""} в текущих фильтрах. Группы 300–900 — службы БЕ (заказчика): их заказы входят в исполнение и бюджет, но не в оценку планирования${beNext ? ` (${mrub(beNext)} плана ${next})` : ""}.`;
+  const p1 = v => (v == null ? "—" : num(v * 100, 1) + "%");
+  const note = `<b>Оценка планирования «Развития» — только группы планирования ТОРО 100 Механика и 200 Энергетика</b>: ${p1(sc.devShareNext)} плана ${next}${sc.devShareCur != null ? ` и ${p1(sc.devShareCur)} плана ${cur}` : ""} в текущих фильтрах. Группы 300–900 — службы БЕ (заказчика): их заказы входят в исполнение и бюджет, но не в оценку планирования${beNext ? ` (${mrub(beNext)} плана ${next})` : ""}.`;
   if (compact) return note;
   return `<section class="card"><h3>Кто планирует: группы планирования ТОРО</h3><p class="hint">${note}</p>
     <div class="twrap"><table><thead><tr><th>Группа</th><th>Кто</th><th>Коды</th>${ys.map(y => `<th class="n">Заказов ${y}</th><th class="n">План ${y}</th>`).join("")}</tr></thead><tbody>
-    ${sc.groups.map(g => `<tr${g.dev ? "" : ' class="dim"'}><td><b>${esc(g.group || "—")}</b> ${esc(g.name)}</td><td>${g.dev ? '<span class="badge good">Развитие</span>' : g.group ? '<span class="badge">БЕ</span>' : '<span class="badge warn">нет в выгрузке</span>'}</td><td class="mono">${esc(g.codes.join(", ") || "—")}</td>
+    ${sc.groups.map(g => `<tr${g.dev ? "" : ' class="dim"'}><td>${g.group && g.group !== "#" ? `<b>${esc(g.group)}</b> ` : ""}${esc(g.name)}</td><td>${g.dev ? '<span class="badge good">Развитие</span>' : g.group && g.group !== "#" ? '<span class="badge">БЕ</span>' : '<span class="badge warn">не в оценке</span>'}</td><td class="mono">${esc(g.codes.join(", ") || "—")}</td>
       ${ys.map(y => `<td class="n">${num((g.years[y] || {}).n || 0)}</td><td class="n">${mrub((g.years[y] || {}).plan || 0)}</td>`).join("")}</tr>`).join("")}
     </tbody></table></div></section>`;
 }
