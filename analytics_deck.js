@@ -8,7 +8,8 @@
 let AN_SECTION = (() => { try { return sessionStorage.getItem("wk-an-section") || "concl"; } catch (e) { return "concl"; } })();
 const AN_SECTIONS = [
   ["concl", "Выводы"], ["s01", "01 Парк и КТГ"], ["s02", "02 Исполнение"], ["s03", "03 План"],
-  ["s04", "04 Обеспеченность"], ["s05", "05 Запасы и закупки"],
+  ["s04", "04 Обеспеченность"], ["s05", "05 Запасы и закупки"], ["s06", "06 Контроль и что сделать"],
+  ["s07", "07 Справочники и данные"], ["s08", "08 Эффективность"],
 ];
 // палитра презентации (deck: C_STOCK, C_BUY, …)
 const DK = {
@@ -336,14 +337,202 @@ function dkNav() {
     <button class="pill" data-an-goto="control">Контроль отделов →</button></div>`;
 }
 function dkRender(host, m) {
-  const needSchedule = (AN_SECTION === "s02" || AN_SECTION === "s03") && !S;
+  const needSchedule = (AN_SECTION === "s02" || AN_SECTION === "s03" || AN_SECTION === "s08") && !S;
+  const needData = { s06: ["orderText"], s07: ["interchange"] }[AN_SECTION] || [];
   const dk = dkModel(m);
-  const html = { s01: dkS01, s02: dkS02, s03: dkS03, s04: dkS04, s05: dkS05 }[AN_SECTION](dk, m);
-  if (needSchedule) ensureSchedule().then(() => { if (TAB === "analytics") renderTab(); }).catch(() => {});
+  const html = { s01: dkS01, s02: dkS02, s03: dkS03, s04: dkS04, s05: dkS05, s06: dkS06, s07: dkS07, s08: dkS08 }[AN_SECTION](dk, m);
+  const rerender = () => { if (TAB === "analytics") { const y = window.scrollY; renderTab(); window.scrollTo(0, y); } };
+  if (needSchedule) ensureSchedule().then(rerender).catch(() => {});
+  if (needData.some(k => D[k] === undefined)) ensureData(needData).then(rerender).catch(() => {});
   return html;
 }
 function dkWire(host) {
   qsa("[data-an-section]", host).forEach(b => { b.onclick = () => { AN_SECTION = b.dataset.anSection; try { sessionStorage.setItem("wk-an-section", AN_SECTION); } catch (e) {} renderTab(); window.scrollTo(0, 0); }; });
   qsa("[data-an-goto]", host).forEach(b => { b.onclick = () => navigateTo(b.dataset.anGoto); });
   if (typeof wireCodeLinks === "function") wireCodeLinks(host);
+}
+
+/* ===================== 06 Контроль отделов и выводы ===================== */
+const DK_LV = { bad: "Критично", warn: "Внимание", info: "К сведению", ok: "Норма", na: "нет данных" };
+const DK_LV_FILL = { bad: DK.tR, warn: DK.tA, info: DK.tB, ok: DK.tG, na: null };
+let DK_MATRIX = { key: null, cols: null, ctl: null };
+function dkRuleMatrix(m) {
+  const key = JSON.stringify(m.ctx);
+  if (DK_MATRIX.key === key && DK_MATRIX.ctl === D.control && DK_MATRIX.prov === D.provision) return DK_MATRIX.cols;
+  const src = { control: D.control, controlRows: D.controlRows, provision: D.provision, stock: D.stock, fleet: D.fleet };
+  const all = m.ctx.site ? AnalyticsCore.buildModel(src, { ...m.ctx, site: "" }) : m;
+  const cols = [["all", "Весь парк", all], ...["1100", "1400", "2400"].map(s => [s, dkShort(s), s === m.ctx.site ? m : AnalyticsCore.buildModel(src, { ...m.ctx, site: s })])]
+    .map(([k, l, mm]) => [k, l, anRuleLevels(mm), mm.checks]);
+  DK_MATRIX = { key, cols, ctl: D.control, prov: D.provision };
+  return cols;
+}
+function dkS06(dk, m) {
+  const cur = dk.cur, next = dk.next, P = m.plan, E = m.execCtl, B = m.budget, Y = m.exec.years;
+  const cols = dkRuleMatrix(m), lv = (c, id) => c[2][id] || "na";
+  const ann = Object.fromEntries(P.annual.map(a => [a.code, a.share]));
+  const acc = P.accuracy[String(+cur - 1)] || {};
+  const texts = (D.orderText && D.orderText.text) || {};
+  const rel = E.releasedEmpty.all.slice(0, 10), relSum = rel.reduce((s, r) => s + r.planCounted, 0);
+  const fun = E.funnel.filter(f => f.n);
+  const funGroup = k => (k === "released" ? "w" : k === "inWork" || k === "factDone" ? "r" : ["closed", "billed", "accepted", "techClosed"].includes(k) ? "c" : "a");
+  const sc = E.sCurve, mon = m.asOf.slice(0, 7), scMax = Math.max(1, ...sc.map(x => x.planCum)) * 1.05;
+  const bcodes = ["ТКБЕ", "УТВП", "СГЛБ", "ПЗТГ", "КОРБ", "ТРКБ"], stc = Object.fromEntries(B.statusCur.map(x => [x.code, x])), stn = Object.fromEntries(B.statusNext.map(x => [x.code, x]));
+  const trkb = [...B.statusCur, ...B.statusNext].filter(x => x.code === "ТРКБ").reduce((s, x) => s + x.n, 0);
+  const onR = m.prov.ppm[next + "|onRelease"] || { value: 0 }, fz = dk.prov.feasible || {};
+  const acts = [
+    [`Закрыть хвосты ${cur}`, `${num(Y[cur].groupN["Деблокирован, пусто"])} деблокированных заказов на ${dkMln(Y[cur].groups["Деблокирован, пусто"])} млн ₽ без факта: провести факт, перенести или закрыть до конца года.`, DK.late],
+    [`Ревизия согласования ${cur}`, `${dkMln(Y[cur].groups["Согласование"])} млн ₽ ещё на согласовании на ${dmy(m.asOf)} — решить, что переходит в ${next}.`, DK.buy],
+    [`Деблокировать ${next} раньше`, `${dkMln(onR.value)} млн ₽ потребности закупка не видит до деблокирования при сроке поставки ${dk.prov.leadMedianDays || "—"} дней.`, DK.gap],
+    ["Заказать сегодня", `${num(dk.prov.orderTodayN)} позиций на ${dkMln(dk.prov.orderTodaySum)} млн ₽ ещё успеваем; по ${dkMln((fz.lateMore || 0) + (fz.late3 || 0))} млн ₽ — аналоги или перенос.`, DK.stock],
+    ["Просроченные поставки", `${num(dk.purchase.overdue)} ед. с прошедшим месяцем поставки — эскалация поставщикам (раздел 08 → «Поставщики»).`, DK.gap],
+    ["Возможность перемещения", `До ${dkMln(m.prov.total.transferPotential)} млн ₽ дефицита есть на других площадках. Перемещение ограничено — проверить, что реально согласовать и перевезти.`, "#8A9199"],
+  ];
+  return dkSlide("Один набор правил — разные ответы по площадкам", `Результат каждого из ${AnalyticsCore.RULES.length} правил автовыводов для всего парка и каждой площадки${m.ctx.model || m.ctx.unit || m.ctx.order ? " (с учётом фильтров модели, машины и заказа)" : ""}. Нажмите правило в разделе «Выводы», чтобы увидеть цифры-доказательства.`,
+      dkTable(["Группа", "Правило", ...cols.map(c => c[1])], AnalyticsCore.RULES.map(r => [esc(r.group), esc(r.title), ...cols.map(c => `<b>${DK_LV[lv(c, r.id)]}</b>`)]),
+        { fills: (i, j) => (j >= 2 ? DK_LV_FILL[lv(cols[j - 2], AnalyticsCore.RULES[i].id)] : null), aligns: ["l", "l", ...cols.map(() => "c")], cls: "dk-compact" })
+      + `<p class="hint">Сверки расчётов: ${cols.map(c => `${esc(c[1])} ${c[3].filter(x => x.ok).length}/${c[3].length}`).join(" · ")}</p>`)
+    + dkSlide(`Контроль планирования: план ${next} и оперативный план`, "Цепочка согласования ПЛАН → СГПЛ → ССПЛ → СГГС → деблокирование; статусы годового и оперативного плана — доля плана в рублях с проставленным статусом.",
+      `<div class="dk-tiles">${dkTile(pct(P.approvedShare), `плана ${next} согласовано`, `${dkMln(P.approvedPlan)} из ${dkMln(P.nextPlan)} млн ₽`, true, "var(--good)")}
+        ${dkTile(pct(ann["УТВГ"] || 0), "утверждено в годовом (УТВГ)", "плановые заказы APP1")}${dkTile(num(P.chain[0].n), "позиций ППР без заказа", `${dkMln(P.chain[0].plan)} млн ₽ вне плана`)}
+        ${dkTile(num(E.notReleasedStarted.n), "начало прошло, не деблок.", `${dkMln(E.notReleasedStarted.plan)} млн ₽ ${cur}`, false, E.notReleasedStarted.n ? DK.late : null)}
+        ${dkTile(pct(acc.n ? acc.ok / acc.n : null), `точность плана ${+cur - 1}`, "факт в ±20% плана заказа")}${dkTile(pct((E.unplanned[String(+cur - 1)] || {}).share), `внеплановые ${+cur - 1}`, "доля факта AVS1")}</div>
+      <div class="dk-grid dk-55"><div><b class="dk-sub">Цепочка согласования ${next}, млн ₽</b>${anHBars(P.chain.map((c, i) => ({ label: `${c.key} · ${num(c.n)}`, values: { v: c.plan } })), [{ k: "v", label: "План", color: DK.buy }], { rowH: 30, labelW: 150, legend: false })}</div>
+      <div><b class="dk-sub">Статусы плана: доля плана со статусом</b>${anHBars([...P.annual.map(a => ({ label: `${a.code} (год)`, values: { y: a.share || 0, n: 1 - (a.share || 0) } })), ...P.operative.map(a => ({ label: `${a.code} (≤31 дн.)`, values: { y: a.share || 0, n: 1 - (a.share || 0) } }))],
+        [{ k: "y", label: "Есть статус", color: DK.stock }, { k: "n", label: "Нет статуса", color: "#E5E7EA", light: true }], { percent: true, rowH: 24, labelW: 120 })}</div></div>
+      <p class="hint">ГОД — включён в годовой план, ПТОГ — согласован ПТО, ГИП — главным инженером, УТВГ — утверждён, УТВП — в программе и бюджете. МЕС/УТВМ, НЕД/УТВН — месячный и недельный план для заказов с началом в ближайшие 31 день.</p>`)
+    + dkSlide(`Контроль исполнения ${cur}: воронка и освоение`, `Стадия — по статусам SAP на дату выгрузки. Освоение наступивших работ — факт к плану заказов с базисным началом не позже ${dmy(m.asOf).slice(3)}.`,
+      `<div class="dk-tiles">${dkTile(pct(Y[cur].exec), `исполнение ${cur}`, `при ${pct(m.elapsed)} прошедшего года`, true, DK.gap)}${dkTile(pct(E.execDue), "освоение наступивших", `${dkMln(E.factDueToDate)} из ${dkMln(E.dueToDate)} млн ₽`)}
+        ${dkTile(num(E.releasedEmpty.n), "деблокированы пусто", `${dkMln(E.releasedEmpty.plan)} млн ₽`, false, E.releasedEmpty.n ? DK.late : null)}${dkTile(num(E.closeOverdue.n), "просрочено закрытие", `${dkMln(E.closeOverdue.plan)} млн ₽, > ${AnalyticsCore.T.closeLagDays} дн.`)}
+        ${dkTile(num(E.readyToClose.n), "ФХСМ, ждут ТЗКР", "затрат больше не ждём")}${dkTile(num(E.tails["2024"].n + E.tails["2025"].n), "хвосты 2024–2025", `${dkMln(E.tails["2024"].plan + E.tails["2025"].plan)} млн ₽ не закрыто`)}</div>
+      <div class="dk-grid dk-55"><div><b class="dk-sub">Воронка ${cur}: план по стадиям, млн ₽</b>${anHBars(fun.map(f => ({ label: `${f.label} · ${num(f.n)}`, values: { [funGroup(f.key)]: f.plan } })),
+        [{ k: "a", label: "Согласование", color: DK.buy }, { k: "w", label: "Деблок. без факта", color: DK.late }, { k: "r", label: "В работе", color: "#7FD8B4", light: true }, { k: "c", label: "Закрыто", color: DK.stock }], { rowH: 26, labelW: 230 })}</div>
+      <div><b class="dk-sub">План и факт ${cur} нарастающим, млн ₽</b>${dkLine(sc.map(x => x.month.slice(5)), [{ label: "План нарастающим", color: DK.plan, values: sc.map(x => x.planCum) }, { label: "Факт нарастающим", color: DK.fact, values: sc.map(x => (x.month <= mon ? x.factCum : null)) }], { yMax: scMax, fmt: v => dkMln(v), every: 1, H: 260 })}</div></div>`)
+    + dkSlide(`Деблокированы без факта: крупнейшие заказы ${cur}`, `${num(E.releasedEmpty.n)} заказов на ${dkMln(E.releasedEmpty.plan)} млн ₽ переданы в работу, но нет ни факта, ни подтверждений. Текст заказа — из выгрузки PM-06.`,
+      (rel.length ? dkTable(["Заказ", "Текст заказа", "Борт", "Площадка", "Начало", "Конец", "План, млн ₽"], rel.map(r => [entityLink("toro", r.order, r), esc(texts[r.order] || (D.orderText ? "—" : "загрузка…")), esc(anShort(r.unit)), esc(dkShort(r.site)), dmy(r.start), dmy(r.end), `<b>${num(r.planCounted / 1e6, 1)}</b>`]), { aligns: ["l", "l", "l", "l", "c", "c", "r"] })
+        + dkNote(`<b>Что сделать:</b> ${rel.length} крупнейших — ${dkMln(relSum)} млн ₽, ${pct(E.releasedEmpty.plan ? relSum / E.releasedEmpty.plan : null)} суммы. Провести факт, перенести сроки или закрыть; полный список — «Контроль отделов» → «Исполнение», фильтр «Факт по заказу: нет факта».`) : '<p class="hint">Таких заказов в контексте нет.</p>'))
+    + dkSlide("Контроль бюджетирования: план, факт, статусы", `Перерасход — факт больше плана × ${num(AnalyticsCore.T.overrunRatio, 1)} и больше ${num(AnalyticsCore.T.overrunMin / 1000)} тыс. ₽; риск неосвоения — базисное начало наступило, факта нет.`,
+      `<div class="dk-tiles">${["2024", "2025"].map(y => dkTile(pct(Y[y].exec), `факт / план ${y}`, "")).join("")}${dkTile(dkMln(B.riskUnspent), "млн ₽ риск неосвоения", `${pct(B.riskShare)} плана ${cur}, ${num(B.riskN)} заказ.`, true, DK.late)}
+        ${dkTile(dkMln(B.overrun[cur].value), `млн ₽ перерасход ${cur}`, `${num(B.overrun[cur].n)} заказов`)}${dkTile(num(trkb), "ТРКБ: нужна корректировка", `заказы ${cur}–${next}`)}${dkTile(pct(Y[cur].usoPlan ? Y[cur].usoFact / Y[cur].usoPlan : null), `УСО факт / план ${cur}`, "МТР подрядчика")}</div>
+      <div class="dk-grid dk-55"><div><b class="dk-sub">План и факт МТР и УСО по годам, млн ₽</b>${anColumns(AnalyticsCore.YEARS, [{ label: "План МТР", color: DK.plan, values: AnalyticsCore.YEARS.map(y => Y[y].mtrPlan) },
+          { label: "Факт МТР", color: DK.fact, values: AnalyticsCore.YEARS.map(y => (y === next ? null : Y[y].mtrFact)) }, { label: "План УСО", color: "#B9C1EE", values: AnalyticsCore.YEARS.map(y => Y[y].usoPlan) },
+          { label: "Факт УСО", color: DK.buy, values: AnalyticsCore.YEARS.map(y => (y === next ? null : Y[y].usoFact)) }], { H: 260 })}</div>
+      <div><b class="dk-sub">Бюджетные статусы плановых заказов: доля плана</b>${anHBars(bcodes.map(c => ({ label: c, values: { a: (stc[c] || {}).share || 0, b: (stn[c] || {}).share || 0 } })), [{ k: "a", label: cur, color: DK.buy }, { k: "b", label: next, color: DK.stock }], { grouped: true, rowH: 34, labelW: 70, fmt: v => pct(v) })}</div></div>
+      <p class="hint">ТКБЕ — бюджет утверждён ТК БЕ; УТВП — в программе и бюджете (MCB); СГЛБ — согласован бюджетированием; ПЗТГ — прогноз завершения года; КОРБ — скорректирован; ТРКБ — нужна корректировка. План УСО в заказах заполнен не полностью — факт УСО прошлых лет выше плана.</p>`)
+    + dkSlide("Выводы и что сделать", `Предложения по текущему контексту на ${dmy(m.asOf)}; сроки и ответственных нужно согласовать.`,
+      `<div class="dk-acts">${acts.map(([t, b, c], i) => `<div><i style="background:${c}">${i + 1}</i><p><b>${esc(t)}</b><br>${esc(b)}</p></div>`).join("")}</div>`);
+}
+
+/* ===================== 07 Справочники и качество данных ===================== */
+function dkS07(dk, m) {
+  const c = (D.catalog && D.catalog.meta) || {}, ic = (D.interchange && D.interchange.meta) || {};
+  const amb = c.ambiguousEkmtr || 0, cod = c.items ? c.matchedEkmtr / c.items : null;
+  const nWK = (D.fleet.units || []).length, noBook = (D.fleet.units || []).filter(u => !u.book).length;
+  const lims = [
+    ["Статус — на дату выгрузки", "Стадия заказов 2024–2025 взята из годовых выгрузок PM-06. Если заказ закрыли позже, в отчёте он может быть «в работе».", "#2A3138"],
+    ["Запас по площадкам", "Площадка склада — по заводу строки остатков; склады Иркутской области отнесены к Сухому Логу. Склад покрывает только свою площадку; перемещение ограничено и показано как возможность*, не как покрытие.", DK.late],
+    ["Позиции ППР и копии", `${dkMln(m.exec.years[dk.next].noOrderPlan)} млн ₽ позиций ППР ${dk.next} и неисполненный план оригиналов БЕ исключены из плана по правилам PM-06.`, "#8A9199"],
+    ["Срок поставки — до месяца", "Обеспеченность считается по месяцу: приход внутри месяца потребности считается успевающим.", "#2A3138"],
+    ["Парк и книги", `В парке ${nWK} бортов после схлопывания дублей; у ${noBook} нет книги комплектации.`, "#8A9199"],
+    ["Стоимость закупок — в рублях", "«Общая стоимость» выгрузки закупки — в рублях (у позиций прайса ДП = цена в юанях × курс пересчёта ≈ 12,48 ₽/¥); валюта документа (ZCNY, ZUSD) — справочно. Цены закупки сравнимы с учётными и плановыми.", DK.late],
+  ];
+  const issues = (D.quality && D.quality.issues) || [];
+  const ck = dkRuleMatrix(m);
+  const info = DATA_OVERRIDE_INFO, over = DATA_OVERRIDE.size > 0 && info;
+  const steps = [["Загрузить", "Остатки (3 файла), PM-06 M06_{площадка}_{год}.xlsx — только изменившиеся, МТР УСО", DK.buy], ["Пересобрать", "График, статусы и стадии, копии «Развития», ППМ, контроль, обеспеченность, ремонты, тексты", DK.buy],
+    ["Сверить", "«Сейчас / После пересборки» и сверки аналитики на новых данных", DK.stock], ["Применить", "Сохраняется в браузере, переживает перезагрузку; плашка вверху отчёта", DK.stock], ["Выложить", "Записать в папку отчёта на диске (Chrome / Edge) или архив data/ для всех", "#2A3138"]];
+  return dkSlide("Каталог, кодификация и взаимозаменяемость", "Вкладки «Каталог», «Каталог LinkOne», «Кодификация», «Взаимозаменяемость», «Поиск по номеру». Позиция без кода ЕКМТР не видна в истории расхода, остатках и закупке SAP — её нельзя обеспечить автоматически.",
+      `<div class="dk-tiles">${dkTile(num(c.items), "позиций прайса ДП", `УСО — ${num(c.matchedUso)}`)}${dkTile(pct(cod), "кодифицировано ЕКМТР", `${num(c.matchedEkmtr)} позиций; ${num(amb)} неоднозначно`, false, DK.late)}
+        ${dkTile(num((c.items || 0) - (c.matchedEkmtr || 0)), "позиций без ЕКМТР", "нет расхода, остатка и закупки", true, "var(--good)")}${dkTile(num(c.matchedTree), "позиций в дереве узлов", "механизм → узел → деталь")}</div>
+      <div class="dk-grid dk-55"><div><b class="dk-sub">Кодификация прайса</b>${anHBars([{ label: "Прайс ДП", values: { a: (c.matchedEkmtr || 0) - amb, b: amb, c: (c.items || 0) - (c.matchedEkmtr || 0) } }],
+          [{ k: "a", label: "С кодом ЕКМТР", color: DK.stock }, { k: "b", label: "Неоднозначно", color: DK.late, light: true }, { k: "c", label: "Без кода", color: DK.gap }], { percent: true, rowH: 44, labelW: 90 })}
+        <div class="toolbar" style="margin-top:10px"><button class="pill" data-an-goto="codif">Кодификация →</button><button class="pill" data-an-goto="lookup">Поиск по номеру →</button></div></div>
+      <div class="dk-panel"><b>Ведомость взаимозаменяемости</b><ul class="lk-sum" style="margin-top:6px">
+        <li><b>${num(ic.groups)} групп</b> замен, ${num(ic.partsInGroups)} деталей</li><li><b>${num(ic.rowRelations)} связей</b> между книгами WK-20, WK-20C и WK-35</li>
+        <li><b>${num(ic.commentedRows)} строк</b> с комментарием — ограничение применения</li><li class="dim">Прямые замены видны в обеспеченности и в поиске по номеру. Транзитивные замены и пересчёт склада «как будто замена» сознательно не делаются.</li></ul></div></div>`)
+    + dkSlide("Ограничения данных и расчёта", "Сводка по вкладке «Качество данных» и правилам расчёта — эти оговорки влияют на цифры отчёта.",
+      `<div class="dk-lims">${lims.map(([t, b, col]) => `<div><header style="background:${col};color:${col === DK.late ? "#1d2329" : "#fff"}">${esc(t)}</header><p>${esc(b)}</p></div>`).join("")}</div>
+      <p class="hint">${dk.cur} — незавершённый год (факт на ${dmy(m.asOf)}); низкий % исполнения ${dk.cur} не означает отставания сам по себе.</p>
+      ${issues.length ? `<details style="margin-top:8px"><summary><b>Все записи «Качества данных»: ${num(issues.length)}</b></summary>${dkTable(["Область", "Что влияет на расчёт"], issues.map(i => [esc(i.area), esc(i.impact || (Array.isArray(i.issue) ? i.issue.join(" ") : i.issue))]), { aligns: ["l", "l"], cls: "dk-wrap" })}</details>` : ""}`)
+    + dkSlide("Обновление данных — прямо в отчёте, без Python", "Вкладка «Обновление данных»: новые выгрузки SAP BW пересобирают все витрины в браузере; файлы никуда не уходят.",
+      `<div class="dk-chev">${steps.map(([t, b, col]) => `<div><header style="background:${col}">${esc(t)}</header><p>${esc(b)}</p></div>`).join("")}</div>
+      <div class="dk-tiles">${dkTile("~3 с", "разбор одной выгрузки PM-06", "в браузере, 20 МБ xlsx")}${dkTile("0", "расхождений с Python", "витрины из полных M06_1400/1200_2027", true, "var(--good)")}
+        ${dkTile("1,7 млн", "сверенных значений", "тест test_toro_rebuild.mjs")}${dkTile(over ? dmy(info.savedAt) : "нет", "обновлено в этом браузере", over ? ((info.log || []).slice(-1)[0] || {}).label || "" : "работа по опубликованным файлам")}</div>
+      ${dkNote("<b>Загружать всё не нужно.</b> Загруженные площадко-годы заменяют свои, остальные берутся из текущих данных; файл 1200 сам разводится на Вернинское и Сухой Лог по балансовой единице. <b>Python остаётся эталоном</b> для каталога, LinkOne, базы знаний, КТГ и презентаций.")}
+      <div class="toolbar" style="margin-top:10px"><button class="pill" data-an-goto="upd">Обновление данных →</button></div>`)
+    + dkSlide("Двойная проверка расчётов и выводов", "Каждая цифра отчёта считается дважды и сверяется автоматически — здесь сверки пересчитаны для текущих фильтров.",
+      `<div class="dk-grid dk-3">${[
+        [`${m.checks.filter(x => x.ok).length} / ${m.checks.length}`, "сверок сходятся — текущий контекст", "Сверки в отчёте", [`по площадкам — ${ck.slice(1).map(x => `${esc(x[1])} ${x[3].filter(y => y.ok).length}/${x[3].length}`).join(", ")}`, "стадии = план + ППР + копии; площадки = итог; МТР + УСО = итог; сегменты обеспеченности; цепочка согласования; воронка; S-кривая"], "#2A3138"],
+        ["9 223", "показателя сверено в 35 контекстах", "Независимый пересчёт", ["вторая реализация на Python: заказы из строк графика и статусов TOPO (tests/verify_analytics.py)", "поиск по номеру и «Эффективность» — тоже двумя реализациями (tests/verify_mtr.py)"], DK.buy],
+        ["0", "расхождений браузер ↔ Python", "Паритет браузер = Python", ["пересборка в браузере совпала с Python по всем витринам — на полных выгрузках PM-06 и на выборке", "итоги по годам, площадкам и бортам = данным презентации"], DK.stock],
+      ].map(([v, l, h, items, col], i) => `<div>${dkTile(v, l, "", i === 2, i === 2 ? "var(--good)" : null)}<div class="dk-lims" style="grid-template-columns:1fr;margin-top:10px"><div><header style="background:${col};color:${col === DK.stock ? "#1d2329" : "#fff"}">${esc(h)}</header><ul class="lk-sum">${items.map(t => `<li>${t}</li>`).join("")}</ul></div></div></div>`).join("")}</div>`);
+}
+
+/* ===================== 08 Эффективность ===================== */
+let DK_EFF = { key: null, eff: null };
+function dkEff(m) {
+  const key = JSON.stringify(m.ctx) + "|" + (S ? S.rows.length : 0);
+  if (DK_EFF.key === key && DK_EFF.refs === D.stock && DK_EFF.prov === D.provision) return DK_EFF.eff;
+  const eff = MtrCore.efficiency({ scheduleRows: S ? S.rows : [], controlRows: D.controlRows, provision: D.provision, stock: D.stock, fleet: D.fleet, asOf: m.asOf }, m.ctx);
+  DK_EFF = { key, eff, refs: D.stock, prov: D.provision };
+  return eff;
+}
+function dkParetoSvg(curve, W, H = 250) {
+  const padL = 44, padR = 12, padT = 10, padB = 28, iw = W - padL - padR, ih = H - padT - padB;
+  const x = v => padL + iw * v, y = v => padT + ih - ih * v;
+  let svg = `<rect x="${x(0)}" y="${y(1)}" width="${iw}" height="${y(0.8) - y(1) + ih * 0.8}" fill="none"/>`;
+  [[0, 0.8, DK.tG], [0.8, 0.95, DK.tA], [0.95, 1, DK.tR]].forEach(([a, b, f]) => { svg += `<rect x="${padL}" y="${y(b)}" width="${iw}" height="${y(a) - y(b)}" fill="${f}" opacity=".55"/>`; });
+  for (let g = 0; g <= 4; g++) { const v = g / 4; svg += `<text x="${padL - 6}" y="${y(v) + 3}" text-anchor="end" font-size="10" fill="var(--ink-3)">${pct(v)}</text><text x="${x(v)}" y="${H - 8}" text-anchor="middle" font-size="10" fill="var(--ink-3)">${pct(v)}</text>`; }
+  const d = [[0, 0], ...curve].map(([a, b], i) => `${i ? "L" : "M"}${x(a).toFixed(1)},${y(b).toFixed(1)}`).join("");
+  svg += `<path d="${d}" fill="none" stroke="${DK.buy}" stroke-width="2.6"/>`;
+  ["A 80%", "B 95%", "C"].forEach((t, i) => { svg += `<text x="${W - padR - 4}" y="${y([0.8, 0.95, 1][i]) + 13}" text-anchor="end" font-size="10.5" font-weight="600" fill="#1d2329">${t}</text>`; });
+  return `<svg class="an-svg" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img"><title>Кривая Парето: доля кодов (ось X) и доля расхода (ось Y)</title>${svg}</svg>`;
+}
+function dkS08(dk, m) {
+  if (!S) return dkSlide("Эффективность", "", callout("info", "Загрузка истории заказов 2022–2027…"));
+  const e = dkEff(m), a = e.abc, st = e.stock, pr = e.price, cur = e.cur, next = e.next;
+  const lastPair = pr.pairs[pr.pairs.length - 1] || {};
+  const un = e.unplanned, uy = e.years.filter(y => y < cur), fy = e.years.filter(y => y <= cur);
+  const obM = Object.keys(e.orderBy.months).sort(), asOfM = m.asOf.slice(0, 7);
+  const sup = e.suppliers.filter(s => s.supplier !== "—");
+  const supOpen = sup.reduce((s, x) => s + x.open, 0), supOver = sup.reduce((s, x) => s + x.overdue, 0);
+  const siteNote = m.ctx.site ? `склад площадки ${esc(anSite(m.ctx.site))}` : "все площадки";
+  const cls = { A: DK.stock, B: DK.late, C: DK.plan };
+  return dkSlide("Эффективность: где деньги и резервы", `Новые показатели поверх презентации: концентрация расхода, замороженный капитал, цены, точность плана МТР, сроки заказа и дисциплина поставщиков. Окно расхода — ${e.win.join("–").replace(/–.*–/, "–")}; ${siteNote}.`,
+      `<div class="dk-tiles">${dkTile(st.months != null ? num(st.months, 1) : "—", "мес. расхода лежит на складах", `${num(st.total / 1e9, 2)} млрд ₽ при расходе ${dkMln(st.factAvgYear)} млн ₽/год`, true, "var(--good)")}
+        ${dkTile(dkMln(st.dead.value), "млн ₽ запаса без движения", `${num(st.dead.n)} кодов: нет расхода ${e.win[0]}–${cur} и потребности`, false, DK.gap)}
+        ${dkTile(dkMln(st.excess.value), "млн ₽ сверх нормы", `${num(st.excess.n)} кодов: запас > план + 2 года расхода`, false, DK.late)}
+        ${dkTile(`${num(a.classes.A.n)} из ${num(a.n)}`, "кодов дают 80% расхода (A)", `${num(a.aNoStock)} из них нет на складе`)}
+        ${dkTile(lkChg(lastPair.index != null ? lastPair.index - 1 : null), `цены списания ${lastPair.from}→${lastPair.to}`, `по ${num(lastPair.n)} кодам`)}
+        ${dkTile(pct(supOpen ? supOver / supOpen : null), "открытых позиций закупки просрочено", `${num(supOver)} из ${num(supOpen)}`, false, DK.gap)}</div>`)
+    + dkSlide(`ABC-анализ расхода МТР ${e.win[0]}–${cur}`, `Факт списания по кодам в контексте фильтров: A — первые 80% расхода, B — до 95%, C — остальное. A-позиции — где планирование и наличие важнее всего.`,
+      `<div class="dk-grid dk-46"><div>${anChart(W => dkParetoSvg(a.curve, W))}
+        <div class="dk-tiles" style="margin-top:8px">${["A", "B", "C"].map(k => dkTile(`${num(a.classes[k].n)} кодов`, `класс ${k}: ${pct(a.total ? a.classes[k].value / a.total : null)} расхода`, `${dkMln(a.classes[k].value)} млн ₽`, false, cls[k] === DK.plan ? null : cls[k])).join("")}</div></div>
+      <div>${dkTable(["ЕКМТР", "Наименование", "Класс", "Расход, млн ₽", "Доля", "Шт", "На складе", "Нужно", "Не покр."], a.top.map(x => [codeLink(x.code), esc(x.name), `<b>${x.cls}</b>`, num(x.value / 1e6, 1), pct(x.share), lkQty(x.qf), lkQty(x.avail), lkQty(x.need), lkQty(x.unc)]),
+        { fills: (i, j) => (j === 6 && !a.top[i].avail ? DK.tR : j === 8 && a.top[i].unc > 0 ? DK.tR : null), aligns: ["l", "l", "c", "r", "r", "r", "r", "r", "r"], cls: "dk-compact" })}
+      ${dkNote(`<b>Что сделать:</b> ${num(a.aNoStock)} A-позиций нет на складе — для них держать страховой запас или рамочный договор; по C-позициям (${num(a.classes.C.n)} кодов, ${pct(a.total ? a.classes.C.value / a.total : null)} расхода) — упростить заказ, закупать по факту потребности.`)}</div></div>`)
+    + dkSlide("Замороженный капитал: запас без движения и избыток", `Без движения — доступный запас, по которому нет расхода ${e.win[0]}–${cur} ${m.ctx.site ? "на этой площадке" : "по бортам"} и нет потребности в открытых заказах. Избыток — запас сверх потребности плана и двух лет среднего расхода, по учётной цене. ${m.ctx.model || m.ctx.unit ? "Фильтры модели и машины на склад не действуют — склад общий для площадки." : ""}`,
+      `<div class="dk-tiles">${dkTile(dkMln(st.dead.value), "млн ₽ без движения", `${num(st.dead.n)} кодов`, true, DK.gap)}
+        ${Object.entries(st.dead.bySite).sort().map(([s, v]) => dkTile(dkMln(v), `млн ₽ без движения · ${dkShort(s)}`, "")).join("")}${dkTile(dkMln(st.excess.value), "млн ₽ избыток", `${num(st.excess.n)} кодов`, false, DK.late)}</div>
+      <div class="dk-grid dk-55"><div><b class="dk-sub">Без движения: крупнейшие</b>${dkTable(["ЕКМТР", "Наименование", "Шт", "млн ₽"], st.dead.top.map(x => [codeLink(x.code), esc(x.name), lkQty(x.qty), `<b>${num(x.value / 1e6, 1)}</b>`]), { aligns: ["l", "l", "r", "r"], cls: "dk-compact" })}</div>
+      <div><b class="dk-sub">Избыток: крупнейшие</b>${dkTable(["ЕКМТР", "Наименование", "Запас", "Нужно", "Расход/год", "Избыток, млн ₽"], st.excess.top.map(x => [codeLink(x.code), esc(x.name), lkQty(x.qty), lkQty(x.need), lkQty(x.avgYear), `<b>${num(x.value / 1e6, 1)}</b>`]), { aligns: ["l", "l", "r", "r", "r", "r"], cls: "dk-compact" })}</div></div>
+      ${dkNote("<b>Что сделать:</b> запас без движения — проверить применимость (замены, другие модели), предложить другим площадкам и БЕ, реализовать неликвид; по избытку — снять из заявок закупки такие же позиции и не заказывать до выработки.")}`)
+    + dkSlide("Изменение цен списания МТР", `Индекс Ласпейреса: цена за штуку по коду (стоимость / количество списания) в весах количества прошлого года; коды с изменением цены больше чем в ${MtrCore.PRICE_JUMP} раз (смена единицы, ошибка) не входят. Годы с неполными выгрузками дают меньшую выборку.`,
+      `<div class="dk-grid dk-55"><div><b class="dk-sub">Цепной индекс цен, ${pr.chain[0].year} = 100</b>${dkLine(pr.chain.map(x => x.year), [{ label: "Индекс цен списания", color: DK.buy, values: pr.chain.map(x => (x.value == null ? null : x.value * 100)) }], { yMin: 60, yMax: Math.max(140, ...pr.chain.map(x => (x.value || 0) * 110)), fmt: v => num(v, 0), every: 1, H: 230 })}
+        ${dkTable(["Период", "Индекс", "Кодов", "Отсеяно"], pr.pairs.map(x => [`${x.from} → ${x.to}`, `<b>${lkChg(x.index != null ? x.index - 1 : null)}</b>`, num(x.n), num(x.outliers)]), { fills: (i, j) => (j === 1 && pr.pairs[i].index != null ? (pr.pairs[i].index > 1.1 ? DK.tR : pr.pairs[i].index < 0.95 ? DK.tG : null) : null), aligns: ["l", "r", "r", "r"] })}
+        ${dkTile(lkChg(pr.plan.index != null ? pr.plan.index - 1 : null), `план ${next} к последней цене факта`, `${num(pr.plan.n)} кодов · ${dkMln(pr.plan.plan)} млн ₽ плана`, true, "var(--good)")}</div>
+      <div><b class="dk-sub">Сильнее всего подорожали (расход ≥ 50 тыс. ₽ в последний год)</b>${dkTable(["ЕКМТР", "Наименование", "Было, ₽/шт", "Стало, ₽/шт", "Изменение"], pr.growth.slice(0, 10).map(x => [codeLink(x.code), esc(x.name), `${num(x.p0, 0)} <span class="dim">${x.y0}</span>`, `${num(x.p1, 0)} <span class="dim">${x.y1}</span>`, `<b>${lkChg(x.change)}</b>`]), { aligns: ["l", "l", "r", "r", "r"], cls: "dk-compact" })}
+        <b class="dk-sub" style="margin-top:10px">Подешевели</b>${dkTable(["ЕКМТР", "Наименование", "Было", "Стало", "Изменение"], pr.fall.filter(x => x.change < 0).slice(0, 5).map(x => [codeLink(x.code), esc(x.name), num(x.p0, 0), num(x.p1, 0), `<b>${lkChg(x.change)}</b>`]), { aligns: ["l", "l", "r", "r", "r"], cls: "dk-compact" })}
+        <p class="hint">Всего кодов со сравнимой ценой: ${num(pr.growthN)}; отсеяно скачков: ${num(pr.growthOut)}. Цены по одному коду — «Поиск по номеру».</p></div></div>`)
+    + dkSlide("Точность планирования МТР по строкам заказов", "Внеплановый расход — факт по строкам, которых не было в плане заказа; неиспользованный план — строки закрытых лет с планом и без факта (отменённые и перенесённые работы, лишние материалы в плане).",
+      `<div class="dk-grid dk-55"><div>${anColumns(fy, [{ label: "Неиспользованный план, доля", color: DK.late, values: fy.map(y => (y < cur ? un[y].unusedShare : null)) }, { label: "Внеплановый расход, доля", color: DK.gap, values: fy.map(y => un[y].share) }], { fmt: v => pct(v), H: 240 })}</div>
+      <div>${dkTable(["Год", "План, млн ₽", "Не использовано", "Факт, млн ₽", "Вне плана", "Строк вне плана"], fy.map(y => [y, dkMln(un[y].plan), y < cur ? `${dkMln(un[y].unused)} · <b>${pct(un[y].unusedShare)}</b>` : "год идёт", dkMln(un[y].fact), `${dkMln(un[y].unplanned)} · <b>${pct(un[y].share)}</b>`, num(un[y].unplannedLines)]),
+        { fills: (i, j) => (j === 2 && fy[i] < cur ? ((un[fy[i]].unusedShare || 0) > 0.15 ? DK.tR : (un[fy[i]].unusedShare || 0) > 0.05 ? DK.tA : DK.tG) : null), aligns: ["l", "r", "r", "r", "r", "r"] })}
+        ${dkNote(`<b>Вывод:</b> на уровне строк почти весь расход запланирован; главный резерв — план, который не превращается в расход (${uy.length ? uy.map(y => `${y}: ${pct(un[y].unusedShare)}`).join(", ") : "—"}): эти деньги держат бюджет и закупку, но не нужны.`)}</div></div>`)
+    + dkSlide("Календарь «заказать до»", `Непокрытая к сроку потребность по месяцу крайней даты заказа (дата потребности минус медианный срок поставки кода). Красное — дата уже прошла: заказом не успеть, нужны аналоги, перенос работ или перемещение.`,
+      `<div class="dk-tiles">${dkTile(dkMln(e.orderBy.pastV), "млн ₽ — дата заказа прошла", `${num(e.orderBy.pastN)} позиций`, true, DK.gap)}${dkTile(dkMln(obM.filter(x => x >= asOfM).reduce((s, x) => s + e.orderBy.months[x].value, 0)), "млн ₽ — ещё успеваем", "если заказать до даты", false, "var(--good)")}</div>
+      ${obM.length ? anColumns(obM.map(x => lkMon(x)), [{ label: "Не покрыто, млн ₽", color: DK.buy, values: obM.map(x => e.orderBy.months[x].value) }], { pointColor: i => (obM[i] < asOfM ? DK.gap : null), H: 240 }) : '<p class="hint">Непокрытой потребности в контексте нет.</p>'}`)
+    + dkSlide("Поставщики: просрочка и срок поставки", "По документам выгрузки закупки (закупка общая, фильтры площадки на неё не действуют). Просрочка — открытая позиция с прошедшим месяцем поставки; срок — от создания заказа до фактического прихода.",
+      `<div class="dk-grid dk-46"><div>${anHBars(sup.slice(0, 8).map(s => ({ label: s.supplier.length > 22 ? s.supplier.slice(0, 21) + "…" : s.supplier, values: { o: s.overdue, k: s.open - s.overdue } })), [{ k: "o", label: "Просрочено", color: DK.gap }, { k: "k", label: "В срок", color: DK.buy }], { rowH: 28, labelW: 170, fmt: v => num(v) })}</div>
+      <div>${dkTable(["Поставщик", "Кодов", "Позиций", "Открыто", "Просрочено", "Доля", "Срок, дн."], sup.map(s => [esc(s.supplier), num(s.codes), num(s.positions), num(s.open), num(s.overdue), `<b>${pct(s.overdueShare)}</b>`, s.leadMedian != null ? `${s.leadMedian} <span class="dim">(${s.leadN})</span>` : "—"]),
+        { fills: (i, j) => (j === 5 && sup[i].overdueShare != null ? (sup[i].overdueShare > 0.3 ? DK.tR : sup[i].overdueShare > 0.1 ? DK.tA : DK.tG) : null), aligns: ["l", "r", "r", "r", "r", "r", "r"], cls: "dk-compact" })}</div></div>`);
 }

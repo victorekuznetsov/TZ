@@ -582,3 +582,27 @@ tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--
 .dk-msgs i{flex:0 0 30px;height:30px;border-radius:50%;color:#fff;font-style:normal;font-weight:700;display:flex;align-items:center;justify-content:center}
 .dk-msgs p{margin:0;font-size:13.5px;line-height:1.5}
 @media(max-width:1000px){.dk-62,.dk-55,.dk-46,.dk-28,.dk-3{grid-template-columns:1fr}}
+
+/* ---------- Поиск по номеру ---------- */
+.lk-search{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0 8px}
+.lk-search input[type=search]{flex:1 1 320px;min-width:0;font-size:16px;padding:11px 14px;border-radius:var(--radius-lg);border:var(--hair);background:var(--surface);color:var(--ink)}
+.lk-an{font-size:12.5px;color:var(--ink-2);display:flex;gap:6px;align-items:center}
+.lk-chips{flex-wrap:wrap;margin-bottom:14px}
+.lk-status-h{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px}
+.lk-sum{margin:0;padding-left:18px;font-size:13px;line-height:1.6}
+.lk-sum li{margin-bottom:4px}
+.dk-table tr.dim td{opacity:.7}
+.dk-acts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.dk-acts>div{display:flex;gap:12px;align-items:center;background:var(--surface-2);border-radius:var(--radius-lg);padding:12px 14px}
+.dk-acts i{flex:none;width:34px;height:34px;border-radius:50%;color:#fff;font-style:normal;font-weight:700;display:grid;place-items:center;font-size:16px}
+.dk-acts p{margin:0;font-size:12.5px;line-height:1.5;color:var(--ink-2)}
+.dk-acts b{color:var(--ink);font-size:14px}
+.dk-lims{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.dk-lims>div,.dk-chev>div{background:var(--surface-2);border-radius:var(--radius-lg);overflow:hidden}
+.dk-lims header,.dk-chev header{padding:8px 12px;font-weight:600;font-size:13px;color:#fff}
+.dk-lims p,.dk-chev p{margin:0;padding:10px 12px;font-size:12.5px;line-height:1.5;color:var(--ink-2)}
+.dk-lims ul{padding:8px 12px 10px 26px}
+.dk-chev{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:12px}
+.dk-chev header{clip-path:polygon(0 0,calc(100% - 12px) 0,100% 50%,calc(100% - 12px) 100%,0 100%);text-align:center}
+.dk-wrap td{white-space:normal!important}
+@media(max-width:1000px){.dk-acts,.dk-lims{grid-template-columns:1fr}.dk-chev{grid-template-columns:1fr 1fr}}

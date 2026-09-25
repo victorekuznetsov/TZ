@@ -97,18 +97,20 @@ const D = {}; // сюда лягут все витрины после загру
 let TAB = "sum";
 let G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "" };
 let ROLE = "all";
+let LK = { q: "", analogs: true };   // «Поиск по номеру» (lookup.js): запрос живёт в ссылке #lookup&q=…
 let NAV_SEQ = 0;
 let CART_MEM = null;
 const ROLES = {
   all:     { label: "Все разделы", tabs: null },
-  supply:  { label: "Снабжение",   tabs: ["sum", "analytics", "provision", "stock", "purchase", "codif", "inter", "cart"] },
-  toir:    { label: "ТОиР",        tabs: ["sum", "analytics", "control", "fleet", "repairs", "provision", "linkone", "kb", "catalog"] },
-  catalog: { label: "Справочник",  tabs: ["catalog", "linkone", "kb", "inter", "fleet"] },
+  supply:  { label: "Снабжение",   tabs: ["sum", "analytics", "lookup", "provision", "stock", "purchase", "codif", "inter", "cart"] },
+  toir:    { label: "ТОиР",        tabs: ["sum", "analytics", "control", "lookup", "fleet", "repairs", "provision", "linkone", "kb", "catalog"] },
+  catalog: { label: "Справочник",  tabs: ["catalog", "lookup", "linkone", "kb", "inter", "fleet"] },
 };
 const TAB_NEEDS = {
   sum: [],
   analytics: ["control", "usoWk"],
   control: ["control", "orderText"],
+  lookup: ["interchange", "control"],
   catalog: ["tree", "drawings"],
   // tree — не украшение: карточка узла читает D.tree.bookModel, чтобы
   // подобрать документы по модели. Без этой зависимости первый заход
@@ -129,7 +131,7 @@ const TAB_NEEDS = {
 };
 function parseHash(raw) {
   const text = String(raw == null ? "" : raw).replace(/^#/, "");
-  const out = { tab: "sum", role: "all", g: { site: "", model: "", unit: "", order: "", ekmtr: "", part: "" } };
+  const out = { tab: "sum", role: "all", q: "", g: { site: "", model: "", unit: "", order: "", ekmtr: "", part: "" } };
   if (!text) return out;
   const parts = text.split("&").filter(Boolean);
   for (const part of parts) {
@@ -143,12 +145,14 @@ function parseHash(raw) {
     const v = decodeURIComponent(part.slice(eq + 1) || "");
     if (k === "role" && ROLES[v]) out.role = v;
     else if (k === "tab" && (!VALID_TABS || VALID_TABS.has(v))) out.tab = v;
+    else if (k === "q") out.q = v;
     else if (k in out.g) out.g[k] = v;
   }
   return out;
 }
-function serializeHash(tab, role, g) {
+function serializeHash(tab, role, g, q) {
   const parts = [tab || "sum"];
+  if (tab === "lookup" && q) parts.push("q=" + encodeURIComponent(q));
   if (role && role !== "all") parts.push("role=" + encodeURIComponent(role));
   for (const k of ["site", "model", "unit", "order", "ekmtr", "part"]) {
     if (g && g[k]) parts.push(k + "=" + encodeURIComponent(g[k]));
@@ -156,7 +160,7 @@ function serializeHash(tab, role, g) {
   return "#" + parts.join("&");
 }
 function writeHash(push) {
-  const next = serializeHash(TAB, ROLE, G);
+  const next = serializeHash(TAB, ROLE, G, typeof LK !== "undefined" ? LK.q : "");
   if (location.hash === next) return;
   if (push) history.pushState(null, "", next);
   else history.replaceState(null, "", next);
@@ -371,6 +375,7 @@ function finishEntityCard(code) {
     CARD_REPLAY = true;
     try { routeEntity(prev.type, ...prev.args); } finally { CARD_REPLAY = false; }
   });
+  card.querySelectorAll?.("[data-lookup]").forEach(b => b.onclick = () => { if (typeof openLookup === "function") openLookup(b.dataset.lookup); });
   bar.querySelectorAll("[data-card-section]").forEach(b => b.onclick = () => {
     if (CARD_TRAIL.at(-1)?.type !== "material") openCodeDetail(code);
     const target = byId("modalCard").querySelector('[data-section="' + b.dataset.cardSection + '"]');
@@ -393,10 +398,11 @@ function openPartCard(part) {
   const item = CATALOG_BY_ART.get(String(part)) || (D.catalog.items || []).find(i => interKey(i.art) === interKey(part));
   if (item) return openDetail(item.art);
   beginEntityCard("part", [part]);
-  const refs = (D.ekmtr?.items || []).filter(i => interKey(i.cat) === interKey(part));
+  const refs = (D.ekmtrWk?.items || []).filter(i => interKey(i.cat) === interKey(part));
   const card = byId("modalCard");
   card.innerHTML = `<button class="mclose" id="mCloseBtn" aria-label="Закрыть карточку">✕</button><h2 id="modalTitle">Каталожный № ${esc(part)}</h2>
   <p class="hint">Номер отсутствует в прайсе. Наличие и закупка доступны только при подтверждённой связи с ЕКМТР.</p>
+  <p><button class="minibtn" type="button" data-lookup="${esc(part)}">История, цены и статус наличия →</button></p>
   ${refs.map(i => `<p>${codeLink(i.code)} · ${esc(i.name)}</p>`).join("") || '<p class="hint">Точная связь с ЕКМТР не найдена.</p>'}`;
   byId("mCloseBtn").onclick = closeModal; finishEntityCard(); byId("mCloseBtn").focus();
 }
@@ -862,6 +868,7 @@ async function renderTab() {
     case "sum": return renderSum(host);
     case "analytics": return renderAnalytics(host);
     case "control": return renderControl(host);
+    case "lookup": return renderLookup(host);
     case "catalog": return renderCatalog(host);
     case "linkone": return renderLinkone(host);
     case "kb": return renderKB(host);
@@ -3779,6 +3786,7 @@ function openCodeDetail(code, needDate) {
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
       ${cartAddBtn({ code: c, name: (cat && cat.nameRu) || (stock && stock.name) || c, value: (stock && stock.availValue) || null, source: "Карточка позиции" })}
       ${cat ? `<button class="minibtn" type="button" id="mOpenArt">Карточка каталога ${esc(cat.art)}</button>` : ""}
+      <button class="minibtn" type="button" data-lookup="${esc(cat ? cat.art : c)}">История, цены и статус →</button>
     </div>
   `;
   byId("mCloseBtn").onclick = closeModal;
@@ -3825,6 +3833,7 @@ function openDetail(art) {
       <button class="minibtn" type="button" data-open-code="${esc(item.ekmtr)}">Склад и закупка</button>
       <button class="minibtn" type="button" data-jump-provision="${esc(item.ekmtr)}">Обеспеченность</button>
       <button class="minibtn" type="button" data-jump-repairs="${esc(item.ekmtr)}">График план-факт</button>
+      <button class="minibtn" type="button" data-lookup="${esc(item.art)}">История, цены и статус →</button>
     </p>` : ""}
     ${stock ? `
       <h3 style="font-size:12.5px;margin:16px 0 6px">Остаток и закупка</h3>
@@ -4258,7 +4267,7 @@ function renderKB(host) {
 }
 
 /* ---------- навигация / поиск / тема ---------- */
-const VALID_TABS = new Set(["sum", "analytics", "control", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
+const VALID_TABS = new Set(["sum", "analytics", "control", "lookup", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
 let CMD_ROWS = [];
 function setRole(role) {
   ROLE = ROLES[role] ? role : "all";
@@ -4298,6 +4307,10 @@ function cmdRender(q) {
   }
   const r = kbFindAll(needle);
   const rows = [];
+  if (typeof openLookup === "function") {
+    const exact = r.parts.find(i => normArt(i.art) === normArt(needle)) || r.ekmtr.find(e => String(e.code) === needle);
+    rows.push({ kind: "Поиск", title: exact ? (exact.art || exact.code) : needle, sub: "история расхода, план, цены, закупка и наличие", run: () => { cmdClose(); openLookup(exact ? (exact.art || exact.code) : needle); } });
+  }
   r.parts.slice(0, 8).forEach(i => rows.push({ kind: "Деталь", title: i.art, sub: i.nameRu || "", run: () => { cmdClose(); openPartCard(i.art); } }));
   r.ekmtr.slice(0, 6).forEach(e => rows.push({ kind: "ЕКМТР", title: e.code, sub: e.name || "", run: () => { cmdClose(); openCodeDetail(e.code); } }));
   r.fleet.slice(0, 6).forEach(u => rows.push({ kind: "Борт", title: u.name, sub: `${u.siteName || u.site || ""} · ${u.model || ""}`, run: () => { cmdClose(); G.site = u.site || ""; G.model = u.model || ""; G.unit = u.name; writeHash(false); renderGlobalFilters(); navigateTo("fleet"); } }));
@@ -4363,6 +4376,7 @@ function applyHashState(raw, push) {
   TAB = VALID_TABS.has(parsed.tab) ? parsed.tab : "sum";
   if (parsed.role && ROLES[parsed.role]) ROLE = parsed.role;
   G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", ...parsed.g };
+  if (parsed.tab === "lookup" && typeof LK !== "undefined") LK.q = parsed.q;
   if (!tabAllowed(TAB)) TAB = ((ROLES[ROLE] || ROLES.all).tabs || ["sum"])[0];
   renderGlobalFilters();
   navigateTo(TAB, { updateHash: !!push, focusMain: false });
@@ -4375,6 +4389,7 @@ function initNav() {
   TAB = VALID_TABS.has(parsed.tab) ? parsed.tab : "sum";
   ROLE = ROLES[parsed.role] ? parsed.role : (ROLES[savedRole] ? savedRole : "all");
   G = { site: "", model: "", unit: "", order: "", ekmtr: "", part: "", ...parsed.g };
+  if (parsed.tab === "lookup" && typeof LK !== "undefined") LK.q = parsed.q;
   if (!tabAllowed(TAB)) TAB = ((ROLES[ROLE] || ROLES.all).tabs || ["sum"])[0];
   const visibleTabs = () => qsa("#tabs button").filter(b => !b.hidden);
   qsa("#tabs button").forEach(b => {
@@ -4423,7 +4438,7 @@ function initNav() {
   const cmdBack = byId("cmdBack");
   if (cmdBack) cmdBack.addEventListener("click", e => { if (e.target === cmdBack) cmdClose(); });
   window.addEventListener("hashchange", () => {
-    if (location.hash === serializeHash(TAB, ROLE, G)) return;
+    if (location.hash === serializeHash(TAB, ROLE, G, typeof LK !== "undefined" ? LK.q : "")) return;
     applyHashState(location.hash, false);
   });
 }

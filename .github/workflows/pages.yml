@@ -30,6 +30,7 @@ jobs:
             app.js
             analytics.js
             analytics_deck.js
+            lookup.js
             styles.css
             schedule.js
             schedule.css
@@ -43,7 +44,7 @@ jobs:
       - name: Собрать сайт (только нужные порталу файлы)
         run: |
           mkdir -p _site/media _site/exports
-          cp index.html app.js analytics.js analytics_deck.js styles.css schedule.js schedule.css _site/
+          cp index.html app.js analytics.js analytics_deck.js lookup.js styles.css schedule.js schedule.css _site/
           cp -r data lib _site/
           if [ -d media/linkome ]; then cp -r media/linkome _site/media/; fi
           if [ -d exports ]; then cp -r exports/. _site/exports/; fi
