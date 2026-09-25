@@ -520,3 +520,11 @@ tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--
 .dept-tabs .ctl-fact select{height:32px;min-width:230px}
 .ctl-fact-note{margin:0 0 8px;color:var(--ink-2)}
 .ctl-text{display:inline-block;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
+
+/* ---------- обновление данных в браузере ---------- */
+.upd-banner{margin:0;padding:6px 24px;background:var(--warn-bg);border-bottom:1px solid var(--warn);font-size:12px;color:var(--ink);display:flex;gap:12px;align-items:center}
+.upd-banner[hidden]{display:none}
+.upd-banner-t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.upd-banner .minibtn{flex:0 0 auto}
+.upd-state .upd-log{margin:6px 0 10px;padding-left:18px;font-size:12px;color:var(--ink-2);max-height:140px;overflow:auto}
+@media print{.upd-banner{display:none!important}}

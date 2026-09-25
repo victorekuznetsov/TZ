@@ -40,6 +40,11 @@ const baseRows = man.shards.flatMap(n => T.decodeTable(LJ(n)));
 const base = () => ({ scheduleRows: baseRows, scheduleMeta: man.meta, control: L("control"), provision: L("provision"), orderText: L("order_text") });
 const ctx = { stockJson: L("stock"), ekmtrWk: L("ekmtr_wk"), fleet: L("fleet") };
 
+// браузер читает .local.js — он обязан совпадать с .json
+for (const n of ["provision", "control", "repairs", "order_text", "stock", "fleet"]) {
+  assert.equal(JSON.stringify(LJ(n)), JSON.stringify(L(n)), `data/${n}.local.js устарел — запустите build/make_local_js.py`);
+}
+
 // ---------- A. пересборка из текущих витрин ----------
 {
   const out = T.rebuild({ base: base(), uploads: [], ...ctx });
@@ -121,6 +126,20 @@ async function parse(buf, file, site, year) {
   assert.equal(out.control.rows.length, L("control").rows.length - [...ctl.values()].filter(r => r.plant === "2400" && !orders.has(r.order)).length, "в 2400_2027 остались только заказы файла");
   const pm = out.provision.meta;
   assert.ok(pm.sapSources.includes("браузер: pm06_sample.xlsx") && pm.rebuiltInBrowser, "источник пересборки отмечен");
+}
+
+// ---------- архив data/ для публикации: читается обычным zip-ридером ----------
+{
+  const U = require("../lib/upd_store.js");
+  const ds = { order_text: L("order_text"), schedule_00: LJ("schedule_00") };
+  const files = U.dataFiles(ds);
+  assert.deepEqual(files.map(f => f.name), ["data/order_text.json", "data/order_text.local.js", "data/schedule_00.local.js"]);
+  const zip = await X.openZip(new Blob([U.zip(files)]));
+  assert.deepEqual(JSON.parse(await X.readText(zip, "data/order_text.json")), ds.order_text);
+  const js = await X.readText(zip, "data/schedule_00.local.js");
+  assert.ok(js.startsWith('window.__DATA__=window.__DATA__||{};window.__DATA__["schedule_00"]='));
+  assert.deepEqual(JSON.parse(js.slice(js.indexOf("=", js.indexOf("__DATA__[")) + 1).trim().replace(/;$/, "")), ds.schedule_00);
+  assert.equal(U.crc32(new TextEncoder().encode("123456789")), 0xcbf43926);
 }
 
 // ---------- C. полные выгрузки (по желанию) ----------

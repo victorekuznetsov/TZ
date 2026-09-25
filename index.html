@@ -65,6 +65,7 @@
 
 <section class="global-context" id="globalFilters" aria-label="Сквозные фильтры"></section>
 
+<div id="updBanner" class="upd-banner" hidden></div>
 <main id="main" tabindex="-1">
   <div class="callout info" role="status" aria-live="polite">Загрузка данных…</div>
 </main>
@@ -79,12 +80,13 @@
 <div id="modalBack" class="modal-back" hidden></div>
 <div id="modalCard" class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1" hidden></div>
 
-<footer>WK CRM · ветка grok · данные: прайсы ДП/УСО, ведомость взаимозаменяемости WK4.7, SAP, TOPO · сборка build/*.py</footer>
+<footer>WK CRM · ветка grok · данные: прайсы ДП/УСО, ведомость взаимозаменяемости WK4.7, SAP, TOPO · сборка build/*.py или прямо в браузере (вкладка «Обновление данных»)</footer>
 
 <script src="lib/xlsx_stream.js"></script>
 <script src="lib/stock_pipeline.js"></script>
 <script src="lib/wk_update_pipeline.js"></script>
 <script src="schedule.js"></script>
+<script src="lib/upd_store.js"></script>
 <script src="lib/analytics_core.js"></script>
 <script src="app.js"></script>
 <script src="analytics.js"></script>
