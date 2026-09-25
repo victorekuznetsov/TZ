@@ -3678,7 +3678,7 @@ function materialOrders(code) {
       if (seen.has(o.id)) return false;
       seen.add(o.id);
       return (!G.site || o.site === G.site) && (!G.model || o.model === G.model)
-        && (!G.unit || o.unit === G.unit) && (!G.order || String(o.order) === String(G.order)) && pgPass(o.order)
+        && (!G.unit || o.unit === G.unit) && (!G.order || String(o.order) === String(G.order)) && (typeof pgPass !== "function" || pgPass(o.order))
         && (o.lines || []).some(l => String(l.code) === String(code));
     }).map(o => {
       const lines = o.lines.filter(l => String(l.code) === String(code));
