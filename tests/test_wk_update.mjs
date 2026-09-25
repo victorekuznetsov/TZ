@@ -45,7 +45,9 @@ const uso = WkUpdate.buildUsoWk([
   { site: "7104", order: "1200407027", name: "Выкл", ek: "976555", y: "2026", model: "WK-20C", be: "АО \"Полюс Магадан\"", qp: 1, qf: 1, p: 1044, a: 1044 },
 ], new Map([["1200407027", { e: "Экскаватор электрический WK-20C №6", u: "Комб", w: "Текущий ремонт", orr: "OPEX", bs: "2026-07-24" }]]));
 assert.equal(uso.orders.length, 1);
-assert.equal(uso.orders[0].closed, true);
+assert.equal(uso.orders[0].closed, undefined);       // статус УСО — из заказа ТОРО, не из реестра
+assert.equal(uso.orders[0].lines[0].price, 1044);
+assert.equal(uso.orders[0].lines[0].a, undefined);
 assert.equal(uso.orders[0].site, "1400");
 
 console.log("WkUpdate tests: OK");

@@ -70,7 +70,8 @@ status = collections.defaultdict(dict)
 for fn in glob.glob(os.path.join(STATUS_DIR, '*.json')):
     d = json.load(open(fn, encoding='utf-8'))
     y = d['meta']['year']
-    for o, (si, ui, ki, ph, cp) in d['o'].items():
+    for o, v in d["o"].items():
+        si, ui, ki, ph, cp = v[:5]
         status[y][o] = (ph, cp, set(d['sys'][si].split()), set(d['usr'][ui].split()))
 
 STAGES = [
@@ -331,19 +332,39 @@ for i in pur_items:
 lead.sort()
 lead_hist = collections.Counter(min(d // 90, 5) for d in lead)
 
-# ── УСО (МТР подрядчика)
+# ── УСО (МТР подрядчика): реестр — состав (кол-во, цена, сумма = план); его «стоимость факт» — плановая
+#    цена в валюте по курсу, не факт. Статус и факт — из заказа ТОРО того же года (иначе последнего года заказа):
+#    не закрыт заказ ТОРО — не закрыто и УСО; факт — строка PM-06 «ТОиР. Материалы подрядчика» (uf).
+CLOSED_ST = {'techClosed', 'accepted', 'billed', 'closed'}
+years_of = collections.defaultdict(list)
+for (y, on) in orders:
+    years_of[on].append(y)
+
+
+def uso_status(o):
+    k = (o['year'], o['order'])
+    if k not in orders and years_of.get(o['order']):
+        k = (max(years_of[o['order']]), o['order'])
+    t = orders.get(k)
+    stage = t['stage'] if t else ''
+    closed = stage in CLOSED_ST
+    return {'stage': stage, 'closed': closed, 'plan': o['planValue'], 'open': 0.0 if closed else o['planValue'],
+            'sapPlan': t['up'] if t else 0.0, 'sapFact': t['uf'] if t else 0.0}
+
+
 uso_y = {s: {y: {'plan': 0.0, 'fact': 0.0, 'open': 0.0, 'orders': 0, 'closed': 0} for y in YEARS} for s in SITES}
 uso_work = collections.Counter()
-for o in uso['orders']:
+uso_all = [uso_status(o) for o in uso['orders']]
+for o, u in zip(uso['orders'], uso_all):
     s = unit_site.get(o['unit'], o['site'])
     if o['year'] not in YEARS or s not in uso_y:
         continue
     t = uso_y[s][o['year']]
-    t['plan'] += o['planValue']
-    t['fact'] += o['factValue']
-    t['open'] += o['openValue']
+    t['plan'] += u['plan']
+    t['fact'] += u['sapFact']
+    t['open'] += u['open']
     t['orders'] += 1
-    t['closed'] += 1 if o['closed'] else 0
+    t['closed'] += 1 if u['closed'] else 0
     uso_work[o['work'] or 'не указан'] += o['planValue']
 
 out = {
@@ -375,8 +396,10 @@ out = {
                  'byMonth': dict(pur_month), 'byStatus': dict(pur_status), 'overdue': overdue_v,
                  'undated': undated_v, 'needCodes': sum(1 for i in pur_items if str(i['code']) in need_codes), 'suppliers': supp.most_common(8), 'nSuppliers': len(supp),
                  'leadMedian': lead[len(lead) // 2] if lead else None, 'leadHist': dict(lead_hist), 'leadN': len(lead)},
-    'uso': {'site': uso_y, 'work': uso_work.most_common(8), 'meta': {k: uso['meta'][k] for k in
-                                                                       ('orders', 'closedOrders', 'planValue', 'factValue', 'openValue')}},
+    'uso': {'site': uso_y, 'work': uso_work.most_common(8),
+            'meta': {'orders': len(uso_all), 'closedOrders': sum(1 for u in uso_all if u['closed']),
+                     'planValue': sum(u['plan'] for u in uso_all), 'factValue': sum(u['sapFact'] for u in uso_all),
+                     'openValue': sum(u['open'] for u in uso_all)}},
     'provItems': {str(i['code']): {k: i[k] for k in ('needQty', 'fromStock', 'fromBuy', 'verdict')} for i in prov['items']},
     'catalog': cat['meta'], 'interchange': inter['meta'],
     'quality': quality['issues'],

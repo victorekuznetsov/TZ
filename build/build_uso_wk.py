@@ -9,6 +9,12 @@
 ставит в заказ ТОРО. Коды 7101–7104 — заводы подрядчика, заказчик
 (балансовая единица) — Полюс.
 
+Реестр задаёт СОСТАВ: материал, количество, цену и сумму (план). Колонки
+«Количество / Стоимость факт (подр.)» — не факт: «стоимость факт в рублях»
+получена из плановой цены в валюте по курсу. Поэтому здесь их нет: статус
+и факт МТР подрядчика берутся из заказа ТОРО (PM-06: стадия, строка
+«ТОиР. Материалы подрядчика» — up/uf). Если заказ ТОРО не закрыт, УСО тоже.
+
 Запуск:
   python3 build/build_uso_wk.py <uso_mtr.json> <out_dir>
 """
@@ -46,9 +52,11 @@ def main():
         by_order[oi].append({
             "code": str(dec(D["ek"], R["ek"][j]) or ""),
             "name": dec(D["nm"], R["n"][j]) or "",
-            "qp": N(R["qp"][j]), "qf": N(R["qf"][j]),
-            "p": N(R["p"][j]), "a": N(R["a"][j]),
+            "qp": N(R["qp"][j]), "p": N(R["p"][j]),
         })
+    for lines in by_order.values():
+        for x in lines:
+            x["price"] = round(x["p"] / x["qp"], 2) if x["qp"] else 0
 
     SITE_REGION = (meta.get("siteRegion") or
                    {"7101": "1100", "7102": "1200", "7103": "1300", "7104": "1400"})
@@ -65,7 +73,6 @@ def main():
             tail = re.search(r"WK-?(\d+C?)", unit, re.I)
             model = "WK-" + tail.group(1).upper() if tail else ""
         lines = by_order.get(i, [])
-        open_lines = [x for x in lines if x["qp"] > x["qf"] + 1e-9]
         orders.append({
             "order": str(O["o"][i]),
             "plant": plant,
@@ -79,11 +86,7 @@ def main():
             "work": dec(D["wk"], O["wk"][i]) or "",
             "be": dec(D["be"], O["be"][i]) or "",
             "month": dec(D["mo"], O["mo"][i]) or "",
-            "closed": len(lines) > 0 and len(open_lines) == 0,
             "planValue": round(sum(x["p"] for x in lines), 2),
-            "factValue": round(sum(x["a"] for x in lines), 2),
-            "openValue": round(sum(x["p"] * max(x["qp"] - x["qf"], 0) / x["qp"]
-                                   for x in open_lines if x["qp"]), 2),
             "lines": lines,
         })
 
@@ -96,10 +99,8 @@ def main():
             "siteLabels": SITE_LABELS,
             "orders": len(orders),
             "rows": sum(len(o["lines"]) for o in orders),
-            "closedOrders": sum(1 for o in orders if o["closed"]),
-            "openValue": round(sum(o["openValue"] for o in orders), 2),
             "planValue": round(sum(o["planValue"] for o in orders), 2),
-            "factValue": round(sum(o["factValue"] for o in orders), 2),
+            "semantics": "состав МТР подрядчика: кол-во, цена, сумма (план); статус и факт — из заказа ТОРО",
         },
         "orders": sorted(orders, key=lambda o: (o["month"] or "9999", o["site"], o["order"])),
     }
@@ -108,8 +109,7 @@ def main():
         json.dump(result, f, ensure_ascii=False, separators=(",", ":"))
     m = result["meta"]
     print(f"УСО WK: заказов {m['orders']}, строк {m['rows']}, "
-          f"закрытых {m['closedOrders']}; план {m['planValue']/1e6:.1f} млн ₽, "
-          f"факт {m['factValue']/1e6:.1f} млн ₽, открыто {m['openValue']/1e6:.1f} млн ₽")
+          f"сумма по составу {m['planValue']/1e6:.1f} млн ₽")
 
 
 if __name__ == "__main__":

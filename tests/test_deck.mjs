@@ -18,6 +18,10 @@ const src = { control: L("control"), provision: L("provision"), stock: L("stock"
 src.controlRows = A.decodeControl(src.control);
 assert.equal(src.provision.meta.asOf, w.meta.asOf, "данные обновились — пересоберите фикстуру (build/build_wk_status_data.py)");
 const d = A.deck(src, {});
+// МТР подрядчика: статус и факт — из заказа ТОРО, не из «факта» реестра УСО (плановая цена в валюте по курсу)
+{ const o = src.usoWk.orders.find(x => x.order === "1102377926"), u = A.usoStatus(o);
+  assert.equal(u.stage, "approved"); assert.equal(u.closed, false); assert.equal(u.sapFact, 0);
+  assert.equal(u.plan, 5529014); assert.equal(u.open, 5529014); assert.equal(o.lines[0].a, undefined); }
 let n = 0; const bad = [];
 const eq = (a, b, p) => { n++; if (typeof b === 'number' || typeof a === 'number') { if (Math.abs((a || 0) - (b || 0)) > 1e-6 * Math.max(1, Math.abs(b || 0)) + 1e-9) bad.push(`${p}: ${a} ≠ ${b}`); } else if (a !== b && !(a == null && b == null)) bad.push(`${p}: ${a} ≠ ${b}`); };
 const K = ['plan', 'fact', 'mtrPlan', 'mtrFact', 'usoPlan', 'usoFact', 'orders', 'noOrderPlan', 'noOrderN', 'copyExcluded', 'exec', 'closedShare'];

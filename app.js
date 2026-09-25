@@ -119,7 +119,7 @@ const TAB_NEEDS = {
   kb: ["kb", "tree", "linkome"],
   fleet: [],
   repairs: ["usoWk", "control", "orderText"],
-  provision: ["interchange", "usoWk"],
+  provision: ["interchange", "usoWk", "control"],
   stock: [],
   purchase: [],
   codif: ["tree"],
@@ -507,30 +507,30 @@ function lineStatus(qp, qf) {
   return ["—", ""];
 }
 function lineStatusBadge(qp, qf) { const [l, c] = lineStatus(qp, qf); return c ? `<span class="badge ${c}">${l}</span>` : '<span class="dim">—</span>'; }
-/* МТР подрядчика (УСО) по заказу — позиции реестра МТР УСО со стоимостью и статусом.
-   «Факт» реестра — данные подрядчика («Количество / Стоимость факт (подр.)»), а не факт,
-   проведённый в заказе SAP: его показываем отдельно (строка PM-06 «ТОиР. Материалы подрядчика»). */
-const USO_STATUS = { "закрыта": ["закрыта подрядчиком", "good"], "частично": ["частично", "warn"], "в плане": ["в плане", "info"], "вне плана": ["вне плана", "warn"] };
-function usoLinesHtml(usoOrders, pmUso) {
-  if (!usoOrders.length) return pmUso && (pmUso.up || pmUso.uf)
-    ? `<h3>МТР подрядчика (УСО)</h3><p class="hint">В заказе SAP (PM-06) план МТР подрядчика ${rub(pmUso.up)}, факт ${rub(pmUso.uf)} — одной строкой «ТОиР. Материалы подрядчика»; позиций в реестре МТР УСО по этому заказу нет.</p>` : "";
+/* МТР подрядчика (УСО). Реестр МТР УСО — состав: какие материалы идут от подрядчика, сколько, по какой цене и
+   на какую сумму (план). Его «Стоимость факт» — плановая цена в валюте по курсу, не факт, и в отчёте не используется.
+   Статус — стадия заказа ТОРО (не закрыт заказ — не закрыто и УСО), факт — строка PM-06 «ТОиР. Материалы подрядчика». */
+function usoStatusOf(o) {
+  return typeof AnalyticsCore !== "undefined" && AnalyticsCore.usoStatus ? AnalyticsCore.usoStatus(o)
+    : { stage: "", closed: false, plan: o.planValue || 0, open: o.planValue || 0, sapPlan: 0, sapFact: 0 };
+}
+function usoStageBadge(u) {
+  if (!u.stage) return '<span class="badge warn">нет статуса ТОРО</span>';
+  return `<span class="badge ${u.closed ? "good" : "info"}">${esc(TORO_STAGE[u.stage] || u.stage)}</span>`;
+}
+function usoLinesHtml(usoOrders) {
   const um = (D.usoWk && D.usoWk.meta) || {};
-  return usoOrders.map(o => {
-    const L = (o.lines || []).slice().sort((a, b) => (b.p || 0) - (a.p || 0));
-    const cnt = {}; L.forEach(l => { const k = (USO_STATUS[lineStatus(l.qp, l.qf)[0]] || ["—"])[0]; cnt[k] = (cnt[k] || 0) + 1; });
-    const sp = L.reduce((x, l) => x + (l.p || 0), 0), sa = L.reduce((x, l) => x + (l.a || 0), 0);
-    const badge = l => { const s = USO_STATUS[lineStatus(l.qp, l.qf)[0]]; return s ? `<span class="badge ${s[1]}">${s[0]}</span>` : '<span class="dim">—</span>'; };
-    const pmPlanDiff = pmUso && pmUso.up ? pmUso.up - (o.planValue || 0) : 0;
-    const warn = pmUso && sa > 0 && !(pmUso.uf > 0)
-      ? callout("warn", `<b>Подрядчик отчитался о ${mrub(sa)}, а в заказе SAP факт МТР подрядчика не проведён (0 ₽).</b> Реестр УСО — данные подрядчика; факт в заказе появится после проведения в SAP.`) : "";
-    return `<h3>МТР подрядчика (УСО) · ${num(L.length)} поз.</h3>
-      <div class="kpis toro-kpis">${kpi("План (реестр)", mrub(o.planValue))}${kpi("Факт подрядчика (реестр)", mrub(o.factValue))}
-        ${pmUso ? kpi("План в заказе SAP", mrub(pmUso.up)) + kpi("Факт в заказе SAP", mrub(pmUso.uf), sa > 0 && !(pmUso.uf > 0) ? "warn" : "") : ""}</div>${warn}
-      <p class="hint">Реестр МТР УСО на ${dmy(um.asOf)}${o.year ? `, ${esc(o.year)} год` : ""} · ${o.closed ? "в реестре закрыт" : "в реестре открыт"}${o.openValue ? ` · не закрыто ${mrub(o.openValue)}` : ""} · позиции: ${Object.entries(cnt).map(([k, n]) => `${esc(k)} ${n}`).join(", ")}.
-        Стоимость в рублях; в SAP (заказ → вкладка «МТР подрядчика») та же позиция — в валюте плана (¥).${Math.abs(pmPlanDiff) > 1 ? ` План в заказе SAP отличается от реестра на ${rub(pmPlanDiff)}.` : ""}</p>
-      <div class="twrap"><table class="toro-lines"><thead><tr><th>ЕКМТР</th><th>Материал</th><th class="n">План, шт</th><th class="n" title="Количество факт (подр.)">Факт подр., шт</th><th class="n">План, ₽</th><th class="n" title="Стоимость факт (подр.)">Факт подр., ₽</th><th>Статус в реестре</th></tr></thead><tbody>
-      ${L.map(l => `<tr><td>${l.code ? codeLink(l.code) : '<span class="dim">без кода</span>'}</td><td class="toro-name">${esc(l.name)}</td><td class="n">${toroN(l.qp)}</td><td class="n">${toroN(l.qf)}</td><td class="n">${rub(l.p)}</td><td class="n">${rub(l.a)}</td><td>${badge(l)}</td></tr>`).join("")}
-      <tr class="toro-grp"><td colspan="4">Итого</td><td class="n">${rub(sp)}</td><td class="n">${rub(sa)}</td><td></td></tr></tbody></table></div>`;
+  return (usoOrders || []).map(o => {
+    const u = usoStatusOf(o), L = (o.lines || []).slice().sort((a, b) => (b.p || 0) - (a.p || 0));
+    const qty = L.reduce((x, l) => x + (l.qp || 0), 0), diff = u.sapPlan ? u.sapPlan - u.plan : 0;
+    return `<h3>МТР подрядчика (УСО) · ${num(L.length)} поз. на ${mrub(u.plan)}</h3>
+      <div class="kpis toro-kpis">${kpi("Материалы подрядчика (состав)", mrub(u.plan))}${kpi("План в заказе SAP", u.sapPlan ? mrub(u.sapPlan) : "—")}
+        ${kpi("Факт в заказе SAP", mrub(u.sapFact), u.closed || u.sapFact > 0 ? "good" : "")}${kpi("Статус (заказ ТОРО)", u.stage ? esc(TORO_STAGE[u.stage] || u.stage) : "—", u.closed ? "good" : "")}</div>
+      <p class="hint">Какие материалы идут от подрядчика, сколько, по какой цене и на какую сумму — реестр МТР УСО на ${dmy(um.asOf)}${o.year ? `, ${esc(o.year)} год` : ""}${o.method ? ` · ${esc(o.method)}` : ""}.
+        Цена и сумма — плановые, в рублях (в SAP на вкладке «МТР подрядчика» — в валюте плана). Статус — по заказу ТОРО: ${u.closed ? "заказ закрыт — МТР подрядчика закрыты" : "заказ не закрыт — МТР подрядчика не закрыты"}${u.sapFact ? `, факт в заказе ${rub(u.sapFact)}` : ", факта в заказе нет"}.${Math.abs(diff) > 1 ? ` План в заказе SAP отличается от суммы состава на ${rub(diff)}.` : ""}</p>
+      <div class="twrap"><table class="toro-lines"><thead><tr><th>ЕКМТР</th><th>Материал</th><th class="n">Кол-во</th><th class="n">Цена, ₽</th><th class="n">Сумма, ₽</th></tr></thead><tbody>
+      ${L.map(l => `<tr><td>${l.code ? codeLink(l.code) : '<span class="dim">без кода</span>'}</td><td class="toro-name">${esc(l.name)}</td><td class="n">${toroN(l.qp)}</td><td class="n">${rub(l.price != null ? l.price : (l.qp ? l.p / l.qp : 0))}</td><td class="n">${rub(l.p)}</td></tr>`).join("")}
+      <tr class="toro-grp"><td colspan="2">Итого · ${usoStageBadge(u)}</td><td class="n">${toroN(qty)}</td><td></td><td class="n">${rub(u.plan)}</td></tr></tbody></table></div>`;
   }).join("");
 }
 function toroPlainTable(lines, works) {
@@ -572,7 +572,7 @@ async function openToroCard(number, hint = {}) {
       ${toroHeader(number, orders, historical, uso, ctl, works)}
       ${orders.map(o => toroProvisionBlock(o, works)).join("")}
       ${historical.length ? '<h3>История ТОРО</h3><p class="hint">Начало: ' + [...new Set(historical.map(r => r.start).filter(Boolean))].map(dmy).join(", ") + '</p>' + toroPlainTable(historical, works) : ""}
-      ${usoLinesHtml(uso, ctl.length ? { up: ctl.reduce((x, r) => x + (r.up || 0), 0), uf: ctl.reduce((x, r) => x + (r.uf || 0), 0) } : null)}
+      ${usoLinesHtml(uso)}
       ${!orders.length && !historical.length && !uso.length ? '<p class="hint">Заказ не найден в загруженных данных.</p>' : ""}`;
     byId("mCloseBtn").onclick = closeModal; finishEntityCard(); byId("mCloseBtn").focus();
   } catch (e) {
@@ -2439,31 +2439,14 @@ function usoContextOrders() {
   );
 }
 function usoTotals(rows) {
-  return (rows || []).reduce((t, o) => ({
-    orders: t.orders + 1,
-    planValue: t.planValue + (o.planValue || 0),
-    factValue: t.factValue + (o.factValue || 0),
-    openValue: t.openValue + (o.openValue || 0),
-  }), { orders: 0, planValue: 0, factValue: 0, openValue: 0 });
+  return (rows || []).reduce((t, o) => { const u = usoStatusOf(o); return {
+    orders: t.orders + 1, closed: t.closed + (u.closed ? 1 : 0),
+    planValue: t.planValue + u.plan, factValue: t.factValue + u.sapFact, openValue: t.openValue + u.open,
+  }; }, { orders: 0, closed: 0, planValue: 0, factValue: 0, openValue: 0 });
 }
 function usoBlockHtml(list) {
   if (!list || !list.length) return "";
-  return list.map(u => `
-    <div class="card" style="margin-top:10px">
-      <h3>МТР подрядчика (УСО)${u.method ? " · " + esc(u.method) : ""}</h3>
-      <p class="hint">${esc(u.be || "")} · завод подрядчика ${esc(u.plant)} → ${esc(u.siteName || u.site)} · ${esc(u.month || "")}.
-        Это материалы из выгрузки «МТР УСО», не остаток склада Полюса.
-        ${u.closed ? '<span class="badge good">закрыто фактом</span>' : `<span class="badge warn">открыто ${rub(u.openValue)}</span>`}
-        · план ${rub(u.planValue)} · факт ${rub(u.factValue)}</p>
-      <div class="twrap"><table>
-        <thead><tr><th>ЕКМТР</th><th>Деталь</th><th class="n">План, ед.</th><th class="n">Факт, ед.</th><th class="n">План ₽</th><th class="n">Факт ₽</th></tr></thead>
-        <tbody>${(u.lines || []).map(l => `<tr>
-          <td class="mono">${codeLink(l.code)}</td><td class="wrap">${esc(l.name)}</td>
-          <td class="n">${num(l.qp, 1)}</td><td class="n">${num(l.qf, 1)}</td>
-          <td class="n">${rub(l.p)}</td><td class="n">${rub(l.a)}</td>
-        </tr>`).join("")}</tbody>
-      </table></div>
-    </div>`).join("");
+  return `<div class="card" style="margin-top:10px">${list.map(u => `<p class="hint">${esc(u.be || "")} · завод подрядчика ${esc(u.plant)} → ${esc(u.siteName || u.site)} · ${esc(u.month || "")}. Это материалы из реестра «МТР УСО», не остаток склада Полюса.</p>` + usoLinesHtml([u])).join("")}</div>`;
 }
 
 function renderProvision(host) {
@@ -2548,17 +2531,17 @@ function renderProvision(host) {
     ${executionFunnelHtml()}
     ${um.orders ? `<div class="kpis">
       ${kpi("Заказов УСО WK", num(ut.orders))}
-      ${kpi("МТР подрядчика, план", mrub(ut.planValue))}
-      ${kpi("МТР подрядчика, факт", mrub(ut.factValue), "good")}
-      ${kpi("УСО ещё открыто", mrub(ut.openValue), ut.openValue > 0 ? "warn" : "good")}
+      ${kpi("МТР подрядчика, план (состав)", mrub(ut.planValue))}
+      ${kpi("Факт в заказах SAP", mrub(ut.factValue), "good")}
+      ${kpi("Не закрыто (заказ ТОРО открыт)", mrub(ut.openValue) + ` <small>${num(ut.orders - ut.closed)} зак.</small>`, ut.openValue > 0 ? "warn" : "good")}
     </div>
-    <p class="hint">KPI УСО — по выбранному контексту. УСО — материалы подрядчика из <code>rawdata/УСО</code> TOPO (АО «Развитие», заводы 7101–7104). Они не смешиваются с остатком Полюса и не закрывают ATP-дефицит чужим складом.</p>` : ""}
+    <p class="hint">KPI УСО — по выбранному контексту. Состав, количество, цена и сумма — реестр МТР УСО (АО «Развитие», заводы 7101–7104); статус — по заказу ТОРО (не закрыт заказ — не закрыто УСО), факт — строка PM‑06 «ТОиР. Материалы подрядчика». «Стоимость факт» реестра — плановая цена в валюте по курсу, как факт не используется. МТР подрядчика не смешиваются с остатком Полюса и не закрывают дефицит.</p>` : ""}
 
     <section class="card">
       <div class="prov-card-head"><div><h3>План, фактический расход и открытая потребность</h3><p class="hint">PM‑06 и УСО — для текущего контекста. PM‑06 включает закрытые строки выбранных заказов, но только номенклатуру WK из витрины. Смешивать их в одну сумму нельзя.</p></div></div>
       <div class="twrap"><table class="supply-ledger"><thead><tr><th>Контур</th><th class="n">План</th><th class="n">Факт</th><th class="n">Исполнение</th><th class="n">Открыто</th></tr></thead><tbody>
         <tr><th>МТР Полюса, PM‑06 (WK)</th><td class="n">${rub(pmPlan)}</td><td class="n">${rub(pmFact)}</td><td class="n">${pmPlan > 0 ? num(100 * pmFact / pmPlan, 1) + "%" : "—"}</td><td class="n"><b>${rub(w.value)}</b></td></tr>
-        ${um.orders ? `<tr><th>МТР подрядчика, УСО</th><td class="n">${rub(ut.planValue)}</td><td class="n">${rub(ut.factValue)}</td><td class="n">${ut.planValue > 0 ? num(100 * ut.factValue / ut.planValue, 1) + "%" : "—"}</td><td class="n"><b>${rub(ut.openValue)}</b></td></tr>` : ""}
+        ${um.orders ? `<tr><th>МТР подрядчика, УСО (факт — в заказах SAP, открыто — заказ ТОРО не закрыт)</th><td class="n">${rub(ut.planValue)}</td><td class="n">${rub(ut.factValue)}</td><td class="n">${ut.planValue > 0 ? num(100 * ut.factValue / ut.planValue, 1) + "%" : "—"}</td><td class="n"><b>${rub(ut.openValue)}</b></td></tr>` : ""}
       </tbody></table></div>
     </section>
 
@@ -2727,7 +2710,7 @@ function renderProvision(host) {
     }
   }
   if (byId("usoTable") && D.usoWk) {
-    let usoRows = usoRowsAll;
+    let usoRows = usoRowsAll.map(o => { const u = usoStatusOf(o); return { ...o, u, stageLabel: TORO_STAGE[u.stage] || u.stage || "нет статуса", sapFact: u.sapFact, openValue: u.open }; });
     renderTable(byId("usoTable"), {
       rows: usoRows, limit: 80, sortKey: "month", sortDir: 1,
       csv: true, csvName: "wk_uso.csv",
@@ -2738,10 +2721,10 @@ function renderProvision(host) {
         { key: "order", label: "Заказ", cls: "mono" },
         { key: "unit", label: "Машина", cls: "wrap" },
         { key: "method", label: "Способ" },
-        { key: "closed", label: "Статус", fmt: v => v ? '<span class="badge good">закрыт</span>' : '<span class="badge warn">открыт</span>' },
-        { key: "planValue", label: "План", numeric: true, fmt: rub },
-        { key: "factValue", label: "Факт", numeric: true, fmt: rub },
-        { key: "openValue", label: "Открыто", numeric: true, fmt: v => v ? rub(v) : "—" },
+        { key: "stageLabel", label: "Статус заказа ТОРО", fmt: (v, r) => usoStageBadge(r.u) },
+        { key: "planValue", label: "План (состав)", numeric: true, fmt: rub },
+        { key: "sapFact", label: "Факт в SAP", numeric: true, fmt: v => v ? rub(v) : "—" },
+        { key: "openValue", label: "Не закрыто", numeric: true, fmt: v => v ? rub(v) : "—" },
       ],
     });
   }
@@ -3642,9 +3625,8 @@ function renderUpdate(host) {
           <thead><tr><th>Показатель</th><th class="n">Сейчас</th><th class="n">Новая выгрузка</th><th class="n">Δ</th></tr></thead>
           <tbody>
             ${updDiffRow("Заказов УСО WK", (D.usoWk && D.usoWk.meta.orders) || 0, um.meta.orders, v => num(v))}
-            ${updDiffRow("План подрядчика", (D.usoWk && D.usoWk.meta.planValue) || 0, um.meta.planValue, rub)}
-            ${updDiffRow("Факт подрядчика", (D.usoWk && D.usoWk.meta.factValue) || 0, um.meta.factValue, rub)}
-            ${updDiffRow("Ещё открыто", (D.usoWk && D.usoWk.meta.openValue) || 0, um.meta.openValue, rub)}
+            ${updDiffRow("Сумма по составу", (D.usoWk && D.usoWk.meta.planValue) || 0, um.meta.planValue, rub)}
+            ${updDiffRow("Позиций", (D.usoWk && D.usoWk.meta.rows) || 0, um.meta.rows, v => num(v))}
           </tbody>
         </table></div>
         <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
