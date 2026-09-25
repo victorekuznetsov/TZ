@@ -10,6 +10,17 @@ let AN_CACHE = { key: null, model: null, refs: [] };
 let AN_LEVEL = "problems";   // problems | all
 let AN_GROUP = "";
 let CTRL_DEPT = "plan";      // plan | exec | budget
+let CTRL_FACT = "";          // фильтр списков заказов по факту
+const CTRL_FACTS = [
+  ["", "Все заказы", () => true],
+  ["has", "Есть факт", r => r.fact > 0],
+  ["none", "Нет факта", r => r.fact <= 0],
+  ["over", "Факт выше плана > 10%", r => r.planCounted > 0 && r.fact > r.planCounted * 1.1],
+  ["match", "Факт в пределах ±10% плана", r => r.planCounted > 0 && Math.abs(r.fact - r.planCounted) <= r.planCounted * 0.1],
+  ["under", "Факт ниже плана > 10%", r => r.fact > 0 && r.fact < r.planCounted * 0.9],
+  ["noplan", "Факт без плана", r => r.planCounted <= 0 && r.fact > 0],
+];
+const ctrlFactPred = () => (CTRL_FACTS.find(f => f[0] === CTRL_FACT) || CTRL_FACTS[0])[2];
 
 function anModel() {
   const ctx = { site: G.site, model: G.model, unit: G.unit, order: G.order };
@@ -423,14 +434,24 @@ function siteOfUnit(name) {
 
 /* ===================== КОНТРОЛЬ ОТДЕЛОВ ===================== */
 function anOrderTable(host, rows, { csvName, extra = [], sortKey = "planCounted" } = {}) {
+  const all = rows;
+  rows = rows.filter(ctrlFactPred());
+  if (CTRL_FACT) {
+    const f = CTRL_FACTS.find(x => x[0] === CTRL_FACT);
+    host.insertAdjacentHTML("beforebegin", `<p class="hint ctl-fact-note">Фильтр «${esc(f[1])}»: ${num(rows.length)} из ${num(all.length)} заказов · план ${mrub(rows.reduce((s, r) => s + r.planCounted, 0))} · факт ${mrub(rows.reduce((s, r) => s + r.fact, 0))}</p>`);
+  }
+  if (!rows.length) { host.innerHTML = '<p class="hint">Нет заказов под выбранный фильтр факта.</p>'; return; }
   renderTable(host, {
-    rows: rows.map(r => ({ ...r, unitShort: anShort(r.unit), siteName: anSite(r.site).split(" ")[0], stageLabel: (AnalyticsCore.STAGES.find(s => s[0] === r.stage) || [0, r.stage])[1] })),
-    limit: 50, sortKey, csv: true, csvName: csvName || "orders.csv",
+    rows: rows.map(r => ({ ...r, text: D.orderText && D.orderText.text ? D.orderText.text[r.order] || "" : "", factShare: r.planCounted > 0 ? r.fact / r.planCounted : null, unitShort: anShort(r.unit), siteName: anSite(r.site).split(" ")[0], stageLabel: (AnalyticsCore.STAGES.find(s => s[0] === r.stage) || [0, r.stage])[1] })),
+    limit: 15, sortKey, csv: true, csvName: csvName || "orders.csv",
     onRowClick: r => { G.order = r.order; renderGlobalFilters(); navigateTo("repairs"); },
     cols: [{ key: "y", label: "Год" }, { key: "siteName", label: "Площадка" }, { key: "unitShort", label: "Борт" },
-      { key: "order", label: "Заказ", cls: "mono" }, { key: "kind", label: "Вид", fmt: (v, r) => `<span title="${esc(r.kindText)}">${esc(v)}</span>` },
+      { key: "order", label: "Заказ", cls: "mono" },
+      ...(D.orderText ? [{ key: "text", label: "Текст заказа", fmt: v => v ? `<span class="ctl-text" title="${esc(v)}">${esc(v)}</span>` : '<span class="dim">—</span>' }] : []),
+      { key: "kind", label: "Вид", fmt: (v, r) => `<span title="${esc(r.kindText)}">${esc(v)}</span>` },
       { key: "start", label: "Начало", fmt: v => v ? dmy(v) : "—" }, { key: "end", label: "Конец", fmt: v => v ? dmy(v) : "—" },
       { key: "planCounted", label: "План", numeric: true, fmt: mrub }, { key: "fact", label: "Факт", numeric: true, fmt: mrub },
+      { key: "factShare", label: "Факт / план", numeric: true, fmt: v => v == null ? '<span class="dim">—</span>' : `<span class="badge ${v > 1.1 ? "warn" : v >= 0.9 ? "good" : v > 0 ? "info" : ""}">${pct(v)}</span>` },
       ...extra, { key: "stageLabel", label: "Стадия" }],
   });
 }
@@ -536,17 +557,19 @@ function renderControl(host) {
     <h1>Контроль отделов</h1>
     ${contextBanner()}
     <p class="sub">Показатели для отделов планирования, исполнения и бюджетирования по статусам SAP заказов WK. Данные на ${dmy(m.asOf)}. Строка заказа открывает его в «График · план-факт».</p>
-    <div class="toolbar dept-tabs">${tabs.map(([k, l]) => `<button class="pill ${CTRL_DEPT === k ? "on" : ""}" data-dept="${k}">${l}</button>`).join("")}</div>
+    <div class="toolbar dept-tabs">${tabs.map(([k, l]) => `<button class="pill ${CTRL_DEPT === k ? "on" : ""}" data-dept="${k}">${l}</button>`).join("")}
+      <label class="ctl-fact">Факт по заказу
+        <select id="ctlFact">${CTRL_FACTS.map(([k, l]) => `<option value="${k}"${CTRL_FACT === k ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label></div>
     ${conc.length ? `<h2>Выводы для отдела</h2>${anCards(conc)}` : callout("good", "Замечаний по отделу в выбранном контексте нет.")}
     ${body}
     ${anChecksHtml(m)}`;
-  if (CTRL_DEPT === "plan") anOrderTable(byId("ctlNotRel"), E.notReleasedStarted.top, { csvName: "not_released_started.csv" });
+  if (CTRL_DEPT === "plan") anOrderTable(byId("ctlNotRel"), E.notReleasedStarted.all, { csvName: "not_released_started.csv" });
   if (CTRL_DEPT === "exec") {
-    anOrderTable(byId("ctlRel"), E.releasedEmpty.top, { csvName: "released_empty.csv" });
-    anOrderTable(byId("ctlOver"), E.closeOverdue.top, { csvName: "close_overdue.csv" });
-    anOrderTable(byId("ctlReady"), E.readyToClose.top, { csvName: "ready_to_close.csv" });
-    anOrderTable(byId("ctlAcc"), E.acceptPending.top, { csvName: "accept_pending.csv" });
-    anOrderTable(byId("ctlTails"), [...E.tails["2024"].top, ...E.tails["2025"].top], { csvName: "tails.csv" });
+    anOrderTable(byId("ctlRel"), E.releasedEmpty.all, { csvName: "released_empty.csv" });
+    anOrderTable(byId("ctlOver"), E.closeOverdue.all, { csvName: "close_overdue.csv" });
+    anOrderTable(byId("ctlReady"), E.readyToClose.all, { csvName: "ready_to_close.csv" });
+    anOrderTable(byId("ctlAcc"), E.acceptPending.all, { csvName: "accept_pending.csv" });
+    anOrderTable(byId("ctlTails"), [...E.tails["2024"].all, ...E.tails["2025"].all], { csvName: "tails.csv" });
     const s = E.sCurve;
     renderLineChart(byId("ctlS"), { months: s.map(x => x.month), series: [
       { label: "План нарастающим", values: s.map(x => x.planCum / 1e6), color: "var(--c6)" },
@@ -558,12 +581,13 @@ function renderControl(host) {
     byId("ctlBM").innerHTML = anColumns(s.map(x => x.month.slice(5)), [
       { label: "План", color: "var(--c6)", values: s.map(x => x.plan) },
       { label: "Факт", color: "var(--c1)", values: s.map(x => x.month <= m.asOf.slice(0, 7) ? x.fact : null) }], { H: 220 });
-    anOrderTable(byId("ctlOvr"), [...B.overrun[cur].top, ...B.overrun["2025"].top].map(r => ({ ...r, over: r.fact - r.planCounted })).sort((a, b) => b.over - a.over).slice(0, 15),
+    anOrderTable(byId("ctlOvr"), [...B.overrun[cur].all, ...B.overrun["2025"].all].map(r => ({ ...r, over: r.fact - r.planCounted })).sort((a, b) => b.over - a.over),
       { csvName: "overrun.csv", sortKey: "over", extra: [{ key: "over", label: "Сверх плана", numeric: true, fmt: v => `<b style="color:var(--warn)">${mrub(v)}</b>` }] });
-    anOrderTable(byId("ctlRisk"), B.riskTop, { csvName: "unspent_risk.csv" });
-    anOrderTable(byId("ctlUnder"), [...B.underrun[cur].top, ...B.underrun["2025"].top], { csvName: "underrun.csv" });
+    anOrderTable(byId("ctlRisk"), B.riskAll, { csvName: "unspent_risk.csv" });
+    anOrderTable(byId("ctlUnder"), [...B.underrun[cur].all, ...B.underrun["2025"].all], { csvName: "underrun.csv" });
   }
   qsa("[data-dept]", host).forEach(b => { b.onclick = () => { CTRL_DEPT = b.dataset.dept; renderTab(); }; });
+  byId("ctlFact").onchange = e => { CTRL_FACT = e.target.value; const y = window.scrollY; renderTab(); window.scrollTo(0, y); };
   anMount(host);
   anWire(host);
 }

@@ -344,6 +344,7 @@ function entityCell(col, row, fallback) {
 let CARD_TRAIL = [], CARD_REPLAY = false, CARD_SEQ = 0;
 function beginEntityCard(type, args) {
   const card = byId("modalCard"), wasClosed = card.hidden;
+  card.classList?.remove("wide");
   if (wasClosed) { CARD_TRAIL = []; MODAL_RETURN_FOCUS = document.activeElement; }
   const next = {type, args};
   if (!CARD_REPLAY && JSON.stringify(CARD_TRAIL.at(-1)) !== JSON.stringify(next)) CARD_TRAIL.push(next);
@@ -393,13 +394,95 @@ function openPartCard(part) {
   ${refs.map(i => `<p>${codeLink(i.code)} · ${esc(i.name)}</p>`).join("") || '<p class="hint">Точная связь с ЕКМТР не найдена.</p>'}`;
   byId("mCloseBtn").onclick = closeModal; finishEntityCard(); byId("mCloseBtn").focus();
 }
+/* ---------- карточка заказа ТОРО ---------- */
+function toroControlRows(number, hint = {}) {
+  if (!D.control) return [];
+  if (!D.controlRows || D.controlRowsOf !== D.control) {
+    D.controlRows = AnalyticsCore.decodeControl(D.control); D.controlRowsOf = D.control;
+  }
+  return D.controlRows.filter(r => String(r.order) === String(number) && (!hint.unit || r.unit === hint.unit));
+}
+// виды работ заказа: один — выносится в шапку, несколько — строки группируются
+function toroWorks(list) {
+  const m = new Map();
+  list.filter(w => w && w !== "Не присвоено" && w !== "#").forEach(w => m.set(w, (m.get(w) || 0) + 1));
+  return [...m.keys()];
+}
+const TORO_STAGE = Object.fromEntries((typeof AnalyticsCore !== "undefined" ? AnalyticsCore.STAGES : []));
+function toroHeader(number, orders, historical, uso, ctl, works) {
+  const text = D.orderText && D.orderText.text && D.orderText.text[number];
+  const o = orders[0] || {}, h = historical[0] || {}, u = uso[0] || {}, c = ctl[ctl.length - 1] || {};
+  const unit = o.unit || c.unit || h.unit || u.unit || "", site = o.site || c.site || h.site || u.site || "";
+  const start = c.start || o.date || h.start, end = c.end || h.end;
+  const chip = (label, value, cls = "") => value ? `<span class="toro-chip ${cls}"><i>${esc(label)}</i> ${value}</span>` : "";
+  const plan = ctl.reduce((s, r) => s + r.planCounted, 0), fact = ctl.reduce((s, r) => s + r.fact, 0);
+  const val = orders.reduce((s, x) => s + (x.value || 0), 0), cov = orders.reduce((s, x) => s + (x.fromStock || 0) + (x.fromBuy || 0), 0);
+  const unc = orders.reduce((s, x) => s + (x.late || 0) + (x.undated || 0) + (x.gap || 0), 0);
+  const pot = orders.reduce((s, x) => s + (x.transferPotential || 0), 0);
+  return `<h2 id="modalTitle">Заказ ТОРО <span class="mono">${esc(number)}</span></h2>
+    <div class="toro-title">${text ? esc(text) : '<span class="dim">текст заказа не выгружен</span>'}</div>
+    <div class="toro-sub">${esc(unit)}${site ? " · " + esc(siteNameOf(site) || site) : ""}</div>
+    <div class="toro-chips">
+      ${chip("Вид работ", works.length ? works.map(esc).join(", ") : "", "strong")}
+      ${chip("Вид заказа", c.kind ? `${esc(c.kind)}${c.kindText ? " · " + esc(c.kindText) : ""}` : "")}
+      ${chip("Стадия", c.stage ? esc(TORO_STAGE[c.stage] || c.stage) : o.closed ? "Закрыт фактом" : o.stage ? esc(TORO_STAGE[o.stage] || o.stage) : "")}
+      ${chip("Сроки", start ? `${dmy(start)}${end && end !== start ? " – " + dmy(end) : ""}` : "")}
+      ${chip("Статья", o.kind ? esc(o.kind) : "")}${chip("Способ", o.method ? esc(o.method) : u.method ? esc(u.method) : "")}
+      ${chip("Год", [...new Set(ctl.map(r => r.y))].join(", "))}
+    </div>
+    <div class="kpis toro-kpis">
+      ${ctl.length ? kpi("План МТР + УСО", mrub(plan)) + kpi("Факт", mrub(fact) + (plan ? ` <small>${pct(fact / plan)}</small>` : ""), fact > plan * 1.1 && plan ? "warn" : "") : ""}
+      ${val > 0 ? kpi("Потребность", mrub(val)) + kpi("Обеспечено к сроку", val ? pct(cov / val) : "—", !val ? "" : cov / val >= .9 ? "good" : cov / val >= .7 ? "warn" : "bad")
+        + kpi("Не покрыто", mrub(unc), unc > 0 ? "bad" : "good") + (pot > 0 ? kpi("Можно переместить*", mrub(pot)) : "") : ""}
+    </div>`;
+}
+function toroCovBadge(l) {
+  const need = l.qty || 0;
+  if (need <= 0) return (l.factQty || 0) > 0 ? '<span class="badge good">закрыт фактом</span>' : '<span class="dim">—</span>';
+  const c = ((l.fromStock || 0) + (l.fromBuy || 0)) / need;
+  return `<span class="badge ${c >= 0.999 ? "good" : c > 0 ? "warn" : "bad"}">${pct(c)}</span>`;
+}
+// количество: целое — без дробной части («10», а не «10,000»), дробное — до тысячных
+function toroN(v) { v = Number(v) || 0; return Number.isInteger(v) ? num(v, 0) : num(v, 3).replace(/,?0+$/, ""); }
+function toroQty(v, cls = "") { return v ? `<span class="${cls}">${toroN(v)}</span>` : '<span class="dim">·</span>'; }
+function toroGrouped(lines, works, cols, rowHtml) {
+  const groups = works.length > 1 ? works.map(w => [w, lines.filter(l => l.work === w)]).concat([["Без вида работ", lines.filter(l => !works.includes(l.work))]]) : [[null, lines]];
+  return groups.filter(([, a]) => a.length).map(([w, a]) =>
+    (w ? `<tr class="toro-grp"><td colspan="${cols}">${esc(w)} · ${a.length} поз.</td></tr>` : "") + a.map(rowHtml).join("")).join("");
+}
+function toroProvisionBlock(o, works) {
+  const lines = o.lines || [];
+  const head = `<h3>Материалы: обеспеченность по позициям, шт.</h3>
+    <p class="hint">Дата работ ${o.date ? dmy(o.date) : "не указана"} · ${o.closed ? "закрыт фактом" : "открыт"}. Нужно = план − факт; склад — только своей площадки; перемещение* ограничено и в обеспеченность не входит.</p>`;
+  const row = l => {
+    const from = Object.entries(l.transferFrom || {}).filter(([, q]) => q > 0).map(([st, q]) => `${num(q, 1)} из ${esc((siteNameOf(st) || st).split(" ")[0])}`).join(", ");
+    return `<tr><td>${codeLink(l.code)}</td><td class="toro-name">${esc(l.name)}</td>
+      <td class="n">${toroN(l.planQty)}</td><td class="n">${toroQty(l.factQty)}</td><td class="n"><b>${toroQty(l.qty)}</b></td>
+      <td class="n">${toroQty(l.fromStock, "q-own")}</td><td class="n">${toroQty(l.fromBuy, "q-buy")}</td>
+      <td class="n">${toroQty(l.late, "q-late")}</td><td class="n">${toroQty(l.undated, "q-late")}</td><td class="n">${toroQty(l.gap, "q-gap")}</td>
+      <td class="n" title="${esc(from)}">${l.transferPotential ? `${toroN(l.transferPotential)}<div class="sup-sub">${from}</div>` : '<span class="dim">·</span>'}</td>
+      <td class="n">${toroCovBadge(l)}</td></tr>`;
+  };
+  return head + `<div class="twrap"><table class="toro-lines"><thead><tr><th>ЕКМТР</th><th>Материал</th><th class="n">План</th><th class="n">Факт</th><th class="n">Нужно</th>
+    <th class="n" title="Склад своей площадки">Склад</th><th class="n" title="Закупка приходит к сроку работ">Закупка к сроку</th>
+    <th class="n" title="Закупка приходит позже срока работ">Опоздание</th><th class="n" title="Открытая закупка без даты поставки">Без срока</th>
+    <th class="n">Не покрыто</th><th class="n" title="Есть на другой площадке сверх её потребности — ограниченная возможность">Можно перем.*</th><th class="n">Обеспечено</th></tr></thead>
+    <tbody>${toroGrouped(lines, works, 12, row)}</tbody></table></div>`;
+}
+function toroPlainTable(lines, works) {
+  const row = l => `<tr><td>${codeLink(l.code)}</td><td class="toro-name">${esc(l.name)}</td><td class="n">${toroN(l.planQty ?? l.qp)}</td><td class="n">${toroN(l.factQty ?? l.qf)}</td><td class="n">${l.qty == null ? "—" : toroN(l.qty)}</td></tr>`;
+  return `<div class="twrap"><table class="toro-lines"><thead><tr><th>ЕКМТР</th><th>Материал</th><th class="n">План</th><th class="n">Факт</th><th class="n">Открытая потребность</th></tr></thead>
+    <tbody>${toroGrouped(lines, works, 5, row)}</tbody></table></div>`;
+}
 async function openToroCard(number, hint = {}) {
   beginEntityCard("toro", [number, hint]);
   const seq = CARD_SEQ, card = byId("modalCard");
+  card.classList.add("wide");
   card.innerHTML = '<button class="mclose" id="mCloseBtn" aria-label="Закрыть карточку">✕</button><h2 id="modalTitle">Заказ ТОРО ' + esc(number) + '</h2><p>Загрузка состава заказа…</p>';
   byId("mCloseBtn").onclick = closeModal;
   try {
-    await ensureData(["provision", "usoWk"]);
+    await ensureData(["provision", "usoWk", "control"]);
+    try { await ensureData(["orderText"]); } catch (e) { D.orderText = null; }   // тексты заказов — необязательная витрина
     let orders = [...(D.provision.orders || []), ...(D.provision.closedOrders || [])].filter(o =>
       String(o.order) === String(number) && (!hint.site || o.site === hint.site) && (!hint.unit || o.unit === hint.unit));
     let historical = [];
@@ -415,14 +498,15 @@ async function openToroCard(number, hint = {}) {
       historical = S.rows.filter(r => String(r.order) === String(number) && (!hint.site || r.site === hint.site) && (!hint.unit || r.unit === hint.unit));
     }
     if (seq !== CARD_SEQ || card.hidden) return;
-    const lineTable = lines => '<div class="twrap"><table><thead><tr><th>ЕКМТР</th><th>Материал</th><th>Вид работ</th><th>План</th><th>Факт</th><th>Открытая потребность</th></tr></thead><tbody>' +
-      lines.map(l => `<tr><td>${codeLink(l.code)}</td><td>${esc(l.name)}</td><td>${esc(l.work || "")}</td><td>${num(l.planQty ?? l.qp,3)}</td><td>${num(l.factQty ?? l.qf,3)}</td><td>${l.qty == null ? "—" : num(l.qty,3)}</td></tr>`).join("") + '</tbody></table></div>';
     const uso = (D.usoWk?.orders || []).filter(o => String(o.order) === String(number) && (!hint.site || o.site === hint.site) && (!hint.unit || o.unit === hint.unit));
-    card.innerHTML = `<button class="mclose" id="mCloseBtn" aria-label="Закрыть карточку">✕</button><h2 id="modalTitle">Заказ ТОРО ${esc(number)}</h2>
-      <p class="hint">Полный состав заказа в загруженной витрине. Фильтры вкладки не скрывают строки карточки.</p>
-      ${orders.map(o => `<h3>${esc(o.unit)} · ${esc(siteNameOf(o.site) || o.site)}</h3><p>Дата начала: ${o.date ? dmy(o.date) : "не указана"} · ${o.closed ? "Закрыт фактом" : "Открыт"} · покрытие ${num(o.coverage,1)}%</p>${lineTable(o.lines || [])}`).join("")}
-      ${historical.length ? '<h3>История ТОРО</h3><p>Начало: ' + [...new Set(historical.map(r => r.start).filter(Boolean))].map(dmy).join(", ") + '</p>' + lineTable(historical) : ""}
-      ${uso.map(o => '<h3>МТР подрядчика (УСО)</h3>' + lineTable((o.lines || []).map(l => ({...l, planQty:l.qp, factQty:l.qf})))).join("")}
+    const ctl = toroControlRows(number, hint);
+    const allLines = [...orders.flatMap(o => o.lines || []), ...historical, ...uso.flatMap(o => o.lines || [])];
+    const works = toroWorks([...allLines.map(l => l.work), ...uso.map(o => o.work), ...ctl.map(r => r.work)]);
+    card.innerHTML = `<button class="mclose" id="mCloseBtn" aria-label="Закрыть карточку">✕</button>
+      ${toroHeader(number, orders, historical, uso, ctl, works)}
+      ${orders.map(o => toroProvisionBlock(o, works)).join("")}
+      ${historical.length ? '<h3>История ТОРО</h3><p class="hint">Начало: ' + [...new Set(historical.map(r => r.start).filter(Boolean))].map(dmy).join(", ") + '</p>' + toroPlainTable(historical, works) : ""}
+      ${uso.map(o => '<h3>МТР подрядчика (УСО)</h3>' + toroPlainTable((o.lines || []).map(l => ({ ...l, work: l.work || o.work, planQty: l.qp, factQty: l.qf })), works)).join("")}
       ${!orders.length && !historical.length && !uso.length ? '<p class="hint">Заказ не найден в загруженных данных.</p>' : ""}`;
     byId("mCloseBtn").onclick = closeModal; finishEntityCard(); byId("mCloseBtn").focus();
   } catch (e) {
@@ -617,7 +701,7 @@ const FILES = {
   stock: "stock", quality: "quality", kb: "kb",
   drawings: "drawings", linkome: "linkome_catalog",
   linkomeDraw: "linkome_drawings", usoWk: "uso_wk",
-  control: "control",
+  control: "control", orderText: "order_text",
 };
 const CORE_KEYS = ["catalog", "ekmtrWk", "fleetBooks", "fleet", "repairs", "provision", "stock", "quality"];
 

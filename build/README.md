@@ -33,6 +33,9 @@ python3 build/build_uso_wk.py     <uso_mtr.json>                          data/
 # вкладки «Аналитика» и «Контроль отделов»: заказ × год PM-06 со стадией и
 # статусами — после build_provision.py и графика (data/schedule_*.local.js)
 python3 build/build_control.py    <TOPO>/pm06_meta/order_status            data/
+# тексты заказов («Замена ковша WK-20 №2») — только в исходных выгрузках PM-06
+# ветки rawdata TOPO; качаются по одной, разбираются потоком и удаляются
+python3 build/build_order_text.py <TOPO>/pm06_meta                          data/ <рабочая_папка>
 # двойная проверка: независимый пересчёт на Python → фикстура, ядро сверяется с ней
 python3 tests/verify_analytics.py <TOPO>/pm06_meta/order_status && node tests/test_analytics.mjs
 
