@@ -22,8 +22,10 @@ def main():
    key=(d["s"],str(d["y"]),unit,order,work,code,name);r=rows.get(key)
    if not r:
     od=d.get("od",{}).get(order) or [None,None];start=dt(od[0] if od else None);end=dt(od[1] if len(od)>1 else None);m=re.search(r"WK-?(\d+C?)",unit,re.I)
-    r=rows[key]={"id":hid(*key),"orderId":hid(d["s"],unit,order),"unitId":hid(d["s"],unit),"site":d["s"],"year":str(d["y"]),"unit":unit,"model":"WK-"+(m.group(1).upper() if m else "?"),"order":order,"work":work,"code":code,"name":name,"start":start,"end":end,"badDate":bool((od[0] and not start) or (len(od)>1 and od[1] and not end) or (start and end and end<start)),"reason":d.get("orr",{}).get(order,""),"source":f.name,"sourceRows":[],"makers":set(),"centers":set(),"needDates":set(),"approvalDates":set(),**{k:None for k in NUM}}
+    r=rows[key]={"id":hid(*key),"orderId":hid(d["s"],unit,order),"unitId":hid(d["s"],unit),"site":d["s"],"year":str(d["y"]),"unit":unit,"model":"WK-"+(m.group(1).upper() if m else "?"),"order":order,"work":work,"code":code,"name":name,"start":start,"end":end,"badDate":bool((od[0] and not start) or (len(od)>1 and od[1] and not end) or (start and end and end<start)),"reason":d.get("orr",{}).get(order,""),"source":f.name,"sourceRows":[],"makers":set(),"centers":set(),"needDates":set(),"approvalDates":set(),"method":"",**{k:None for k in NUM}}
    r["sourceRows"].append(i+1)
+   u=d.get("u",[])[i] if i<len(d.get("u",[])) else ""
+   if u:r["method"]=u  # способ исполнения — последний непустой, как в build_provision.py
    for k in NUM:
     x=d.get(k,[])[i] if i<len(d.get(k,[])) else None
     if isinstance(x,(int,float)) and not isinstance(x,bool):r[k]=(r[k] or 0)+x
@@ -35,7 +37,8 @@ def main():
  for r in data:
   for k in ("makers","centers","needDates","approvalDates"):r[k]=sorted(r[k])
   r["hasFact"]=any((r[k] or 0)!=0 for k in ("a","uf","qf"));r["remainingQty"]=max(r["qp"]-r["qf"],0) if r["qp"] is not None and r["qf"] is not None else None
- commit=subprocess.check_output(["git","rev-parse","HEAD"],cwd=src.parent).decode().strip();cols=list(data[0]);sf=[k for k in cols if isinstance(data[0][k],str)];dic={k:sorted({r[k] for r in data}) for k in sf};idx={k:{v:i for i,v in enumerate(dic[k])} for k in sf}
+ try:commit=subprocess.check_output(["git","rev-parse","HEAD"],cwd=src.parent,stderr=subprocess.DEVNULL).decode().strip()
+ except Exception:commit=sys.argv[3] if len(sys.argv)>3 else "";cols=list(data[0]);sf=[k for k in cols if isinstance(data[0][k],str)];dic={k:sorted({r[k] for r in data}) for k in sf};idx={k:{v:i for i,v in enumerate(dic[k])} for k in sf}
  meta={"sourceRepository":"https://github.com/victorekuznetsov/TOPO","sourceCommit":commit,"sourceFiles":sources,"sites":SITES,"rawRows":sum(s["wkRows"] for s in sources),"lines":len(data),"orders":len({r["orderId"] for r in data}),"units":len({r["unitId"] for r in data}),"years":sorted({r["year"] for r in data}),"completionStatusesAvailable":False,"actualWorkDatesAvailable":False,"dependenciesAvailable":False,"quantityUnitsAvailable":False,"grain":"площадка × год × ЕО × заказ × вид работ × ЕКМТР × компонент"}
  out.mkdir(exist_ok=True);names=[]
  for n,start in enumerate(range(0,len(data),1500)):

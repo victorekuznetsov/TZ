@@ -323,6 +323,26 @@ def year_status(topo_dir):
         for key in ("p", "a", "up", "uf"):
             cell[key] += sum(N(x) for x in d.get(key, []))
         del d
+    return year_status_from(agg)
+
+
+def contour_totals(topo_dir):
+    """Итоги всего контура ТОиР по площадко-году (p, a, up, uf) — чтобы
+    пересборка в браузере могла заменить загруженные площадко-годы и
+    пересчитать статус года без остальных выгрузок."""
+    out = {}
+    pattern = os.path.join(topo_dir, "[0-9][0-9][0-9][0-9]_20[0-9][0-9].json")
+    for fp in sorted(glob.glob(pattern)):
+        with open(fp, encoding="utf-8") as source:
+            d = json.load(source)
+        if not d.get("y"):
+            continue
+        out[f"{d['s']}_{d['y']}"] = {k: round(sum(N(x) for x in d.get(k, [])), 2) for k in ("p", "a", "up", "uf")}
+        del d
+    return out
+
+
+def year_status_from(agg):
     years = sorted(agg)
     with_fact = [y for y in years if agg[y]["a"] + agg[y]["uf"] > 0]
     frontier = with_fact[-1] if with_fact else None
@@ -565,7 +585,14 @@ def main():
     today = as_of(sj["meta"])
     lead_default = sj["meta"].get("leadMedianDays") or 0
 
-    ystat = year_status(topo_dir)
+    # статус года — из итогов контура по площадко-годам (те же числа, что
+    # meta.contour): браузерная пересборка считает его точно так же
+    contour = contour_totals(topo_dir)
+    ystat_agg = defaultdict(lambda: {"p": 0.0, "a": 0.0, "up": 0.0, "uf": 0.0})
+    for key, t in sorted(contour.items()):
+        for k in ("p", "a", "up", "uf"):
+            ystat_agg[key.split("_")[1]][k] += t[k]
+    ystat = year_status_from(ystat_agg)
     order_totals = {}
     need, closed_rows, nocode_rows, nocode_v = load_need(topo_dir, order_totals)
     pm06 = load_pm06_meta(meta_dir) if meta_dir else None
@@ -729,6 +756,7 @@ def main():
             "byHalf": cut(known, lambda r: (r["date"][:4] + (" I" if r["date"][5:7] <= "06" else " II")) if r["date"] else "без срока"),
             "byKind": cut(known, lambda r: r["kind"] or "не присвоено", sort_by_value=True, limit=8),
             "feasible": feas,
+            "contour": contour,
             "sapStatus": bool(pm06),
             "sapSources": pm06["sources"] if pm06 else [],
             "sapRemoved": removed or {},
