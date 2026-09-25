@@ -105,7 +105,7 @@ python3 build/make_local_js.py data/
 python3 build/build_wk_status_data.py <TOPO>/pm06_meta/order_status wk.json
 node build/build_wk_analytics_data.js wk_analytics.json   # автовыводы и контроль отделов — ядро отчёта
 python3 build/build_wk_status_deck.py "<Развитие шаблон.pptx>" wk.json \
-  exports/WK_ispolnenie_2024-2026_plan_2027.pptx
+  exports/WK_ispolnenie_2024-2026_plan_2027.pptx wk_analytics.json
 # учебная методичка для планировщиков
 python3 build/build_metodichka.py "<Развитие шаблон.pptx>" \
   exports/SAP_TORO_metodichka_planirovshika.pptx
