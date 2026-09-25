@@ -3172,7 +3172,7 @@ function renderDoc(host) {
 const UPD = { files: {}, busy: false, progress: null, result: null, err: "", applied: false };
 const UPD_TORO = { files: [], busy: false, progress: null, err: "", results: [], out: null, applied: false, msg: "", source: "" };
 const UPD_USO = { files: [], busy: false, progress: null, err: "", usoWk: null, applied: false, msg: "", years: [] };
-let UPD_LIBS = null, UPD_STORE_ERR = "";
+let UPD_LIBS = null, UPD_STORE_ERR = "", UPD_FOLDER = { busy: false, msg: "", err: "" };
 
 function updLoadLibs() {
   if (UPD_LIBS) return UPD_LIBS;
@@ -3292,6 +3292,20 @@ function updArchive() {
     "или залейте data/ в репозиторий — обновление увидят все.\n\nИстория:\n" + log + "\n" });
   const stamp = new Date().toISOString().slice(0, 10);
   updDownloadBlob(`wk_crm_data_${stamp}.zip`, new Blob([UpdStore.zip(files)], { type: "application/zip" }));
+}
+/* записать обновлённые витрины прямо в папку отчёта на диске (Chrome / Edge) */
+async function updWriteFolder(pickNew) {
+  const datasets = Object.fromEntries(DATA_OVERRIDE);
+  if (!Object.keys(datasets).length) return;
+  UPD_FOLDER = { busy: true, msg: "", err: "" }; renderTab();
+  try {
+    const r = await UpdStore.writeFolder(UpdStore.dataFiles(datasets), pickNew);
+    const w = (n => { const a = n % 100, b = n % 10; return a > 10 && a < 20 ? "файлов" : b === 1 ? "файл" : b >= 2 && b <= 4 ? "файла" : "файлов"; })(r.files);
+    UPD_FOLDER = { busy: false, err: "", msg: `Записано ${num(r.files)} ${w} (${num(r.bytes / 1e6, 1)} МБ) в папку «${r.folder}/data». Отчёт из этой папки теперь открывается с новыми данными на любом компьютере, куда её скопируют.` };
+  } catch (e) {
+    UPD_FOLDER = { busy: false, msg: "", err: e && e.name === "AbortError" ? "" : "Не удалось записать в папку: " + (e && e.message || e) };
+  }
+  renderTab();
 }
 async function updReset() {
   if (!confirm("Вернуть опубликованные данные? Обновления, сохранённые в этом браузере, будут удалены.")) return;
@@ -3474,12 +3488,15 @@ function renderUpdate(host) {
       <h3>Текущие данные</h3>
       ${saved ? `<p><span class="badge info">обновлены в этом браузере</span> ${esc(dmy(info.savedAt))} ${esc(String(info.savedAt).slice(11, 16))}. Витрины: ${[...DATA_OVERRIDE.keys()].filter(k => !/^schedule_\d+$/.test(k)).map(esc).join(", ")}${[...DATA_OVERRIDE.keys()].some(k => /^schedule_\d+$/.test(k)) ? " и график план-факт" : ""}.</p>
         <ul class="upd-log">${(info.log || []).slice().reverse().map(x => `<li>${esc(dmy(x.at))} ${esc(x.at.slice(11, 16))} — ${esc(x.label)}</li>`).join("")}</ul>
-        <p class="hint">Сохранено только в этом браузере на этом компьютере и переживает перезагрузку. Чтобы обновление увидели все, скачайте архив и распакуйте его в папку отчёта с заменой (или залейте папку data/ в репозиторий).</p>
+        <p class="hint">Сохранено в этом браузере и переживает перезагрузку. Чтобы обновились сами файлы отчёта: <b>«Записать в папку отчёта на диске»</b> (Chrome / Edge; укажите папку, где лежит index.html, — файлы data/ перезапишутся на месте) или скачайте архив и распакуйте его в папку отчёта с заменой. Для общего доступа — залейте папку data/ в репозиторий.</p>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="iconbtn on" id="updArchive">Скачать архив data/ для публикации</button>
+          ${UpdStore.canWriteFolder() ? `<button class="iconbtn on" id="updFolder" ${UPD_FOLDER.busy ? "disabled" : ""}>${UPD_FOLDER.busy ? "Запись…" : "Записать в папку отчёта на диске"}</button>
+          <button class="minibtn" id="updFolderNew" title="Выбрать другую папку отчёта">Другая папка…</button>` : ""}
+          <button class="iconbtn ${UpdStore.canWriteFolder() ? "" : "on"}" id="updArchive">Скачать архив data/ для публикации</button>
           <button class="minibtn" id="updReset">Вернуть опубликованные данные</button>
         </div>`
       : `<p>Опубликованные файлы папки <code>data/</code> — обновлений в этом браузере нет.</p>`}
+      ${UPD_FOLDER.msg ? callout("good", esc(UPD_FOLDER.msg)) : ""}${UPD_FOLDER.err ? callout("bad", esc(UPD_FOLDER.err)) : ""}
       ${UPD_STORE_ERR ? callout("warn", esc(UPD_STORE_ERR)) : ""}
     </div>
 
@@ -3581,6 +3598,7 @@ function renderUpdate(host) {
   const on = (id, fn) => { const el = byId(id); if (el) el.onclick = fn; };
   on("updGo", updRun); on("updApplyBtn", updApply);
   on("updArchive", updArchive); on("updReset", updReset);
+  on("updFolder", () => updWriteFolder(false)); on("updFolderNew", () => updWriteFolder(true));
   on("updToroPick", () => byId("updToroInput").click());
   const inpT = byId("updToroInput");
   if (inpT) inpT.onchange = e => {
