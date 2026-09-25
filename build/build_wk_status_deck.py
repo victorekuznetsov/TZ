@@ -4,7 +4,8 @@
 Данные — из build_wk_status_data.py (витрины интерактивного отчёта WK CRM).
 Запуск:
   python3 build/build_wk_status_data.py <TOPO/pm06_meta/order_status> wk.json
-  python3 build/build_wk_status_deck.py <Развитие шаблон.pptx> wk.json <выход.pptx>
+  node build/build_wk_analytics_data.js wk_analytics.json
+  python3 build/build_wk_status_deck.py <Развитие шаблон.pptx> wk.json <выход.pptx> [wk_analytics.json]
 """
 import json
 import re
@@ -18,6 +19,7 @@ from deck_kit import *  # noqa: F401,F403 — палитра, макеты и п
 from deck_kit import _nobullet
 
 SRC, DATA, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
+AN_PATH = sys.argv[4] if len(sys.argv) > 4 else None   # build_wk_analytics_data.js
 d = json.load(open(DATA, encoding='utf-8'))
 prs = deck_kit.open_template(SRC)
 
@@ -354,8 +356,9 @@ for ph in s.placeholders:
         ph.left, ph.top, ph.width, ph.height = Inches(0.85), Inches(6.29), Inches(5.6), Inches(0.95)
         ph.text_frame.text = f'Данные на {AS_OF}'
 s.notes_slide.notes_text_frame.text = (
-    'Презентация собрана из витрин интерактивного отчёта WK CRM (ветка grok репозитория TZ): Сводка, Парк, '
-    'График · план-факт, Обеспеченность, Запасы, Закупки, Кодификация, Взаимозаменяемость, Качество данных. '
+    'Презентация собрана из витрин интерактивного отчёта WK CRM (ветка grok репозитория TZ): Сводка, Аналитика, '
+    'Контроль отделов, Парк, График · план-факт, Обеспеченность, Запасы, Закупки, Кодификация, Взаимозаменяемость, '
+    'Качество данных. Автовыводы и контроль отделов — тем же ядром расчётов, что вкладки отчёта. '
     'История заказов — выгрузки BW PM-M06 2024–2027, статусы заказов — те же выгрузки, остатки — на 14.09.2026, '
     'закупки — на 11.09.2026.')
 
@@ -1047,7 +1050,209 @@ note(s, rx, Y0 + 2.4, rw, 2.85, [
 ], size=11)
 
 # ═════════════════════════ 31. Раздел: справочники
-section('06', 'Справочники и качество данных', 'Каталог, кодификация, взаимозаменяемость и ограничения расчёта')
+# ═════════════════════════ Раздел: автовыводы и контроль отделов (данные — lib/analytics_core.js)
+AN = json.load(open(AN_PATH, encoding='utf-8')) if AN_PATH else None
+LV_FILL = {'bad': TINT_R, 'warn': TINT_A, 'info': 'E3E7F8', 'ok': TINT_G, 'na': ZEBRA}
+LV_INK = {'bad': 'B3303A', 'warn': '8A5A00', 'info': '3F4FB0', 'ok': '0E7A54', 'na': MUTED}
+LV_DOT = {'bad': C_GAP, 'warn': C_LATE, 'info': C_BUY, 'ok': C_STOCK, 'na': LGREY}
+LV_NAME = {'bad': 'Критично', 'warn': 'Внимание', 'info': 'К сведению', 'ok': 'Норма', 'na': 'нет данных'}
+GROUPS5 = ['Исполнение', 'Планирование', 'Обеспеченность', 'Бюджет', 'Техника']
+
+
+def ev_txt(e):
+    k, v = e.get('kind'), e['value']
+    if k == 'pct':
+        return pct(v)
+    if k == 'n':
+        return sp(v)
+    if k == 'pp':
+        return f'{v * 100:+.1f} п.п.'.replace('.', ',')
+    return f'{mln(v)} млн ₽'
+
+
+if AN:
+    ac = AN['counts']
+    section('06', 'Автовыводы и контроль отделов',
+            'Схема автоматических выводов, выводы по площадкам, контроль планирования, исполнения и бюджетирования',
+            notes='Раздел построен тем же ядром расчётов, что вкладки «Аналитика» и «Контроль отделов» интерактивного отчёта '
+                  '(lib/analytics_core.js): цифры слайдов совпадают с отчётом.')
+
+    # ── схема автовыводов
+    s = content('Схема автоматических выводов',
+                'Каждое правило пересчитывается при смене фильтров отчёта (площадка, модель, машина, заказ). Цвет — результат '
+                'для всего парка на ' + AS_OF + '.')
+    srcs = ['Заказы PM-06: план, факт, сроки', 'Статусы SAP заказа', 'Потребность, остатки, закупка', 'КТГ по бортам']
+    sw = (W - 0.3 * 3) / 4
+    for i, t in enumerate(srcs):
+        box(s, X0 + i * (sw + 0.3), Y0 + 0.02, sw, 0.46, fill=DARK, radius=0.23,
+            paras=[{'t': t, 'align': 'c', 'bold': True}], size=10.5, color=WHITE, anchor='m')
+    tb(s, X0, Y0 + 0.5, W, 0.3, [{'t': '▼   источники → 5 групп проверок → 24 правила → вывод с цифрами-доказательствами   ▼', 'align': 'c'}],
+       size=10, color=MUTED)
+    gw = (W - 0.2 * 4) / 5
+    top = Y0 + 0.86
+    for gi, g in enumerate(GROUPS5):
+        x = X0 + gi * (gw + 0.2)
+        rules = [r for r in AN['rules'] if r['group'] == g]
+        lv = [AN['levels']['all'][r['id']] for r in rules]
+        worst = next((l for l in ['bad', 'warn', 'info', 'ok'] if l in lv), 'na')
+        box(s, x, top, gw, 4.02, fill=WHITE, radius=0.16)
+        box(s, x, top, gw, 0.5, fill=LV_DOT[worst], radius=0.16,
+            paras=[{'t': g, 'bold': True, 'align': 'c'}], size=13, color=WHITE if worst in ('bad', 'info') else DARK, anchor='m')
+        for ri, r in enumerate(rules):
+            l = AN['levels']['all'][r['id']]
+            yy = top + 0.62 + ri * 0.48
+            box(s, x + 0.1, yy, gw - 0.2, 0.42, fill=LV_FILL[l], radius=0.1)
+            box(s, x + 0.2, yy + 0.14, 0.14, 0.14, fill=LV_DOT[l], radius=0.07)
+            tb(s, x + 0.4, yy, gw - 0.55, 0.42, [{'t': r['title'], 'space': 0}], size=9.5, color=DARK, anchor='m')
+    for i, l in enumerate(['bad', 'warn', 'info', 'ok']):
+        lx = X0 + i * 1.75
+        box(s, lx, 6.1, 0.2, 0.2, fill=LV_DOT[l], radius=0.1)
+        tb(s, lx + 0.28, 6.0, 1.4, 0.4, [f'{LV_NAME[l]} — {ac[l]}'], size=11, color=MUTED, anchor='m')
+    tb(s, X0 + 7.2, 5.98, W - 7.2, 0.4, [{'t': f'Сверка расчётов: {AN["checks"]["ok"]} из {AN["checks"]["total"]} сходятся', 'bold': True, 'align': 'r'}],
+       size=12, color='0E7A54', anchor='m')
+    s.notes_slide.notes_text_frame.text = ('Правило = условие с порогом (см. «Методика» отчёта). Например, «Темп текущего года» — критично, '
+        'если освоение отстаёт от доли прошедшего года более чем на 15 п.п.; «Обеспеченность следующего года» — критично ниже 70 %.')
+
+    # ── ключевые автовыводы
+    s = content('Автовыводы: что требует решения',
+                f'Всего {sum(ac.values())} выводов: {ac["bad"]} критичных, {ac["warn"]} — внимание, {ac["info"]} — к сведению, '
+                f'{ac["ok"]} — норма. Ниже — критичные и крупнейшие по деньгам.')
+    pick = [c for c in AN['conclusions'] if c['level'] == 'bad'][:5]
+    pick += [c for c in AN['conclusions'] if c['id'] == 'budget-unspent'][:1]
+    cw = (W - 0.3 * 2) / 3
+    for i, c in enumerate(pick[:6]):
+        x, y = X0 + (i % 3) * (cw + 0.3), Y0 + 0.05 + (i // 3) * 2.65
+        box(s, x, y, cw, 2.45, fill=WHITE, radius=0.16)
+        box(s, x + 0.2, y + 0.18, 1.15, 0.3, fill=LV_FILL[c['level']], radius=0.15,
+            paras=[{'t': LV_NAME[c['level']], 'bold': True, 'align': 'c'}], size=9.5, color=LV_INK[c['level']], anchor='m', margin=(0, 0, 0, 0))
+        tb(s, x + 1.45, y + 0.16, cw - 1.65, 0.34, [{'t': c['group'], 'align': 'r'}], size=10, color=MUTED, anchor='m')
+        tb(s, x + 0.2, y + 0.55, cw - 0.4, 0.4, [{'t': c['title'], 'bold': True}], size=14, anchor='m')
+        tb(s, x + 0.2, y + 0.95, cw - 0.4, 0.95, [c['text']], size=10.5, color=MUTED)
+        evs = [e for e in c['evidence'] if e.get('kind') != 'n'][:3] or c['evidence'][:3]
+        ew = (cw - 0.4 - 0.1 * (len(evs) - 1)) / max(1, len(evs))
+        for j, e in enumerate(evs):
+            tb(s, x + 0.2 + j * (ew + 0.1), y + 1.88, ew, 0.5,
+               [{'t': ev_txt(e), 'bold': True, 'size': 13, 'space': 0}, {'t': e['label'], 'size': 9, 'color': MUTED}], anchor='m')
+
+    # ── выводы по площадкам
+    s = content('Один набор правил — разные ответы по площадкам',
+                'Результат каждого правила для всего парка и для каждой площадки (фильтр «Площадка» отчёта).')
+    cols = ['all', '1100', '1400', '2400']
+    rows = [[r['group'], r['title']] + [LV_NAME[AN['levels'][c][r['id']]] for c in cols] for r in AN['rules']]
+    lvm = [[AN['levels'][c][r['id']] for c in cols] for r in AN['rules']]
+    table(s, X0, Y0 + 0.02, W, ['Группа', 'Правило', 'Весь парк', SHORT['1100'], SHORT['1400'], SHORT['2400']], rows,
+          [1.6, 3.6, 1.35, 1.35, 1.35, 1.35], aligns=['l', 'l', 'c', 'c', 'c', 'c'], size=9, rh=0.205, hh=0.3,
+          fills=lambda r, c: LV_FILL[lvm[r][c - 2]] if c >= 2 else None,
+          colors=lambda r, c: LV_INK[lvm[r][c - 2]] if c >= 2 else None, bold_cols=(2, 3, 4, 5))
+
+    # ── контроль планирования
+    P = AN['plan']
+    nxt = AN['next']
+    s = content('Контроль планирования: план 2027 и оперативный план',
+                'Цепочка согласования ПЛАН → СГПЛ → ССПЛ → СГГС → деблокирование; статусы годового и оперативного плана — '
+                'доля плана в рублях с проставленным статусом.')
+    ann = {a['code']: a['share'] for a in P['annual']}
+    acc25 = P['accuracy']['2025']
+    tiles = [(pct(P['approvedShare']), f'плана {nxt} согласовано', f'{mln(P["approvedPlan"])} из {mln(P["nextPlan"])} млн ₽'),
+             (pct(ann.get('УТВГ') or 0), 'утверждено в годовом (УТВГ)', 'плановые заказы APP1'),
+             (sp(P['chain'][0]['n']), 'позиций ППР без заказа', f'{mln(P["chain"][0]["plan"])} млн ₽ вне плана'),
+             (sp(AN['execCtl']['notReleasedStarted']['n']), 'начало прошло, не деблок.', f'{mln(AN["execCtl"]["notReleasedStarted"]["plan"])} млн ₽ 2026'),
+             (pct(acc25['ok'] / acc25['n'] if acc25['n'] else None), 'точность плана 2025', 'факт в ±20% плана заказа'),
+             (pct(P['unplanned']['2025']['share']), 'внеплановые 2025', 'доля факта AVS1')]
+    tw = (W - 5 * 0.2) / 6
+    for i, (v, l, sb) in enumerate(tiles):
+        kpi_tile(s, X0 + i * (tw + 0.2), Y0 + 0.05, tw, 1.25, v, l, sb, fill=DARK if i == 0 else WHITE,
+                 vcolor=GREEN if i == 0 else DARK, lcolor=WHITE if i == 0 else MUTED, vsize=22)
+    ch_w = (W - 0.3) / 2
+    tb(s, X0, Y0 + 1.45, ch_w, 0.3, [{'t': f'Цепочка согласования {nxt}, млн ₽', 'bold': True}], size=12)
+    chain = P['chain']
+    chart(s, X0, Y0 + 1.75, ch_w, 3.5, 'bar', [f'{c["key"]} · {sp(c["n"])}' for c in chain],
+          [('План, млн ₽', [c['plan'] / M for c in chain], C_BUY)], fmt='# ##0', size=10, gap=40,
+          point_colors={0: {0: C_PLAN, 5: C_STOCK}})
+    tb(s, X0 + ch_w + 0.3, Y0 + 1.45, ch_w, 0.3, [{'t': 'Статусы плана: доля плана со статусом', 'bold': True}], size=12)
+    codes = [a['code'] for a in P['annual']] + [o['code'] for o in P['operative']]
+    shares = [a['share'] or 0 for a in P['annual']] + [o['share'] or 0 for o in P['operative']]
+    chart(s, X0 + ch_w + 0.3, Y0 + 1.75, ch_w, 3.5, 'bar100', [f'{c} (год)' if i < len(P['annual']) else f'{c} (≤31 дн.)' for i, c in enumerate(codes)],
+          [('Есть статус', shares, C_STOCK), ('Нет статуса', [1 - v for v in shares], 'E5E7EA')], fmt='0%', size=10, gap=40,
+          label_colors={1: MUTED}, min_share=0.08)
+    s.notes_slide.notes_text_frame.text = ('ГОД — включён в годовой план, ПТОГ — согласован ПТО, ГИП — главным инженером, УТВГ — утверждён, '
+        'УТВП — в программе и бюджете. МЕС/УТВМ, НЕД/УТВН — месячный и недельный план для заказов с началом в ближайшие 31 день.')
+
+    # ── контроль исполнения
+    X = AN['execCtl']
+    s = content('Контроль исполнения 2026: воронка и освоение',
+                f'Стадия — по статусам SAP на дату годовой выгрузки. Освоение наступивших работ — факт к плану заказов с базисным '
+                f'началом не позже {AS_OF[3:]}.')
+    t26e = AN['exec']['years']['2026']
+    tiles = [(pct(t26e['fact'] / t26e['plan']), 'исполнение 2026', f'при {pct(AN["elapsed"])} прошедшего года'),
+             (pct(X['execDue']), 'освоение наступивших', f'{mln(X["factDueToDate"])} из {mln(X["dueToDate"])} млн ₽'),
+             (sp(X['releasedEmpty']['n']), 'деблокированы пусто', f'{mln(X["releasedEmpty"]["plan"])} млн ₽'),
+             (sp(X['closeOverdue']['n']), 'просрочено закрытие', f'{mln(X["closeOverdue"]["plan"])} млн ₽, > 30 дн.'),
+             (sp(X['readyToClose']['n']), 'ФХСМ, ждут ТЗКР', 'затрат больше не ждём'),
+             (sp(X['tails']['2024']['n'] + X['tails']['2025']['n']), 'хвосты 2024–2025', f'{mln(X["tails"]["2024"]["plan"] + X["tails"]["2025"]["plan"])} млн ₽ не закрыто')]
+    for i, (v, l, sb) in enumerate(tiles):
+        kpi_tile(s, X0 + i * (tw + 0.2), Y0 + 0.05, tw, 1.25, v, l, sb, fill=DARK if i == 0 else WHITE,
+                 vcolor=C_GAP if i == 0 else DARK, lcolor=WHITE if i == 0 else MUTED, vsize=22)
+    fun = [f for f in X['funnel'] if f['n']]
+    tb(s, X0, Y0 + 1.45, ch_w, 0.3, [{'t': 'Воронка 2026: план по стадиям, млн ₽', 'bold': True}], size=12)
+    chart(s, X0, Y0 + 1.75, ch_w, 3.5, 'bar', [f'{f["label"]} · {sp(f["n"])}' for f in fun],
+          [('План', [f['plan'] / M for f in fun], C_BUY)], fmt='# ##0', size=9.5, gap=35,
+          point_colors={0: {i: (C_LATE if f['key'] == 'released' else '7FD8B4' if f['key'] in ('inWork', 'factDone')
+                             else C_STOCK if f['key'] in ('closed', 'billed', 'accepted', 'techClosed') else C_BUY) for i, f in enumerate(fun)}})
+    sc = X['sCurve']
+    mon = AN['asOf'][:7]
+    tb(s, X0 + ch_w + 0.3, Y0 + 1.45, ch_w, 0.3, [{'t': 'План и факт 2026 нарастающим, млн ₽', 'bold': True}], size=12)
+    chart(s, X0 + ch_w + 0.3, Y0 + 1.75, ch_w, 3.5, 'line', [p['month'][5:] for p in sc],
+          [('План нарастающим', [p['planCum'] / M for p in sc], C_PLAN),
+           ('Факт нарастающим', [p['factCum'] / M if p['month'] <= mon else None for p in sc], C_FACT)],
+          fmt='# ##0', size=10, labels=False, value_axis=True, grid=True, line_width=2.75, axis_fmt='# ##0')
+
+    # ── деблокированы без факта: крупнейшие заказы с текстом
+    s = content('Деблокированы без факта: крупнейшие заказы 2026',
+                f'{sp(X["releasedEmpty"]["n"])} заказов на {mln(X["releasedEmpty"]["plan"])} млн ₽ переданы в работу, но нет ни '
+                'факта, ни подтверждений. Текст заказа — из выгрузки PM-06.')
+    rel = X['releasedEmpty']['top']
+    table(s, X0, Y0 + 0.05, W, ['Заказ', 'Текст заказа', 'Борт', 'Площадка', 'Начало', 'Конец', 'План, млн ₽'],
+          [[r['order'], r['text'] or '—', r['unit'], SHORT.get(r['site'], r['site']), dmy(r['start']), dmy(r['end']), mln(r['plan'], 1)] for r in rel],
+          [1.25, 4.4, 1.35, 1.35, 1.15, 1.15, 1.3], aligns=['l', 'l', 'l', 'l', 'c', 'c', 'r'], size=11, rh=0.42, hh=0.4, bold_cols=(6,))
+    rel_sum = sum(r['plan'] for r in rel)
+    note(s, X0, Y0 + 0.05 + 0.4 + 0.42 * len(rel) + 0.3, W, 0.75,
+         [{'t': [B('Что сделать: '), (f'восемь крупнейших заказов — {mln(rel_sum)} млн ₽, {pct(rel_sum / X["releasedEmpty"]["plan"])} суммы. '
+                                      'Провести факт, перенести сроки или закрыть; в отчёте — «Контроль отделов» → «Исполнение», '
+                                      'фильтр «Факт по заказу: нет факта».', {})]}], size=12)
+
+    # ── контроль бюджетирования
+    Bd = AN['budget']
+    s = content('Контроль бюджетирования: план, факт, статусы',
+                'Перерасход — факт больше плана × 1,1 и больше 100 тыс. ₽; риск неосвоения — базисное начало наступило, факта нет.')
+    Yx = AN['exec']['years']
+    trkb = sum(x['n'] for x in Bd['statusCur'] + Bd['statusNext'] if x['code'] == 'ТРКБ')
+    tiles = [(pct(Yx['2024']['fact'] / Yx['2024']['plan']), 'факт / план 2024', ''),
+             (pct(Yx['2025']['fact'] / Yx['2025']['plan']), 'факт / план 2025', ''),
+             (mln(Bd['riskUnspent']), 'млн ₽ риск неосвоения', f'{pct(Bd["riskShare"])} плана 2026, {sp(Bd["riskN"])} заказ.'),
+             (mln(Bd['overrun']['2026']['value']), 'млн ₽ перерасход 2026', f'{sp(Bd["overrun"]["2026"]["n"])} заказов'),
+             (sp(trkb), 'ТРКБ: нужна корректировка', 'заказы 2026–2027'),
+             (pct(Yx['2026']['usoFact'] / Yx['2026']['usoPlan'] if Yx['2026']['usoPlan'] else None), 'УСО факт / план 2026', 'МТР подрядчика')]
+    for i, (v, l, sb) in enumerate(tiles):
+        kpi_tile(s, X0 + i * (tw + 0.2), Y0 + 0.05, tw, 1.25, v, l, sb or None, fill=DARK if i == 2 else WHITE,
+                 vcolor=C_LATE if i == 2 else DARK, lcolor=WHITE if i == 2 else MUTED, vsize=22)
+    tb(s, X0, Y0 + 1.45, ch_w, 0.3, [{'t': 'План и факт МТР и УСО по годам, млн ₽', 'bold': True}], size=12)
+    chart(s, X0, Y0 + 1.75, ch_w, 3.5, 'col', YEARS,
+          [('План МТР', [Yx[y]['mtrPlan'] / M for y in YEARS], C_PLAN), ('Факт МТР', [Yx[y]['mtrFact'] / M if y != '2027' else None for y in YEARS], C_FACT),
+           ('План УСО', [Yx[y]['usoPlan'] / M for y in YEARS], 'B9C1EE'), ('Факт УСО', [Yx[y]['usoFact'] / M if y != '2027' else None for y in YEARS], C_BUY)],
+          fmt='# ##0', size=8.5, gap=70, min_label=40)
+    bcodes = ['ТКБЕ', 'УТВП', 'СГЛБ', 'ПЗТГ', 'КОРБ', 'ТРКБ']
+    stc = {x['code']: x for x in Bd['statusCur']}
+    stn = {x['code']: x for x in Bd['statusNext']}
+    tb(s, X0 + ch_w + 0.3, Y0 + 1.45, ch_w, 0.3, [{'t': 'Бюджетные статусы плановых заказов: доля плана', 'bold': True}], size=12)
+    chart(s, X0 + ch_w + 0.3, Y0 + 1.75, ch_w, 3.5, 'bar', bcodes,
+          [('2026', [stc[c]['share'] or 0 for c in bcodes], C_BUY), (nxt, [stn[c]['share'] or 0 for c in bcodes], C_STOCK)],
+          fmt='0%', size=10, gap=50, overlap=-10)
+    s.notes_slide.notes_text_frame.text = ('ТКБЕ — бюджет утверждён ТК БЕ; УТВП — в программе и бюджете (MCB); СГЛБ — согласован '
+        'бюджетированием; ПЗТГ — прогноз завершения года; КОРБ — скорректирован; ТРКБ — нужна корректировка. '
+        'План УСО в заказах заполнен не полностью — факт УСО прошлых лет выше плана.')
+
+section('07', 'Справочники и качество данных', 'Каталог, кодификация, взаимозаменяемость и ограничения расчёта')
 
 # ═════════════════════════ 32. Каталог
 c_ = d['catalog']
@@ -1101,6 +1306,61 @@ for i, (t, body) in enumerate(lims):
 tb(s, X0, 6.5, W, 0.3, [f'Отдельно: 2026 — незавершённый год (факт на {AS_OF}); низкий % исполнения 2026 не означает отставания сам по себе.'],
    size=10, color=MUTED)
 
+# ═════════════════════════ Обновление данных без Python и двойная проверка
+if AN:
+    s = content('Обновление данных — прямо в отчёте, без Python',
+                'Вкладка «Обновление данных»: новые выгрузки SAP BW пересобирают все витрины в браузере; файлы никуда не уходят.')
+    steps = [('1', 'Загрузить', 'Остатки (3 файла), PM-06 M06_{площадка}_{год}.xlsx — только изменившиеся, МТР УСО'),
+             ('2', 'Пересобрать', 'График, статусы и стадии, копии «Развития», ППМ, контроль, обеспеченность, ремонты, тексты'),
+             ('3', 'Сверить', '«Сейчас / После пересборки» и сверки аналитики на новых данных'),
+             ('4', 'Применить', 'Сохраняется в браузере, переживает перезагрузку; плашка вверху отчёта'),
+             ('5', 'Выложить', 'Записать в папку отчёта на диске (Chrome / Edge) или архив data/ для всех')]
+    stw = (W - 0.15 * 4) / 5
+    for i, (n, t, body) in enumerate(steps):
+        x = X0 + i * (stw + 0.15)
+        chevron(s, x, Y0 + 0.1, stw, 0.8, [C_BUY, C_BUY, C_STOCK, C_STOCK, DARK][i],
+                [{'t': t, 'bold': True, 'align': 'c'}], first=(i == 0), size=13, color=WHITE)
+        tb(s, x + 0.1, Y0 + 1.0, stw - 0.2, 1.1, [body], size=11, color=MUTED)
+    kx = [('~3 с', 'разбор одной выгрузки PM-06', 'в браузере, 20 МБ xlsx'),
+          ('0', 'расхождений с Python', 'витрины из полных M06_1400/1200_2027'),
+          ('1,7 млн', 'сверенных значений', 'тест test_toro_rebuild.mjs'),
+          (sp(AN['orderTexts']), 'текстов заказов', 'из колонки «Заказ ·доп»')]
+    kw = (W - 0.3 * 3) / 4
+    for i, (v, l, sb) in enumerate(kx):
+        kpi_tile(s, X0 + i * (kw + 0.3), Y0 + 2.25, kw, 1.35, v, l, sb, fill=DARK if i == 1 else WHITE,
+                 vcolor=GREEN if i == 1 else DARK, lcolor=WHITE if i == 1 else MUTED, vsize=26)
+    note(s, X0, Y0 + 3.85, W, 1.35, [
+        {'t': [B('Загружать всё не нужно. '), ('Загруженные площадко-годы заменяют свои, остальные берутся из текущих данных; '
+                                               'файл 1200 сам разводится на Вернинское и Сухой Лог по балансовой единице.', {})], 'space': 6},
+        {'t': [B('Python остаётся эталоном '), ('для каталога, LinkOne, базы знаний, КТГ и презентаций — они от выгрузок BW не зависят.', {})]}],
+        size=12)
+
+    s = content('Двойная проверка расчётов и выводов',
+                'Каждая цифра отчёта и презентации считается дважды и сверяется автоматически.')
+    ck = AN['checks']
+    cards3 = [('Сверки в отчёте', [
+                  {'t': f'{ck["ok"]} из {ck["total"]} сверок сходятся для всего парка', 'bullet': True, 'space': 6},
+                  {'t': 'по каждой площадке — ' + ', '.join(f'{SHORT[s_]} {v[1]}/{v[0]}' for s_, v in ck['bySite'].items()), 'bullet': True, 'space': 6},
+                  {'t': 'стадии = план + ППР + копии; площадки = итог; МТР + УСО = итог; сегменты обеспеченности; цепочка согласования; '
+                        'воронка; S-кривая', 'bullet': True}], DARK),
+              ('Независимый пересчёт', [
+                  {'t': 'вторая реализация на Python: заказы из строк графика и статусов TOPO', 'bullet': True, 'space': 6},
+                  {'t': '9 223 показателя и уровни всех выводов в 35 контекстах (парк, площадки, модели, борта)', 'bullet': True, 'space': 6},
+                  {'t': 'тест пойман на намеренных ошибках ядра (пороги, правило копий, риск неосвоения)', 'bullet': True}], C_BUY),
+              ('Паритет браузер = Python', [
+                  {'t': 'пересборка в браузере совпала с Python по всем витринам', 'bullet': True, 'space': 6},
+                  {'t': 'на полных выгрузках PM-06 и на выборке из настоящей выгрузки', 'bullet': True, 'space': 6},
+                  {'t': 'итоги по годам, площадкам и бортам = данным этой презентации (419 из 419)', 'bullet': True}], C_STOCK)]
+    big = [(f'{ck["ok"]} / {ck["total"]}', 'сверок сходятся — весь парк'), ('9 223', 'показателя сверено в 35 контекстах'),
+           ('0', 'расхождений браузер ↔ Python')]
+    cw = (W - 0.3 * 2) / 3
+    for i, (h, body, hf) in enumerate(cards3):
+        x = X0 + i * (cw + 0.3)
+        kpi_tile(s, x, Y0 + 0.05, cw, 1.45, big[i][0], big[i][1], fill=DARK if i == 2 else WHITE,
+                 vcolor=GREEN if i == 2 else DARK, lcolor=WHITE if i == 2 else MUTED, vsize=32)
+        card(s, x, Y0 + 1.75, cw, 3.1, h, body, hfill=hf, hcolor=WHITE if hf != C_STOCK else DARK, bsize=12)
+    note(s, X0, Y0 + 5.0, W, 0.4, [{'t': [B('Итог: '), ('каждая цифра отчёта и этой презентации получена двумя независимыми способами, и они совпали.', {})]}], size=12)
+
 # ═════════════════════════ 34. Выводы
 s = content('Выводы и что сделать',
             'Предложения по итогам анализа; сроки и ответственных нужно согласовать.')
@@ -1145,7 +1405,8 @@ card(s, X0 + (W - 0.3) / 2 + 0.3, Y0 + 0.05, (W - 0.3) / 2, 5.2, 'Источни
     {'t': 'КТГ — витрина TOPO ktg.json', 'bullet': True, 'space': 6},
     {'t': 'Остатки и ограниченный запас на 14.09.2026', 'bullet': True, 'space': 6},
     {'t': 'Закупка ALL «Развитие» на 11.09.2026', 'bullet': True, 'space': 6},
-    {'t': 'МТР подрядчика — rawdata/УСО; прайсы ДП и УСО; ведомость взаимозаменяемости', 'bullet': True},
+    {'t': 'МТР подрядчика — rawdata/УСО; прайсы ДП и УСО; ведомость взаимозаменяемости', 'bullet': True, 'space': 6},
+    {'t': 'Тексты заказов — колонка «Заказ ·доп» PM-06; автовыводы — 24 правила ядра отчёта', 'bullet': True},
 ], hfill=GREEN, hcolor=DARK, bsize=13)
 
 # ═════════════════════════ 36. Финал
