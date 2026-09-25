@@ -13,16 +13,20 @@ def val(d,a,ai,i):
  return d.get(a,[])[j] if isinstance(j,int) and j<len(d.get(a,[])) else ""
 def main():
  src,out=map(Path,sys.argv[1:3]); rows={}; sources=[]
+ # заказы на ЕО-узлах (ковш, ЭД…) техместа машины WK: заказ -> [машина, ТМ, узел, № ЕО узла] (build_wk_nodes.py)
+ nf=out/"wk_nodes.json"; NODES=json.loads(nf.read_text(encoding="utf-8"))["orders"] if nf.exists() else {}
  for f in sorted(src.glob("[0-9][0-9][0-9][0-9]_20[0-9][0-9].json")):
   raw=f.read_bytes();d=json.loads(raw);wk=0
   for i in range(d["n"]):
-   unit=val(d,"e","ei",i)
-   if not re.search(r"WK-?\d",unit,re.I):continue
-   wk+=1;order=str(d["o"][i]);work=val(d,"w","wi",i) or "Вид работ не указан";name=val(d,"c","ci",i);ci=d["ci"][i];code=str(d.get("cek",[])[ci] or "") if ci<len(d.get("cek",[])) else ""
+   unit=val(d,"e","ei",i);order=str(d["o"][i]);node=""
+   if not re.search(r"WK-?\d",unit,re.I):
+    if order not in NODES:continue
+    node=unit;unit=NODES[order][0]
+   wk+=1;work=val(d,"w","wi",i) or "Вид работ не указан";name=val(d,"c","ci",i);ci=d["ci"][i];code=str(d.get("cek",[])[ci] or "") if ci<len(d.get("cek",[])) else ""
    key=(d["s"],str(d["y"]),unit,order,work,code,name);r=rows.get(key)
    if not r:
     od=d.get("od",{}).get(order) or [None,None];start=dt(od[0] if od else None);end=dt(od[1] if len(od)>1 else None);m=re.search(r"WK-?(\d+C?)",unit,re.I)
-    r=rows[key]={"id":hid(*key),"orderId":hid(d["s"],unit,order),"unitId":hid(d["s"],unit),"site":d["s"],"year":str(d["y"]),"unit":unit,"model":"WK-"+(m.group(1).upper() if m else "?"),"order":order,"work":work,"code":code,"name":name,"start":start,"end":end,"badDate":bool((od[0] and not start) or (len(od)>1 and od[1] and not end) or (start and end and end<start)),"reason":d.get("orr",{}).get(order,""),"source":f.name,"sourceRows":[],"makers":set(),"centers":set(),"needDates":set(),"approvalDates":set(),"method":"",**{k:None for k in NUM}}
+    r=rows[key]={"id":hid(*key),"orderId":hid(d["s"],unit,order),"unitId":hid(d["s"],unit),"site":d["s"],"year":str(d["y"]),"unit":unit,"model":"WK-"+(m.group(1).upper() if m else "?"),"order":order,"work":work,"code":code,"name":name,"node":node,"start":start,"end":end,"badDate":bool((od[0] and not start) or (len(od)>1 and od[1] and not end) or (start and end and end<start)),"reason":d.get("orr",{}).get(order,""),"source":f.name,"sourceRows":[],"makers":set(),"centers":set(),"needDates":set(),"approvalDates":set(),"method":"",**{k:None for k in NUM}}
    r["sourceRows"].append(i+1)
    u=d.get("u",[])[i] if i<len(d.get("u",[])) else ""
    if u:r["method"]=u  # способ исполнения — последний непустой, как в build_provision.py
@@ -38,7 +42,8 @@ def main():
   for k in ("makers","centers","needDates","approvalDates"):r[k]=sorted(r[k])
   r["hasFact"]=any((r[k] or 0)!=0 for k in ("a","uf","qf"));r["remainingQty"]=max(r["qp"]-r["qf"],0) if r["qp"] is not None and r["qf"] is not None else None
  try:commit=subprocess.check_output(["git","rev-parse","HEAD"],cwd=src.parent,stderr=subprocess.DEVNULL).decode().strip()
- except Exception:commit=sys.argv[3] if len(sys.argv)>3 else "";cols=list(data[0]);sf=[k for k in cols if isinstance(data[0][k],str)];dic={k:sorted({r[k] for r in data}) for k in sf};idx={k:{v:i for i,v in enumerate(dic[k])} for k in sf}
+ except Exception:commit=sys.argv[3] if len(sys.argv)>3 else ""
+ cols=list(data[0]);sf=[k for k in cols if isinstance(data[0][k],str)];dic={k:sorted({r[k] for r in data}) for k in sf};idx={k:{v:i for i,v in enumerate(dic[k])} for k in sf}
  meta={"sourceRepository":"https://github.com/victorekuznetsov/TOPO","sourceCommit":commit,"sourceFiles":sources,"sites":SITES,"rawRows":sum(s["wkRows"] for s in sources),"lines":len(data),"orders":len({r["orderId"] for r in data}),"units":len({r["unitId"] for r in data}),"years":sorted({r["year"] for r in data}),"completionStatusesAvailable":False,"actualWorkDatesAvailable":False,"dependenciesAvailable":False,"quantityUnitsAvailable":False,"grain":"площадка × год × ЕО × заказ × вид работ × ЕКМТР × компонент"}
  out.mkdir(exist_ok=True);names=[]
  for n,start in enumerate(range(0,len(data),1500)):

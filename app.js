@@ -766,7 +766,7 @@ const FILES = {
   repairs: "repairs", provision: "provision",
   stock: "stock", quality: "quality", kb: "kb",
   drawings: "drawings", linkome: "linkome_catalog",
-  linkomeDraw: "linkome_drawings", usoWk: "uso_wk",
+  linkomeDraw: "linkome_drawings", usoWk: "uso_wk", wkNodes: "wk_nodes",
   control: "control", orderText: "order_text",
 };
 const CORE_KEYS = ["catalog", "ekmtrWk", "fleetBooks", "fleet", "repairs", "provision", "stock", "quality"];
@@ -3295,9 +3295,10 @@ async function updRebuild(uploads, stockJson) {
   const sched = await ensureSchedule();
   await ensureData(["control"]);
   try { await ensureData(["orderText"]); } catch (e) { D.orderText = null; }
+  try { await ensureData(["wkNodes"]); } catch (e) { D.wkNodes = null; }   // заказы на ЕО-узлах техместа машины (БДО)
   const out = ToroRebuild.rebuild({
     base: { scheduleRows: sched.rows, scheduleMeta: sched.meta, control: D.control, provision: D.provision,
-            orderText: D.orderText || { meta: {}, text: {} } },
+            orderText: D.orderText || { meta: {}, text: {} }, wkNodes: D.wkNodes },
     uploads, stockJson: stockJson || D.stock, ekmtrWk: D.ekmtrWk, fleet: D.fleet,
   });
   // сверки аналитики на новых витринах — та же двойная проверка, что внизу вкладки «Аналитика»

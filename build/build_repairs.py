@@ -15,6 +15,7 @@ from collections import defaultdict
 
 N = lambda x: x if isinstance(x, (int, float)) else 0
 WK_RE = re.compile(r"WK-?\d", re.I)
+NODES = {}   # заказ на ЕО-узле техместа машины WK → [машина, ТМ, узел, № ЕО] (data/wk_nodes.json)
 
 
 def main():
@@ -23,6 +24,9 @@ def main():
         sys.exit(1)
     topo_dir, ekmtr_path, out_dir = sys.argv[1:4]
     os.makedirs(out_dir, exist_ok=True)
+    nf = os.path.join(out_dir, "wk_nodes.json")
+    if os.path.exists(nf):
+        NODES.update(json.load(open(nf, encoding="utf-8"))["orders"])
 
     wk_names = {e["code"]: e["name"] for e in json.load(open(ekmtr_path, encoding="utf-8"))["items"]}
 
@@ -36,17 +40,20 @@ def main():
         d = json.load(open(fp, encoding="utf-8"))
         site, year = d["s"], d["y"]
         wk_idx = {i for i, n in enumerate(d["e"]) if WK_RE.search(n)}
-        if not wk_idx:
+        if not wk_idx and not NODES:
             continue
         ei, ci, p, a, qp, qf, wi, w, cek = (d["ei"], d["ci"], d["p"], d["a"],
                                               d["qp"], d["qf"], d["wi"], d["w"], d["cek"])
         for i in range(d["n"]):
+            node_unit = None
             if ei[i] not in wk_idx:
-                continue
+                if str(d["o"][i]) not in NODES:
+                    continue
+                node_unit = NODES[str(d["o"][i])][0]      # заказ на ЕО-узел техместа машины
             key = (site, year)
             t = by_site_year[key]
             t["p"] += N(p[i]); t["a"] += N(a[i]); t["qp"] += N(qp[i]); t["qf"] += N(qf[i]); t["rows"] += 1
-            by_unit[d["e"][ei[i]]][str(year)] += N(a[i])
+            by_unit[node_unit or d["e"][ei[i]]][str(year)] += N(a[i])
             by_work[w[wi[i]]] += N(a[i])
             code = cek[ci[i]]
             if code:

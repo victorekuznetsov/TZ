@@ -50,6 +50,14 @@ from sites import plant_site  # noqa: E402 — площадка склада и 
 
 N = lambda x: x if isinstance(x, (int, float)) else 0
 WK_RE = re.compile(r"WK-?\d", re.I)
+# заказы на ЕО-узлах техместа машины WK: заказ → [машина, ТМ, узел, № ЕО] (data/wk_nodes.json, build_wk_nodes.py)
+NODES = {}
+
+
+def load_nodes(out_dir):
+    fn = os.path.join(out_dir, "wk_nodes.json")
+    if os.path.exists(fn):
+        NODES.update(json.load(open(fn, encoding="utf-8"))["orders"])
 DATE_RE = re.compile(r"(\d{2})[_.-](\d{2})[_.-](\d{4})")
 
 
@@ -99,12 +107,12 @@ def load_need(topo_dir, orders_out=None):
         with open(fp, encoding="utf-8") as source:
             d = json.load(source)
         wk_idx = {i for i, n in enumerate(d["e"]) if WK_RE.search(n)}
-        if not wk_idx:
+        if not wk_idx and not NODES:
             continue
         od, orr = d.get("od", {}), d.get("orr", {})
         grains = {}
         for i in range(d["n"]):
-            if d["ei"][i] not in wk_idx:
+            if d["ei"][i] not in wk_idx and str(cell(d.get("o"), i, "")) not in NODES:
                 continue
             ei, ci, wi = cell(d.get("ei"), i, -1), cell(d.get("ci"), i, -1), cell(d.get("wi"), i, None)
             order = cell(d.get("o"), i, "")
@@ -112,6 +120,8 @@ def load_need(topo_dir, orders_out=None):
             g = grains.get(key)
             if g is None:
                 unit = d["e"][ei] if isinstance(ei, int) and ei < len(d["e"]) else ""
+                if not WK_RE.search(unit):          # заказ на ЕО-узел техместа машины (ковш, ЭД…)
+                    unit = NODES[str(order)][0]
                 work = d.get("w", [])[wi] if isinstance(wi, int) and wi < len(d.get("w", [])) else ""
                 code = d["cek"][ci] if isinstance(ci, int) and ci < len(d.get("cek", [])) else ""
                 mat = d["c"][ci] if isinstance(ci, int) and ci < len(d.get("c", [])) else ""
@@ -380,7 +390,8 @@ def load_pm06_meta(meta_dir, years=("2026", "2027")):
             with open(fp, encoding="utf-8") as f:
                 d = json.load(f)
             src.append(d["meta"].get("source", os.path.basename(fp)))
-            for o, (si, ui, ki, ph, orig) in d["o"].items():
+            for o, v in d["o"].items():
+                si, ui, ki, ph, orig = v[:5]
                 status[(year, o)] = {"sys": d["sys"][si], "usr": d["usr"][ui],
                                      "kind": d["kind"][ki], "phase": ph,
                                      "copyOriginal": bool(orig)}
@@ -578,6 +589,7 @@ def main():
         sys.exit(1)
     topo_dir, ekmtr_path, stock_path, out_dir = args[:4]
     os.makedirs(out_dir, exist_ok=True)
+    load_nodes(out_dir)
 
     wk_names = {e["code"]: e["name"] for e in json.load(open(ekmtr_path, encoding="utf-8"))["items"]}
     sj = json.load(open(stock_path, encoding="utf-8"))

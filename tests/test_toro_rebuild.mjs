@@ -37,7 +37,7 @@ const assertSame = (a, b, label) => { const d = []; same(a, b, label, d); assert
 
 const man = LJ("schedule_manifest");
 const baseRows = man.shards.flatMap(n => T.decodeTable(LJ(n)));
-const base = () => ({ scheduleRows: baseRows, scheduleMeta: man.meta, control: L("control"), provision: L("provision"), orderText: L("order_text") });
+const base = () => ({ scheduleRows: baseRows, scheduleMeta: man.meta, control: L("control"), provision: L("provision"), orderText: L("order_text"), wkNodes: L("wk_nodes") });
 const ctx = { stockJson: L("stock"), ekmtrWk: L("ekmtr_wk"), fleet: L("fleet") };
 
 // браузер читает .local.js — он обязан совпадать с .json
