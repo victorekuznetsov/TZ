@@ -381,7 +381,7 @@ function dkS06(dk, m) {
   const onR = m.prov.ppm[next + "|onRelease"] || { value: 0 }, fz = dk.prov.feasible || {};
   const acts = [
     [`Закрыть хвосты ${cur}`, `${num(Y[cur].groupN["Деблокирован, пусто"])} деблокированных заказов на ${dkMln(Y[cur].groups["Деблокирован, пусто"])} млн ₽ без факта: провести факт, перенести или закрыть до конца года.`, DK.late],
-    [`Ревизия согласования ${cur}`, `${dkMln(Y[cur].groups["Согласование"])} млн ₽ ещё на согласовании на ${dmy(m.asOf)} — решить, что переходит в ${next}.`, DK.buy],
+    [`Ревизия согласования ${cur}`, `${dkMln(P.curYear.groups["Согласование"])} млн ₽ заказов групп 100/200 ещё на согласовании на ${dmy(m.asOf)} — решить, что переходит в ${next}.`, DK.buy],
     [`Деблокировать ${next} раньше`, `${dkMln(onR.value)} млн ₽ потребности закупка не видит до деблокирования при сроке поставки ${dk.prov.leadMedianDays || "—"} дней.`, DK.gap],
     ["Заказать сегодня", `${num(dk.prov.orderTodayN)} позиций на ${dkMln(dk.prov.orderTodaySum)} млн ₽ ещё успеваем; по ${dkMln((fz.lateMore || 0) + (fz.late3 || 0))} млн ₽ — аналоги или перенос.`, DK.stock],
     ["Просроченные поставки", `${num(dk.purchase.overdue)} ед. с прошедшим месяцем поставки — эскалация поставщикам (раздел 08 → «Поставщики»).`, DK.gap],
@@ -391,11 +391,11 @@ function dkS06(dk, m) {
       dkTable(["Группа", "Правило", ...cols.map(c => c[1])], AnalyticsCore.RULES.map(r => [esc(r.group), esc(r.title), ...cols.map(c => `<b>${DK_LV[lv(c, r.id)]}</b>`)]),
         { fills: (i, j) => (j >= 2 ? DK_LV_FILL[lv(cols[j - 2], AnalyticsCore.RULES[i].id)] : null), aligns: ["l", "l", ...cols.map(() => "c")], cls: "dk-compact" })
       + `<p class="hint">Сверки расчётов: ${cols.map(c => `${esc(c[1])} ${c[3].filter(x => x.ok).length}/${c[3].length}`).join(" · ")}</p>`)
-    + dkSlide(`Контроль планирования: план ${next} и оперативный план`, "Цепочка согласования ПЛАН → СГПЛ → ССПЛ → СГГС → деблокирование; статусы годового и оперативного плана — доля плана в рублях с проставленным статусом.",
+    + dkSlide(`Контроль планирования: план ${next} и оперативный план`, `Только заказы групп планирования 100 Механика и 200 Энергетика — их планирует «Развитие» (${pct(m.planScope.devShareNext)} плана ${next}); группы 300–900 — службы БЕ. Цепочка согласования ПЛАН → СГПЛ → ССПЛ → СГГС → деблокирование; статусы годового и оперативного плана — доля плана в рублях с проставленным статусом.`,
       `<div class="dk-tiles">${dkTile(pct(P.approvedShare), `плана ${next} согласовано`, `${dkMln(P.approvedPlan)} из ${dkMln(P.nextPlan)} млн ₽`, true, "var(--good)")}
         ${dkTile(pct(ann["УТВГ"] || 0), "утверждено в годовом (УТВГ)", "плановые заказы APP1")}${dkTile(num(P.chain[0].n), "позиций ППР без заказа", `${dkMln(P.chain[0].plan)} млн ₽ вне плана`)}
-        ${dkTile(num(E.notReleasedStarted.n), "начало прошло, не деблок.", `${dkMln(E.notReleasedStarted.plan)} млн ₽ ${cur}`, false, E.notReleasedStarted.n ? DK.late : null)}
-        ${dkTile(pct(acc.n ? acc.ok / acc.n : null), `точность плана ${+cur - 1}`, "факт в ±20% плана заказа")}${dkTile(pct((E.unplanned[String(+cur - 1)] || {}).share), `внеплановые ${+cur - 1}`, "доля факта AVS1")}</div>
+        ${dkTile(num(P.notReleasedStarted.n), "начало прошло, не деблок.", `${dkMln(P.notReleasedStarted.plan)} млн ₽ ${cur}`, false, P.notReleasedStarted.n ? DK.late : null)}
+        ${dkTile(pct(acc.n ? acc.ok / acc.n : null), `точность плана ${+cur - 1}`, "факт в ±20% плана заказа")}${dkTile(pct((P.unplanned[String(+cur - 1)] || {}).share), `внеплановые ${+cur - 1}`, "доля факта AVS1")}</div>
       <div class="dk-grid dk-55"><div><b class="dk-sub">Цепочка согласования ${next}, млн ₽</b>${anHBars(P.chain.map((c, i) => ({ label: `${c.key} · ${num(c.n)}`, values: { v: c.plan } })), [{ k: "v", label: "План", color: DK.buy }], { rowH: 30, labelW: 150, legend: false })}</div>
       <div><b class="dk-sub">Статусы плана: доля плана со статусом</b>${anHBars([...P.annual.map(a => ({ label: `${a.code} (год)`, values: { y: a.share || 0, n: 1 - (a.share || 0) } })), ...P.operative.map(a => ({ label: `${a.code} (≤31 дн.)`, values: { y: a.share || 0, n: 1 - (a.share || 0) } }))],
         [{ k: "y", label: "Есть статус", color: DK.stock }, { k: "n", label: "Нет статуса", color: "#E5E7EA", light: true }], { percent: true, rowH: 24, labelW: 120 })}</div></div>
@@ -491,7 +491,7 @@ function dkS08(dk, m) {
   if (!S) return dkSlide("Эффективность", "", callout("info", "Загрузка истории заказов 2022–2027…"));
   const e = dkEff(m), a = e.abc, st = e.stock, pr = e.price, cur = e.cur, next = e.next;
   const lastPair = pr.pairs[pr.pairs.length - 1] || {};
-  const un = e.unplanned, uy = e.years.filter(y => y < cur), fy = e.years.filter(y => y <= cur);
+  const un = e.unplanned, uy = Object.keys(un).filter(y => y < cur).sort(), fy = Object.keys(un).filter(y => y <= cur).sort();
   const obM = Object.keys(e.orderBy.months).sort(), asOfM = m.asOf.slice(0, 7);
   const sup = e.suppliers.filter(s => s.supplier !== "—");
   const supOpen = sup.reduce((s, x) => s + x.open, 0), supOver = sup.reduce((s, x) => s + x.overdue, 0);
@@ -523,7 +523,7 @@ function dkS08(dk, m) {
       <div><b class="dk-sub">Сильнее всего подорожали (расход ≥ 50 тыс. ₽ в последний год)</b>${dkTable(["ЕКМТР", "Наименование", "Было, ₽/шт", "Стало, ₽/шт", "Изменение"], pr.growth.slice(0, 10).map(x => [codeLink(x.code), esc(x.name), `${num(x.p0, 0)} <span class="dim">${x.y0}</span>`, `${num(x.p1, 0)} <span class="dim">${x.y1}</span>`, `<b>${lkChg(x.change)}</b>`]), { aligns: ["l", "l", "r", "r", "r"], cls: "dk-compact" })}
         <b class="dk-sub" style="margin-top:10px">Подешевели</b>${dkTable(["ЕКМТР", "Наименование", "Было", "Стало", "Изменение"], pr.fall.filter(x => x.change < 0).slice(0, 5).map(x => [codeLink(x.code), esc(x.name), num(x.p0, 0), num(x.p1, 0), `<b>${lkChg(x.change)}</b>`]), { aligns: ["l", "l", "r", "r", "r"], cls: "dk-compact" })}
         <p class="hint">Всего кодов со сравнимой ценой: ${num(pr.growthN)}; отсеяно скачков: ${num(pr.growthOut)}. Цены по одному коду — «Поиск по номеру».</p></div></div>`)
-    + dkSlide("Точность планирования МТР по строкам заказов", "Внеплановый расход — факт по строкам, которых не было в плане заказа; неиспользованный план — строки закрытых лет с планом и без факта (отменённые и перенесённые работы, лишние материалы в плане).",
+    + dkSlide("Точность планирования МТР по строкам заказов", "Оценка планирования «Развития»: только заказы групп планирования 100 Механика и 200 Энергетика (группа известна с 2024 года). Внеплановый расход — факт по строкам, которых не было в плане заказа; неиспользованный план — строки закрытых лет с планом и без факта (отменённые и перенесённые работы, лишние материалы в плане).",
       `<div class="dk-grid dk-55"><div>${anColumns(fy, [{ label: "Неиспользованный план, доля", color: DK.late, values: fy.map(y => (y < cur ? un[y].unusedShare : null)) }, { label: "Внеплановый расход, доля", color: DK.gap, values: fy.map(y => un[y].share) }], { fmt: v => pct(v), H: 240 })}</div>
       <div>${dkTable(["Год", "План, млн ₽", "Не использовано", "Факт, млн ₽", "Вне плана", "Строк вне плана"], fy.map(y => [y, dkMln(un[y].plan), y < cur ? `${dkMln(un[y].unused)} · <b>${pct(un[y].unusedShare)}</b>` : "год идёт", dkMln(un[y].fact), `${dkMln(un[y].unplanned)} · <b>${pct(un[y].share)}</b>`, num(un[y].unplannedLines)]),
         { fills: (i, j) => (j === 2 && fy[i] < cur ? ((un[fy[i]].unusedShare || 0) > 0.15 ? DK.tR : (un[fy[i]].unusedShare || 0) > 0.05 ? DK.tA : DK.tG) : null), aligns: ["l", "r", "r", "r", "r", "r"] })}

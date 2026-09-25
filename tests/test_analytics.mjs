@@ -20,6 +20,7 @@ assert.equal(h.digest("hex").slice(0, 16), exp.meta.fingerprint,
   "витрины изменились после пересчёта — запустите python3 tests/verify_analytics.py");
 assert.equal(exp.meta.controlDiffCount, 0, "control.json расходится с независимой сборкой заказов из графика");
 assert.equal(src.controlRows.length, exp.meta.orders);
+assert.equal(src.controlRows.filter(r => r.dev).length, exp.meta.devOrders, "заказов групп 100/200");
 
 let compared = 0;
 const money = (got, want, label) => {   // рубли: допуск 1 ₽ + 1e-9 относительный (порядок суммирования)
@@ -68,6 +69,11 @@ for (const c of exp.cases) {
   for (const a of P.operative) share(a.share, wp.operative[a.code], `${tag} operative ${a.code}`);
   for (const a of P.materials) { count(a.n, wp.materials[a.code].n, `${tag} mat ${a.code}`); money(a.plan, wp.materials[a.code].plan, `${tag} mat ${a.code}`); }
   for (const y of ["2024", "2025"]) for (const k of ["n", "ok", "noFactN"]) count(P.accuracy[y][k], wp.accuracy[y][k], `${tag} accuracy ${y}.${k}`);
+  // оценка планирования «Развития» — только группы 100/200
+  count(P.notReleasedStarted.n, wp.notReleasedStarted.n, `${tag} plan notReleasedStarted.n`); money(P.notReleasedStarted.plan, wp.notReleasedStarted.plan, `${tag} plan notReleasedStarted.plan`);
+  for (const y of ["2024", "2025", "2026"]) { share(P.unplanned[y].share, wp.unplanned[y], `${tag} plan unplanned ${y}`); money(P.unplanned[y].fact, wp.unplannedFact[y], `${tag} plan unplanned fact ${y}`); }
+  money(P.curYear.plan, wp.curPlan, `${tag} plan curYear`);
+  assert.ok(m.rows.filter(r => r.dev).every(r => A.DEV_GROUPS.includes(r.pg.split("/").pop())), `${tag} группы «Развития»`);
   // контроль бюджета
   const B = m.budget, wb = c.budget;
   for (const k of ["overrun", "underrun", "noPlan"]) for (const y of ["2024", "2025", cur]) {

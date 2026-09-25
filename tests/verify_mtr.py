@@ -87,7 +87,10 @@ ASOF = control["meta"]["asOf"]
 CUR, NEXT = ASOF[:4], str(int(ASOF[:4]) + 1)
 ASOF_M = ASOF[:7]
 UNIT_SITE = {u["name"]: u["site"] for u in fleet["units"]}
-STAGE = {(r["y"], r["order"]): r["stage"] for r in decode(control)}
+CTL = decode(control)
+STAGE = {(r["y"], r["order"]): r["stage"] for r in CTL}
+# оценка планирования «Развития» — только группы планирования ТОРО 100 Механика и 200 Энергетика
+DEV = {(r["y"], r["order"]) for r in CTL if str(r.get("pg") or "").rsplit("/", 1)[-1] in ("100", "200")}
 ALL_YEARS = sorted({r["year"] for r in ROWS})
 for r in ROWS:
     r["_site"] = UNIT_SITE.get(r["unit"]) or r["site"]
@@ -418,8 +421,10 @@ def efficiency(ctx):
         pd += price(c, ly) * q
         pc += 1
     # внеплановый расход и неиспользованный план
-    un = {y: collections.defaultdict(float) for y in ALL_YEARS}
+    un = collections.defaultdict(lambda: collections.defaultdict(float))
     for r in rows:
+        if (r["year"], r["order"]) not in DEV:
+            continue
         t = un[r["year"]]
         t["fact"] += num(r["a"])
         if num(r["a"]) > 0 and num(r["p"]) <= 0 and qty(r["qp"]) <= 0:

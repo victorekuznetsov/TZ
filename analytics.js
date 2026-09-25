@@ -379,6 +379,19 @@ function anListCard(id, title, hint, data) {
   return `<section class="card"><h3>${esc(title)} <span class="badge ${data.n ? "warn" : "good"}">${num(data.n)} · ${mrub(data.plan)}</span></h3>
     <p class="hint">${hint}</p><div id="${id}"></div></section>`;
 }
+/* кто планирует: группы планирования ТОРО — «Развитие» (100, 200) и службы БЕ */
+function anScopeHtml(m, compact = false) {
+  const sc = m.planScope, cur = m.asOf.slice(0, 4), next = String(+cur + 1);
+  const ys = [String(+cur - 1), cur, next];
+  const be = sc.groups.filter(g => !g.dev), beNext = be.reduce((s, g) => s + ((g.years[next] || {}).plan || 0), 0);
+  const note = `<b>Оценка планирования «Развития» — только группы планирования ТОРО 100 Механика и 200 Энергетика</b>: ${pct(sc.devShareNext)} плана ${next}${sc.devShareCur != null ? ` и ${pct(sc.devShareCur)} плана ${cur}` : ""} в текущих фильтрах. Группы 300–900 — службы БЕ (заказчика): их заказы входят в исполнение и бюджет, но не в оценку планирования${beNext ? ` (${mrub(beNext)} плана ${next})` : ""}.`;
+  if (compact) return note;
+  return `<section class="card"><h3>Кто планирует: группы планирования ТОРО</h3><p class="hint">${note}</p>
+    <div class="twrap"><table><thead><tr><th>Группа</th><th>Кто</th><th>Коды</th>${ys.map(y => `<th class="n">Заказов ${y}</th><th class="n">План ${y}</th>`).join("")}</tr></thead><tbody>
+    ${sc.groups.map(g => `<tr${g.dev ? "" : ' class="dim"'}><td><b>${esc(g.group || "—")}</b> ${esc(g.name)}</td><td>${g.dev ? '<span class="badge good">Развитие</span>' : g.group ? '<span class="badge">БЕ</span>' : '<span class="badge warn">нет в выгрузке</span>'}</td><td class="mono">${esc(g.codes.join(", ") || "—")}</td>
+      ${ys.map(y => `<td class="n">${num((g.years[y] || {}).n || 0)}</td><td class="n">${mrub((g.years[y] || {}).plan || 0)}</td>`).join("")}</tr>`).join("")}
+    </tbody></table></div></section>`;
+}
 function renderControl(host) {
   AN_CHARTS = [];
   const m = anModel(), cur = m.asOf.slice(0, 4), next = String(+cur + 1), P = m.plan, E = m.execCtl, B = m.budget, Y = m.exec.years;
@@ -389,14 +402,14 @@ function renderControl(host) {
   let body = "";
   if (CTRL_DEPT === "plan") {
     const annual = P.annual, op = P.operative, acc24 = P.accuracy["2024"], acc25 = P.accuracy["2025"];
-    body = `
+    body = anScopeHtml(m) + `
       <div class="kpis">
         ${kpi(`План ${next} согласован`, pct(P.approvedShare), lvl(P.approvedShare, .9, .5))}
         ${kpi(`Утверждён в годовом (УТВГ)`, pct((annual.find(a => a.code === "УТВГ") || {}).share), "")}
         ${kpi(`Позиции ППР без заказа ${next}`, num(P.noOrder.n) + ` <small>${anM(P.noOrder.plan)} млн</small>`, P.noOrder.n ? "warn" : "good")}
-        ${kpi(`Начало прошло, не деблок.`, num(E.notReleasedStarted.n) + ` <small>${anM(E.notReleasedStarted.plan)} млн</small>`, E.notReleasedStarted.n ? "warn" : "good")}
+        ${kpi(`Начало прошло, не деблок.`, num(P.notReleasedStarted.n) + ` <small>${anM(P.notReleasedStarted.plan)} млн</small>`, P.notReleasedStarted.n ? "warn" : "good")}
         ${kpi("Точность плана 2025 (±20%)", pct(acc25 && acc25.share), lvl(acc25 && acc25.share, .7, .5))}
-        ${kpi("Внеплановые 2025", pct(E.unplanned["2025"].share), lvl(E.unplanned["2025"].share, .25, .4, true))}
+        ${kpi("Внеплановые 2025", pct(P.unplanned["2025"].share), lvl(P.unplanned["2025"].share, .25, .4, true))}
       </div>
       <div class="grid2">
         <section class="card"><h3>Цепочка согласования плана ${next}, млн ₽</h3><p class="hint">ПЛАН → СГПЛ (планировщик) → ССПЛ (старший планировщик) → СГГС (главный специалист) → деблокирование.</p>
@@ -411,15 +424,15 @@ function renderControl(host) {
             [{ k: "y", label: "Есть статус", color: "var(--good)" }, { k: "n", label: "Нет статуса", color: "var(--warn)" }], { percent: true, rowH: 30, labelW: 70 })}</section>
         <section class="card"><h3>Точность и внеплановость по годам</h3>
           <div class="twrap"><table><thead><tr><th>Год</th><th class="n">Закрытых заказов</th><th class="n">Факт в ±20% плана</th><th class="n">Закрыто без факта</th><th class="n">Внеплановые, доля факта</th></tr></thead><tbody>
-          ${["2024", "2025"].map(y => { const a = P.accuracy[y], u = E.unplanned[y]; return `<tr><td>${y}</td><td class="n">${num(a.n)}</td><td class="n">${pct(a.share)}</td><td class="n">${num(a.noFactN)} · ${mrub(a.noFactPlan)}</td><td class="n">${pct(u.share)}</td></tr>`; }).join("")}
-          <tr><td>${cur}</td><td class="n dim" colspan="3">год не завершён</td><td class="n">${pct(E.unplanned[cur].share)}</td></tr></tbody></table></div>
+          ${["2024", "2025"].map(y => { const a = P.accuracy[y], u = P.unplanned[y]; return `<tr><td>${y}</td><td class="n">${num(a.n)}</td><td class="n">${pct(a.share)}</td><td class="n">${num(a.noFactN)} · ${mrub(a.noFactPlan)}</td><td class="n">${pct(u.share)}</td></tr>`; }).join("")}
+          <tr><td>${cur}</td><td class="n dim" colspan="3">год не завершён</td><td class="n">${pct(P.unplanned[cur].share)}</td></tr></tbody></table></div>
           <p class="hint">Закрыто без факта — отменённые или перенесённые работы (при переносе создают новый заказ).</p></section>
       </div>
       <section class="card"><h3>Материалы в открытых заказах ${cur}–${next}</h3>
         <div class="twrap"><table><thead><tr><th>Статус</th><th>Смысл</th><th class="n">Заказов</th><th class="n">План</th></tr></thead><tbody>
         ${P.materials.map(x => `<tr><td><span class="badge ${x.code === "МТРН" && x.n ? "warn" : ""}">${esc(x.code)}</span></td><td>${esc({ МТРН: "есть МТР без цены — план занижен", СРОЧ: "срочная закупка: потребность раньше, чем придёт поставка", НВСО: "невостребованные остатки после удаления потребности", ТОПЗ: "требуется опережающая закупка", СОПЗ: "опережающая закупка согласована" }[x.code] || "")}</td><td class="n">${num(x.n)}</td><td class="n">${mrub(x.plan)}</td></tr>`).join("")}
         </tbody></table></div></section>
-      ${anListCard("ctlNotRel", "Базисное начало прошло, заказ не деблокирован", `Заказы ${cur} на согласовании или согласованные, но не переданные в работу.`, E.notReleasedStarted)}`;
+      ${anListCard("ctlNotRel", "Базисное начало прошло, заказ не деблокирован", `Заказы ${cur} групп 100/200 на согласовании или согласованные, но не переданные в работу.`, P.notReleasedStarted)}`;
   } else if (CTRL_DEPT === "exec") {
     body = `
       <div class="kpis">
@@ -483,7 +496,7 @@ function renderControl(host) {
     ${conc.length ? `<h2>Выводы для отдела</h2>${anCards(conc)}` : callout("good", "Замечаний по отделу в выбранном контексте нет.")}
     ${body}
     ${anChecksHtml(m)}`;
-  if (CTRL_DEPT === "plan") anOrderTable(byId("ctlNotRel"), E.notReleasedStarted.all, { csvName: "not_released_started.csv" });
+  if (CTRL_DEPT === "plan") anOrderTable(byId("ctlNotRel"), P.notReleasedStarted.all, { csvName: "not_released_started.csv" });
   if (CTRL_DEPT === "exec") {
     anOrderTable(byId("ctlRel"), E.releasedEmpty.all, { csvName: "released_empty.csv" });
     anOrderTable(byId("ctlOver"), E.closeOverdue.all, { csvName: "close_overdue.csv" });

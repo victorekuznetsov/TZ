@@ -68,13 +68,17 @@ def main():
     unit_site = {u["name"]: u["site"] for u in fleet["units"]}
 
     status = collections.defaultdict(dict)
+    pg_text = {}
     for fn in glob.glob(os.path.join(status_dir, "*.json")):
         d = json.load(open(fn, encoding="utf-8"))
         y = d["meta"]["year"]
         if y not in YEARS:
             continue
-        for o, (si, ui, ki, ph, cp) in d["o"].items():
-            status[y][o] = (ph, cp, d["sys"][si], d["usr"][ui], d["kind"][ki], d["kindText"].get(d["kind"][ki], ""))
+        pg_text.update({k: v for k, v in (d.get("pgText") or {}).items() if v})
+        for o, v in d["o"].items():
+            si, ui, ki, ph, cp = v[:5]
+            pg = d["pg"][v[5]] if len(v) > 5 and "pg" in d else ""
+            status[y][o] = (ph, cp, d["sys"][si], d["usr"][ui], d["kind"][ki], d["kindText"].get(d["kind"][ki], ""), pg)
 
     man = local_js(os.path.join(data, "schedule_manifest.local.js"))
     orders = {}
@@ -108,9 +112,9 @@ def main():
         st = status.get(y, {}).get(order)
         if st is None:
             missing += 1
-            ph, cp, sys_s, usr_s, kind, kind_text = 1, 0, "", "", "", ""
+            ph, cp, sys_s, usr_s, kind, kind_text, pg = 1, 0, "", "", "", "", ""
         else:
-            ph, cp, sys_s, usr_s, kind, kind_text = st
+            ph, cp, sys_s, usr_s, kind, kind_text, pg = st
         s, u = set(sys_s.split()), set(usr_s.split())
         fact = o["a"] + o["uf"]
         flags = " ".join([c for c in SYS_KEEP if c in s] + [c for c in USR_KEEP if c in u])
@@ -121,12 +125,12 @@ def main():
             "start": min(o["starts"]) if o["starts"] else "", "end": max(o["ends"]) if o["ends"] else "",
             "p": round(o["p"], 2), "a": round(o["a"], 2), "up": round(o["up"], 2), "uf": round(o["uf"], 2),
             "stage": "unknown" if st is None else stage_of(ph, s, u, fact), "copy": int(bool(cp)),
-            "flags": flags, "lines": o["lines"], "badDates": o["bad"],
+            "flags": flags, "lines": o["lines"], "badDates": o["bad"], "pg": pg,
         })
 
     cols = ["y", "order", "unit", "model", "site", "plant", "kind", "kindText", "reason", "work", "start", "end",
-            "p", "a", "up", "uf", "stage", "copy", "flags", "lines", "badDates"]
-    dict_cols = ["y", "unit", "model", "site", "plant", "kind", "kindText", "reason", "work", "stage", "flags"]
+            "p", "a", "up", "uf", "stage", "copy", "flags", "lines", "badDates", "pg"]
+    dict_cols = ["y", "unit", "model", "site", "plant", "kind", "kindText", "reason", "work", "stage", "flags", "pg"]
     dicts = {c: sorted({r[c] for r in out}) for c in dict_cols}
     idx = {c: {v: i for i, v in enumerate(dicts[c])} for c in dict_cols}
     rows = [[idx[c][r[c]] if c in idx else r[c] for c in cols] for r in out]
@@ -139,10 +143,12 @@ def main():
             "src": "data/schedule_*.local.js (PM-06 BW) + TOPO pm06_meta/order_status",
             "orders": len(out), "missingStatus": missing,
             "usrCodes": USR_KEEP, "sysCodes": SYS_KEEP,
+            "planningGroups": {k: pg_text.get(k, "") for k in sorted({r["pg"] for r in out}) if k},
             "rules": {
                 "plan": "план = МТР + УСО (p + up); позиции ППР без заказа (stage noOrder) в план не входят",
                 "copy": "у оригинала БЕ, перенесённого копией в «Развитие» (copy=1), неисполненный план не считается: план = min(план, факт)",
                 "site": "площадка — по борту (fleet.json); №1228 — по заказу",
+                "planning": "pg — группа планирования ТОРО заказа (завод/группа). Оценка планирования АО «Развитие» — только группы 100 Механика и 200 Энергетика; 300–900 — службы БЕ (заказчика)",
             },
         },
         "columns": cols, "dictionaries": dicts, "rows": rows,

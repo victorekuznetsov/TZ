@@ -45,6 +45,9 @@ RELEASED_EMPTY, APPROVING_LATE, NEXT_APPROVED = 0.05, 0.10, 0.50
 COV_BAD, COV_WARN, KTG_GAP = 0.70, 0.90, 0.05
 OVER_RATIO, OVER_MIN, CONCENTRATION = 1.10, 100000, 0.25
 ACCURACY_TOL, UNPLANNED, CLOSE_LAG = 0.20, 0.40, 30
+# группы планирования ТОРО, которые планирует АО «Развитие» (ответ бизнеса): 100 Механика, 200 Энергетика;
+# 300–900 — службы БЕ (заказчика) — в оценку планирования не входят
+DEV_GROUPS = {"100", "200"}
 
 
 def local_js(path):
@@ -153,12 +156,14 @@ def attach_status(orders, status_dir, control):
             y = j["meta"]["year"]
             if y not in YEARS:
                 continue
-            for order, (si, ui, ki, ph, cp) in j["o"].items():
-                st[(y, order)] = (ph, bool(cp), set(j["sys"][si].split()), set(j["usr"][ui].split()), j["kind"][ki])
+            for order, v in j["o"].items():
+                si, ui, ki, ph, cp = v[:5]
+                pg = j["pg"][v[5]] if len(v) > 5 and "pg" in j else ""
+                st[(y, order)] = (ph, bool(cp), set(j["sys"][si].split()), set(j["usr"][ui].split()), j["kind"][ki], pg)
         for o in orders:
-            ph, cp, s, u, kind = st.get((o["y"], o["order"]), (1, False, set(), set(), ""))
+            ph, cp, s, u, kind, pg = st.get((o["y"], o["order"]), (1, False, set(), set(), "", ""))
             o["stage"] = stage_from_status(ph, s, u, o["a"] + o["uf"])
-            o["copy"], o["codes"], o["kind"] = cp, s | u, kind
+            o["copy"], o["codes"], o["kind"], o["pg"] = cp, s | u, kind, pg
     else:
         mode = "control"
         cols, dic = control["columns"], control["dictionaries"]
@@ -169,11 +174,13 @@ def attach_status(orders, status_dir, control):
             r = st[(o["y"], o["order"])]
             o["stage"], o["copy"], o["kind"] = get(r, "stage"), bool(get(r, "copy")), get(r, "kind")
             o["codes"] = set(get(r, "flags").split())
+            o["pg"] = get(r, "pg") if "pg" in ix else ""
     for o in orders:
         o["plan"] = o["p"] + o["up"]
         o["fact"] = o["a"] + o["uf"]
         o["noOrder"] = o["stage"] == "noOrder"
         o["pc"] = 0.0 if o["noOrder"] else (min(o["plan"], o["fact"]) if o["copy"] else o["plan"])
+        o["dev"] = o["pg"].rsplit("/", 1)[-1] in DEV_GROUPS if o["pg"] else False
     return mode
 
 
@@ -225,6 +232,15 @@ def control_metrics(rows, as_of):
         a = [r for r in rows if r["y"] == y and not r["noOrder"]]
         f = sum(r["fact"] for r in a)
         ex["unplanned"][y] = div(sum(r["fact"] for r in a if r["kind"] == "AVS1"), f)
+    return ex
+
+
+def plan_metrics(rows, as_of):
+    """Оценка планирования «Развития» — вызывается только на заказах групп 100/200."""
+    today, cur = d(as_of), as_of[:4]
+    nxt = str(int(cur) + 1)
+    cur_rows = [r for r in rows if r["y"] == cur and not r["noOrder"]]
+    nxt_rows = [r for r in rows if r["y"] == nxt]
 
     def approval(r):
         if r["noOrder"]:
@@ -258,7 +274,24 @@ def control_metrics(rows, as_of):
         a = [r for r in rows if r["y"] == y and r["stage"] in CLOSED and r["pc"] > 0]
         ok = [r for r in a if abs(r["fact"] - r["pc"]) <= ACCURACY_TOL * r["pc"]]
         pl["accuracy"][y] = {"n": len(a), "ok": len(ok), "noFactN": sum(1 for r in a if r["fact"] <= 0)}
+    pl["notReleasedStarted"] = listing([r for r in cur_rows if r["stage"] in NOT_RELEASED and r["start"] and d(r["start"]) < today])
+    pl["unplanned"], pl["unplannedFact"] = {}, {}
+    for y in ("2024", "2025", "2026"):
+        a = [r for r in rows if r["y"] == y and not r["noOrder"]]
+        f = sum(r["fact"] for r in a)
+        pl["unplanned"][y] = div(sum(r["fact"] for r in a if r["kind"] == "AVS1"), f)
+        pl["unplannedFact"][y] = f
+    cy = year_totals(rows)[cur]
+    allg = sum(cy["groups"].values())
+    pl["curPlan"] = cy["plan"]
+    pl["approvingShare"] = cy["groups"].get("Согласование", 0) / allg if allg else None
+    return pl
 
+
+def budget_metrics(rows, as_of):
+    today, cur = d(as_of), as_of[:4]
+    nxt = str(int(cur) + 1)
+    cur_rows = [r for r in rows if r["y"] == cur and not r["noOrder"]]
     bu = {"overrun": {}, "underrun": {}, "noPlan": {}}
     for y in ("2024", "2025", cur):
         a = [r for r in rows if r["y"] == y and not r["noOrder"]]
@@ -279,7 +312,7 @@ def control_metrics(rows, as_of):
     bu["riskUnspent"] = sum(r["pc"] for r in due)
     bu["riskN"] = len(due)
     bu["ahead"] = sum(r["pc"] for r in no_fact) - bu["riskUnspent"]
-    return ex, pl, bu
+    return bu
 
 
 def provision_metrics(prov, ctx):
@@ -370,20 +403,20 @@ def levels(years, ex, pl, bu, pv, ktg, cur, elapsed, units_fact):
         out.append(("exec-close-overdue", "warn" if ex["closeOverdue"]["n"] else "ok"))
         out.append(("exec-ready-close", "info" if ex["readyToClose"]["n"] else "ok"))
     out.append(("exec-tails", "warn" if any(ex["tails"][y]["n"] for y in ("2024", "2025")) else "ok"))
-    if tc["plan"]:
-        allg = sum(tc["groups"].values())
-        share = tc["groups"].get("Согласование", 0) / allg if allg else None
+    # планирование — только заказы групп 100/200 («Развитие»)
+    if pl["curPlan"]:
+        share = pl["approvingShare"]
         out.append(("plan-approving", "warn" if share is not None and share > APPROVING_LATE else "ok"))
     if pl["nextPlan"]:
         out.append(("plan-next-approved", "warn" if pl["approvedShare"] < NEXT_APPROVED else "ok"))
     if pl["chain"]["ППР без заказа"]["n"]:
         out.append(("plan-no-order", "info"))
-    out.append(("plan-not-released-started", "warn" if ex["notReleasedStarted"]["n"] else "ok"))
+    out.append(("plan-not-released-started", "warn" if pl["notReleasedStarted"]["n"] else "ok"))
     acc = pl["accuracy"]["2025"]
     if acc["n"]:
         out.append(("plan-accuracy", "warn" if acc["ok"] / acc["n"] < 0.5 else "ok"))
-    if years["2025"]["fact"]:
-        out.append(("plan-unplanned", "warn" if (ex["unplanned"]["2025"] or 0) > UNPLANNED else "ok"))
+    if pl["unplannedFact"]["2025"]:
+        out.append(("plan-unplanned", "warn" if (pl["unplanned"]["2025"] or 0) > UNPLANNED else "ok"))
     out.append(("plan-materials", "warn" if pl["materials"]["МТРН"]["n"] else "ok"))
     p = pv["byYear"].get(nxt)
     if p and p["value"]:
@@ -450,6 +483,8 @@ def main():
                 diffs.append(f"{o['y']}/{o['order']}.{k}: {get(r, k)} ≠ {o[k]}")
         if bool(get(r, "copy")) != o["copy"]:
             diffs.append(f"{o['y']}/{o['order']}.copy")
+        if "pg" in ix and get(r, "pg") != o["pg"]:
+            diffs.append(f"{o['y']}/{o['order']}.pg: {get(r, 'pg')} ≠ {o['pg']}")
     if len(ctl) != len(orders):
         diffs.append(f"заказов: control {len(ctl)} ≠ график {len(orders)}")
 
@@ -465,7 +500,9 @@ def main():
     for ctx in contexts:
         rows = [o for o in orders if in_ctx(o, ctx)]
         years = year_totals(rows)
-        ex, pl, bu = control_metrics(rows, as_of)
+        ex = control_metrics(rows, as_of)
+        pl = plan_metrics([r for r in rows if r["dev"]], as_of)
+        bu = budget_metrics(rows, as_of)
         pv = provision_metrics(prov, ctx)
         ktg = ktg_metrics(fleet, ctx, cur)
         units_fact = collections.Counter()
@@ -475,7 +512,7 @@ def main():
         cases.append({"ctx": ctx, "years": years, "exec": ex, "plan": pl, "budget": bu, "prov": pv, "ktg": ktg,
                       "levels": levels(years, ex, pl, bu, pv, ktg, cur, elapsed, units_fact)})
     out = {"meta": {"mode": mode, "asOf": as_of, "elapsed": elapsed, "fingerprint": fingerprint(),
-                    "orders": len(orders), "controlDiffs": diffs[:50], "controlDiffCount": len(diffs),
+                    "orders": len(orders), "devOrders": sum(1 for o in orders if o["dev"]), "controlDiffs": diffs[:50], "controlDiffCount": len(diffs),
                     "stockBySite": dict(stock_sites),
                     "note": "независимый пересчёт tests/verify_analytics.py; обновлять после пересборки витрин"},
            "cases": cases}

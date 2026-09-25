@@ -96,6 +96,7 @@ async function parse(buf, file, site, year) {
     assert.equal(T.controlStage(T.phaseOf(v.sys), s, u, fact), c.stage, `стадия ${o}`);
     assert.equal(up.meta.originals.has(o) ? 1 : 0, c.copy, `копия ${o}`);
     assert.equal(v.kind, c.kind, `вид заказа ${o}`);
+    assert.equal(v.pg, c.pg, `группа планирования ${o}`);
     const flags = c.flags ? c.flags.split(" ") : [];
     flags.forEach(f => assert.ok(s.has(f) || u.has(f), `статус ${f} заказа ${o}`));
   });

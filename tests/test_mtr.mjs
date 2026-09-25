@@ -83,6 +83,7 @@ for (const { ctx, eff: w } of exp.efficiency) {
   w.price.pairs.forEach((x, i) => { const g = e.price.pairs[i]; eq([g.from, g.to, g.n, g.outliers], [x.from, x.to, x.n, x.outliers], `${tag} индекс ${x.from}`); near(g.index, x.index, `${tag} индекс ${x.from}→${x.to}`); });
   eq(e.price.growth.map(x => x.code), w.price.growthTop, `${tag} рост цен`); eq([e.price.growthN, e.price.growthOut], [w.price.growthN, w.price.growthOut], `${tag} рост цен, кодов`);
   near(e.price.plan.index, w.price.plan.index, `${tag} цена плана`); eq(e.price.plan.n, w.price.plan.n, `${tag} цена плана, кодов`);
+  eq(Object.keys(e.unplanned).sort(), Object.keys(w.unplanned).sort(), `${tag} годы точности плана МТР`);
   Object.entries(w.unplanned).forEach(([y, t]) => Object.entries(t).forEach(([k, v]) => near(e.unplanned[y][k], v, `${tag} ${y} ${k}`)));
   eq(Object.keys(e.orderBy.months).sort(), Object.keys(w.orderBy.months).sort(), `${tag} месяцы «заказать до»`);
   Object.entries(w.orderBy.months).forEach(([mm, v]) => near(e.orderBy.months[mm].value, v, `${tag} заказать до ${mm}`));

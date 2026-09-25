@@ -42,7 +42,10 @@ const out = {
   plan: {
     chain: P.chain, approvedShare: P.approvedShare, nextPlan: P.nextPlan, approvedPlan: P.approvedPlan,
     annual: P.annual, operative: P.operative, soon: P.soon, materials: P.materials.map(({ top, ...x }) => x),
-    accuracy: P.accuracy, unplanned: E.unplanned,
+    accuracy: P.accuracy, unplanned: P.unplanned,
+    notReleasedStarted: { n: P.notReleasedStarted.n, plan: P.notReleasedStarted.plan },
+    scope: { devGroups: m.planScope.devGroups, devShareNext: m.planScope.devShareNext, devShareCur: m.planScope.devShareCur,
+             groups: m.planScope.groups.map(g => ({ group: g.group, name: g.name, dev: g.dev, next: (g.years[next] || {}).plan || 0, cur: (g.years[cur] || {}).plan || 0 })) },
   },
   execCtl: {
     funnel: E.funnel, execDue: E.execDue, dueToDate: E.dueToDate, factDueToDate: E.factDueToDate, sCurve: E.sCurve,
