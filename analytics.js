@@ -85,8 +85,10 @@ function anHBars(rows, defs, opts = {}) {
   if (!rows.length) return '<p class="hint">Нет данных в выбранном контексте.</p>';
   return anChart(W => anHBarsSvg(rows, defs, { ...opts, W }));
 }
-function anHBarsSvg(rows, defs, { W = 1000, percent = false, rowH = 24, labelW = 190, fmt = anM, totalFmt = null, minLabel = 46 } = {}) {
+function anHBarsSvg(rows, defs, { W = 1000, percent = false, rowH = 24, labelW = 190, fmt = anM, totalFmt = null, minLabel = 46,
+                                   grouped = false, labelFmt = null, legend = true } = {}) {
   labelW = Math.min(labelW, Math.round(W * 0.34));
+  if (grouped) return anHBarsGroupedSvg(rows, defs, { W, rowH, labelW, fmt, legend });
   const padR = percent ? 10 : 70, barW = W - labelW - padR, H = rows.length * rowH + 6;
   const tot = r => defs.reduce((s, d) => s + Math.max(0, r.values[d.k] || 0), 0);
   const max = percent ? 1 : Math.max(1, ...rows.map(tot));
@@ -101,19 +103,36 @@ function anHBarsSvg(rows, defs, { W = 1000, percent = false, rowH = 24, labelW =
       const w = barW * (percent ? v / t : v / max);
       svg += `<g><title>${esc(r.label)} · ${esc(d.label)}: ${esc(fmt(v))}${percent ? ` (${pct(v / t)})` : ""}</title>
         <rect x="${x.toFixed(1)}" y="${y + 3}" width="${Math.max(0, w - 1.5).toFixed(1)}" height="${rowH - 7}" rx="3" fill="${d.color}"/>
-        ${w >= minLabel ? `<text x="${(x + w / 2).toFixed(1)}" y="${y + rowH / 2 + 4}" text-anchor="middle" font-size="10.5" font-weight="600" fill="${d.light ? "var(--ink)" : "var(--bg)"}">${esc(percent ? pct(v / t) : fmt(v))}</text>` : ""}</g>`;
+        ${w >= minLabel ? `<text x="${(x + w / 2).toFixed(1)}" y="${y + rowH / 2 + 4}" text-anchor="middle" font-size="10.5" font-weight="600" fill="${d.light ? "var(--ink)" : "var(--bg)"}">${esc(labelFmt ? labelFmt(v, t, d) : percent ? pct(v / t) : fmt(v))}</text>` : ""}</g>`;
       x += w;
     });
     if (!percent) svg += `<text x="${(x + 6).toFixed(1)}" y="${y + rowH / 2 + 4}" font-size="11" fill="var(--ink-3)">${esc(totalFmt ? totalFmt(r) : fmt(tot(r)))}</text>`;
   });
-  return `${anLegend(defs)}<svg class="an-svg" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="${esc(defs.map(d => d.label).join(", "))}">${svg}</svg>`;
+  return `${legend ? anLegend(defs) : ""}<svg class="an-svg" viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" role="img" aria-label="${esc(defs.map(d => d.label).join(", "))}">${svg}</svg>`;
+}
+/* строка = группа полос по серии (как «виды работ по годам» в презентации) */
+function anHBarsGroupedSvg(rows, defs, { W, rowH, labelW, fmt, legend }) {
+  const bh = Math.max(7, Math.floor((rowH - 6) / defs.length)), gh = bh * defs.length + 8, padR = 60, barW = W - labelW - padR;
+  const max = Math.max(1, ...rows.flatMap(r => defs.map(d => r.values[d.k] || 0)));
+  let svg = "", y = 2;
+  rows.forEach(r => {
+    svg += `<text x="${labelW - 8}" y="${y + gh / 2 + 3}" text-anchor="end" font-size="11.5" fill="var(--ink-2)">${esc(r.label)}</text>`;
+    defs.forEach((d, j) => {
+      const v = Math.max(0, r.values[d.k] || 0), w = barW * v / max, by = y + 4 + j * bh;
+      if (!v) return;
+      svg += `<g><title>${esc(r.label)} · ${esc(d.label)}: ${esc(fmt(v))}</title><rect x="${labelW}" y="${by}" width="${Math.max(1, w).toFixed(1)}" height="${bh - 1.5}" rx="2" fill="${d.color}"/>
+        <text x="${(labelW + w + 5).toFixed(1)}" y="${by + bh - 2.5}" font-size="${Math.min(10.5, bh)}" fill="var(--ink-3)">${esc(fmt(v))}</text></g>`;
+    });
+    y += gh + 6;
+  });
+  return `${legend ? anLegend(defs) : ""}<svg class="an-svg" viewBox="0 0 ${W} ${y}" style="width:100%;height:auto" role="img">${svg}</svg>`;
 }
 
 /* Сгруппированные столбцы. cats: [..], series: [{label, color, values:[..]}] */
 function anColumns(cats, series, opts = {}) {
   return anChart(W => anColumnsSvg(cats, series, { ...opts, W }));
 }
-function anColumnsSvg(cats, series, { W = 1000, H = 240, fmt = anM, note = null } = {}) {
+function anColumnsSvg(cats, series, { W = 1000, H = 240, fmt = anM, note = null, pointColor = null, labels = true } = {}) {
   if (note) H += 16;
   const padL = 10, padB = 26, padT = note ? 36 : 18, innerH = H - padT - padB;
   const max = Math.max(1, ...series.flatMap(s => s.values.map(v => v || 0)));
@@ -125,8 +144,8 @@ function anColumnsSvg(cats, series, { W = 1000, H = 240, fmt = anM, note = null 
       const v = s.values[i];
       if (v == null) return;
       const h = innerH * Math.max(0, v) / max, x = gx + j * bw, y = H - padB - h;
-      svg += `<g><title>${esc(c)} · ${esc(s.label)}: ${esc(fmt(v))}</title><rect x="${x + 2}" y="${y}" width="${bw - 4}" height="${h}" rx="3" fill="${s.color}"/>
-        <text x="${x + bw / 2}" y="${y - 5}" text-anchor="middle" font-size="10.5" fill="var(--ink-2)">${esc(fmt(v))}</text></g>`;
+      svg += `<g><title>${esc(c)} · ${esc(s.label)}: ${esc(fmt(v))}</title><rect x="${x + 2}" y="${y}" width="${Math.max(1, bw - 4)}" height="${h}" rx="3" fill="${(pointColor && pointColor(i, j)) || s.color}"/>
+        ${labels && v ? `<text x="${x + bw / 2}" y="${y - 5}" text-anchor="middle" font-size="${bw < 22 ? 9 : 10.5}" fill="var(--ink-2)">${esc(fmt(v))}</text>` : ""}</g>`;
     });
     svg += `<text x="${padL + i * gw + gw / 2}" y="${H - 8}" text-anchor="middle" font-size="11.5" fill="var(--ink-2)">${esc(c)}</text>`;
     if (note && note[i]) svg += `<text x="${padL + i * gw + gw / 2}" y="13" text-anchor="middle" font-size="11" font-weight="600" fill="var(--ink)">${esc(note[i])}</text>`;
@@ -269,24 +288,27 @@ function anChecksHtml(m) {
 function renderAnalytics(host) {
   AN_CHARTS = [];
   const m = anModel(), Y = m.exec.years, cur = m.asOf.slice(0, 4), next = String(+cur + 1);
-  const pv27 = m.prov.byYear[next], pv26 = m.prov.byYear[cur];
+  const pv27 = m.prov.byYear[next];
   const lvCount = l => m.conclusions.filter(c => c.level === l).length;
   const ktgNow = (() => { const a = m.ktg.byUnit.map(r => r[cur]).filter(r => r && r.fact != null); return a.length ? a.reduce((s, r) => s + r.fact, 0) / a.length : null; })();
-  const unitTotal = u => AnalyticsCore.YEARS.reduce((s, y) => s + u.years[y].fact + u.years[y].plan, 0);
-  const idleUnits = m.exec.byUnit.filter(u => unitTotal(u) <= 0);
   const shown = m.conclusions.filter(c => (AN_LEVEL === "all" || c.level !== "ok") && (!AN_GROUP || c.group === AN_GROUP));
-  host.innerHTML = `
-    <h1>Аналитика: исполнение ${Y ? "2024–" + cur : ""} и план ${next}</h1>
-    ${contextBanner()}
-    <p class="sub">Визуализация презентации и автоматические выводы по выбранным фильтрам. Данные на ${dmy(m.asOf)}; ${cur} — незавершённый год.</p>
-    <div class="kpis">
-      ${["2024", "2025"].map(y => kpi(`Исполнение ${y}`, pct(Y[y].exec), Y[y].exec == null ? "" : Y[y].exec < .9 || Y[y].exec > 1.1 ? "warn" : "good")).join("")}
-      ${kpi(`Исполнение ${cur}`, pct(Y[cur].exec) + ` <small>при ${pct(m.elapsed)} года</small>`, (Y[cur].exec || 0) < m.elapsed - .15 ? "bad" : "warn")}
-      ${kpi(`План ${next} в заказах`, mrub(Y[next].plan) + ` <small>+${anM(Y[next].noOrderPlan)} ППР</small>`)}
-      ${kpi(`Обеспеченность ${next}`, pv27 ? pct(pv27.coverage) + ` <small>до ${pct(pv27.coverageWithMove)}*</small>` : "—", pv27 && pv27.coverage < .7 ? "bad" : "warn")}
-      ${kpi("КТГ факт " + cur, pct(ktgNow))}
-    </div>
-
+  let body;
+  if (AN_SECTION === "concl" || !AN_SECTIONS.some(x => x[0] === AN_SECTION)) {
+    AN_SECTION = "concl";
+    // «Главное на одной странице» — как второй слайд презентации
+    const fy = AnalyticsCore.YEARS.filter(y => y < next);
+    const f3 = u => fy.reduce((s, y) => s + u.years[y].fact, 0);
+    const us = m.exec.byUnit.filter(u => f3(u) > 0).sort((a, b) => f3(b) - f3(a)), tot = us.reduce((s, u) => s + f3(u), 0) || 1;
+    const top5 = us.slice(0, 5), onR = m.prov.ppm[next + "|onRelease"] || { value: 0 };
+    const msgs = [
+      [`${fy.slice(0, -1).join("–")} выполнены.`, ` Факт ${fy.slice(0, -1).map(y => pct(Y[y].exec)).join(" и ")} плана; закрыто технически и коммерчески ${fy.slice(0, -1).map(y => pct(Y[y].closedShare)).join(" и ")} плана.`, "var(--good)"],
+      [`${cur} отстаёт от календаря.`, ` На ${dmy(m.asOf)} освоено ${pct(Y[cur].exec)} при ${pct(m.elapsed)} года. ${anM(Y[cur].groups["Деблокирован, пусто"])} млн ₽ деблокированы без факта, ${anM(Y[cur].groups["Согласование"])} млн ₽ ещё на согласовании.`, "#E0A030"],
+      ["Затраты сосредоточены.", ` Пять бортов — ${top5.slice(0, 3).map(u => anShort(u.key)).join(", ")} и ещё два — дали ${pct(top5.reduce((s, u) => s + f3(u), 0) / tot)} факта ${fy[0]}–${cur}.`, "#5566C9"],
+      [`${next} — главный риск по МТР.`, pv27 ? ` Не покрыто ${anM(pv27.uncovered)} млн ₽; ${anM(onR.value)} млн ₽ закупка не видит до деблокирования. Перемещением между площадками (ограничено) можно улучшить ещё до ${anM(m.prov.total.transferPotential)} млн ₽.` : " Потребности в контексте нет.", "#D2454F"],
+    ];
+    body = `
+    <section class="card dk-slide"><h3>Главное на одной странице</h3>
+      <div class="dk-msgs">${msgs.map(([b, t, c], i) => `<div><i style="background:${c}">${i + 1}</i><p><b>${esc(b)}</b>${esc(t)}</p></div>`).join("")}</div></section>
     <h2>Автоматические выводы <span class="dim" style="font-weight:400;font-size:13px">· ${lvCount("bad")} критично · ${lvCount("warn")} внимание · ${lvCount("info")} к сведению · ${lvCount("ok")} норма</span></h2>
     <section class="card"><h3>Схема: источники → проверки → выводы</h3>
       <p class="hint">Каждое правило пересчитывается при смене фильтров. Цвет — результат для текущего контекста; нажмите правило, чтобы открыть вывод с цифрами-доказательствами.</p>
@@ -299,130 +321,28 @@ function renderAnalytics(host) {
       ${AN_GROUPS.map(g => `<button class="pill ${AN_GROUP === g ? "on" : ""}" data-an-group="${esc(g)}">${esc(g)}</button>`).join("")}
     </div>
     ${anCards(shown)}
-
-    <h2>Исполнение программы ремонтов</h2>
-    <div class="grid2">
-      <section class="card"><h3>План и факт по годам, млн ₽</h3><p class="hint">МТР + УСО по заказам ТОРО. Над столбцами — исполнение.</p>
-        ${anColumns(["2024", "2025", cur + " · на " + dmy(m.asOf).slice(0, 5), next + " · план"],
-          [{ label: "План", color: AN_C.plan, values: m.exec && AnalyticsCore.YEARS.map(y => Y[y].plan) },
-           { label: "Факт", color: AN_C.fact, values: AnalyticsCore.YEARS.map(y => y === next ? null : Y[y].fact) }],
-          { note: AnalyticsCore.YEARS.map(y => y === next ? "" : pct(Y[y].exec)) })}</section>
-      <section class="card"><h3>Стадии SAP: доля плана</h3><p class="hint">Статус — на дату годовой выгрузки PM-06.</p>
-        ${anHBars(AnalyticsCore.YEARS.map(y => ({ label: y === next ? y + " план" : y, values: Object.fromEntries(AnalyticsCore.GROUPS.map(g => [g, Y[y].groups[g]])) })),
-          AnalyticsCore.GROUPS.filter(g => AnalyticsCore.YEARS.some(y => Y[y].groups[g] > 0)).map(g => ({ k: g, label: g, color: AN_C[g] })), { percent: true, rowH: 34, labelW: 90 })}</section>
+    ${anChecksHtml(m)}`;
+  } else {
+    body = dkRender(host, m) + anChecksHtml(m);
+  }
+  host.innerHTML = `
+    <h1>Аналитика: исполнение 2024–${cur} и план ${next}</h1>
+    ${contextBanner()}
+    <p class="sub">Слайды презентации «Экскаваторы WK» и автоматические выводы — по выбранным фильтрам (площадка, модель, машина, заказ). Данные на ${dmy(m.asOf)}; ${cur} — незавершённый год.</p>
+    <div class="kpis">
+      ${["2024", "2025"].map(y => kpi(`Исполнение ${y}`, pct(Y[y].exec), Y[y].exec == null ? "" : Y[y].exec < .9 || Y[y].exec > 1.1 ? "warn" : "good")).join("")}
+      ${kpi(`Исполнение ${cur}`, pct(Y[cur].exec) + ` <small>при ${pct(m.elapsed)} года</small>`, (Y[cur].exec || 0) < m.elapsed - .15 ? "bad" : "warn")}
+      ${kpi(`План ${next} в заказах`, mrub(Y[next].plan) + ` <small>+${anM(Y[next].noOrderPlan)} ППР</small>`)}
+      ${kpi(`Обеспеченность ${next}`, pv27 ? pct(pv27.coverage) + ` <small>до ${pct(pv27.coverageWithMove)}*</small>` : "—", pv27 && pv27.coverage < .7 ? "bad" : "warn")}
+      ${kpi("КТГ факт " + cur, pct(ktgNow))}
     </div>
-    <div class="grid2">
-      <section class="card"><h3>По площадкам, млн ₽</h3><div id="anSites"></div></section>
-      <section class="card"><h3>Виды работ: факт 2024–${cur} и план ${next}, млн ₽</h3>
-        ${anHBars(m.exec.byWork.slice(0, 8).map(w => ({ label: w.key === "Не присвоено" ? "Компоненты (без вида)" : w.key,
-          values: { y2024: N0(w.years["2024"], "fact"), y2025: N0(w.years["2025"], "fact"), y2026: N0(w.years[cur], "fact"), y2027: N0(w.years[next], "plan") } })),
-          [{ k: "y2024", label: "Факт 2024", color: AN_C.y2024 }, { k: "y2025", label: "Факт 2025", color: AN_C.y2025 },
-           { k: "y2026", label: `Факт ${cur}`, color: AN_C.y2026 }, { k: "y2027", label: `План ${next}`, color: AN_C.y2027 }], { labelW: 210 })}</section>
-    </div>
-    <section class="card"><h3>Затраты на каждый борт: факт по годам и план ${next}, млн ₽</h3>
-      ${anHBars(m.exec.byUnit.filter(u => !idleUnits.includes(u)).map(u => ({ label: anShort(u.key) + " · " + anSite(siteOfUnit(u.key)).split(" ")[0],
-          values: { y2024: u.years["2024"].fact, y2025: u.years["2025"].fact, y2026: u.years[cur].fact, y2027: u.years[next].plan },
-          sortKey: u.years["2024"].fact + u.years["2025"].fact + u.years[cur].fact })).sort((a, b) => b.sortKey - a.sortKey),
-        [{ k: "y2024", label: "Факт 2024", color: AN_C.y2024 }, { k: "y2025", label: "Факт 2025", color: AN_C.y2025 },
-         { k: "y2026", label: `Факт ${cur}`, color: AN_C.y2026 }, { k: "y2027", label: `План ${next}`, color: AN_C.y2027 }], { rowH: 21, labelW: 200 })}
-      ${idleUnits.length ? `<p class="hint">Без заказов в 2024–${next}: ${idleUnits.map(u => esc(anShort(u.key))).join(", ")}.</p>` : ""}</section>
-
-    <h2>План ${next}</h2>
-    <section class="card"><h3>Готовность плана по площадкам, млн ₽</h3><p class="hint">Позиции графика ППР без заказа SAP в план не входят — показаны, чтобы был виден полный объём графика.</p>
-      ${anHBars(m.exec.bySite.map(s => ({ label: anSite(s.key), values: { rel: s.years[next].groups["Деблокирован, пусто"] + s.years[next].groups["В работе"],
-          app: s.years[next].groups["Согласование"], ppr: s.years[next].groups["ППР без заказа"] } })),
-        [{ k: "rel", label: "Деблокирован", color: AN_C["Деблокирован, пусто"] }, { k: "app", label: "Открыт: согласование и СГГС", color: AN_C["Согласование"] },
-         { k: "ppr", label: "Позиции ППР без заказа", color: AN_C["ППР без заказа"] }], { rowH: 34 })}</section>
-
-    <h2>Обеспеченность МТР ${cur}–${next}</h2>
-    <div class="grid2">
-      <section class="card"><h3>По годам и площадкам, млн ₽</h3>
-        ${anHBars(anSegRows([[cur, pv26], [next, pv27], ...m.exec.bySite.flatMap(s => [[anSite(s.key).split(" ")[0] + " " + cur, m.prov.bySite[s.key + "|" + cur]], [anSite(s.key).split(" ")[0] + " " + next, m.prov.bySite[s.key + "|" + next]]])]), AN_SEG, { rowH: 28, labelW: 200 })}
-        ${AN_POT_NOTE}</section>
-      <section class="card"><h3>${next} по бортам, млн ₽</h3>
-        ${anHBars(anSegRows(Object.entries(m.prov.byUnit).filter(([k]) => k.endsWith("|" + next)).map(([k, t]) => [anShort(k.split("|")[0]), t]))
-          .sort((a, b) => (b.values.gap + b.values.late + b.values.pot) - (a.values.gap + a.values.late + a.values.pot)), AN_SEG, { rowH: 21, labelW: 170 })}</section>
-    </div>
-    <div class="grid2">
-      <section class="card"><h3>Можно ли ещё успеть заказом: непокрытое ${cur}–${next}, млн ₽</h3><p class="hint">Срок работ против фактического срока поставки кода, если разместить заказ сегодня.</p>
-        ${anHBars([{ label: "Непокрытое", values: m.prov.feasible }], [
-          { k: "inTime", label: "Успеем, если заказать сейчас", color: "var(--good)" }, { k: "late3", label: "Опоздаем до 3 мес.", color: "var(--warn)" },
-          { k: "lateMore", label: "Опоздаем > 3 мес.", color: "var(--bad)" }, { k: "past", label: "Срок работ прошёл", color: "var(--c8)" },
-          ...(m.prov.feasible.nodate > 0 ? [{ k: "nodate", label: "Без даты работ", color: "var(--line-2)", light: true }] : [])], { rowH: 40, labelW: 110 })}</section>
-      <section class="card"><h3>Видит ли закупка потребность ${next}, млн ₽</h3>
-        <div id="anPpm"></div></section>
-    </div>
-
-    <h2>Запасы по площадкам и возможность перемещения</h2>
-    <div class="grid2">
-      <section class="card"><h3>Запас, потребность и покрытие своим складом, млн ₽</h3><div id="anStock"></div>${AN_POT_NOTE}</section>
-      <section class="card"><h3>Откуда → куда можно переместить*, млн ₽</h3><div id="anMoves"></div>
-        <p class="hint">Верхняя оценка: запас другой площадки, оставшийся после её собственной потребности, против непокрытого к сроку. Логистика и согласование не учтены.</p></section>
-    </div>
-
-    <h2>Готовность техники (КТГ)</h2>
-    <div class="grid2">
-      <section class="card"><h3>План и факт по месяцам, среднее по бортам</h3><div id="anKtg"></div></section>
-      <section class="card"><h3>По бортам: факт ${cur} против плана</h3><div id="anKtgT"></div></section>
-    </div>
-    ${anChecksHtml(m)}
-  `;
-  // по площадкам — таблица
-  renderTable(byId("anSites"), {
-    rows: m.exec.bySite.map(s => ({ site: anSite(s.key), ...Object.fromEntries(AnalyticsCore.YEARS.flatMap(y => [["p" + y, s.years[y].plan], ["f" + y, s.years[y].fact], ["e" + y, s.years[y].exec]])) })),
-    sortKey: "p" + cur, csv: true, csvName: "wk_exec_by_site.csv",
-    cols: [{ key: "site", label: "Площадка" },
-      ...["2024", "2025", cur].flatMap(y => [{ key: "f" + y, label: `Факт ${y}`, numeric: true, fmt: anM },
-        { key: "e" + y, label: "%", numeric: true, fmt: v => v == null ? "—" : `<span class="badge ${y === cur ? "" : v < .9 || v > 1.1 ? "warn" : "good"}">${pct(v)}</span>` }]),
-      { key: "p" + next, label: `План ${next}`, numeric: true, fmt: anM }],
-  });
-  const ppmRows = ["immediate", "onRelease", "never"].map(k => ({ k, ...(m.prov.ppm[next + "|" + k] || { value: 0, covered: 0, uncovered: 0, potential: 0 }) }));
-  renderTable(byId("anPpm"), {
-    rows: ppmRows, sortKey: "value",
-    cols: [{ key: "k", label: "Признак «Резерв./заявка»", fmt: v => ({ immediate: "Немедленно — закупка видит", onRelease: "Начиная с деблок. — не видит до ДЕБЛ", never: "Никогда — в заявку не попадёт" })[v] },
-      { key: "value", label: "Потребность", numeric: true, fmt: anM }, { key: "covered", label: "Обеспечено", numeric: true, fmt: anM },
-      { key: "uncovered", label: "Не покрыто", numeric: true, fmt: v => v > 0 ? `<b style="color:var(--bad)">${anM(v)}</b>` : "—" },
-      { key: "potential", label: "Перем.*", numeric: true, fmt: v => v > 0 ? anM(v) : "—" }],
-  });
-  const stockSites = m.stock.bySite.map(s => {
-    const a = m.prov.bySite[s.site + "|" + cur], b = m.prov.bySite[s.site + "|" + next];
-    const need = (a ? a.value : 0) + (b ? b.value : 0);
-    return { site: s.name || anSite(s.site), code: s.site, value: s.value, need, own: (a ? a.fromStock : 0) + (b ? b.fromStock : 0),
-             cov: need ? ((a ? a.covered : 0) + (b ? b.covered : 0)) / need : null, unc: (a ? a.uncovered : 0) + (b ? b.uncovered : 0),
-             pot: (a ? a.transferPotential : 0) + (b ? b.transferPotential : 0) };
-  });
-  renderTable(byId("anStock"), {
-    rows: stockSites, sortKey: "value", rowClass: r => G.site && r.code === G.site ? "lo-pin" : "",
-    onRowClick: r => { G.site = r.code; renderGlobalFilters(); renderTab(); },
-    cols: [{ key: "site", label: "Площадка" }, { key: "value", label: "Запас", numeric: true, fmt: anM },
-      { key: "need", label: `Нужно ${cur}–${next}`, numeric: true, fmt: anM }, { key: "own", label: "Свой склад", numeric: true, fmt: anM },
-      { key: "cov", label: "Обеспечено", numeric: true, fmt: v => v == null ? "—" : `<span class="badge ${v < .7 ? "bad" : v < .9 ? "warn" : "good"}">${pct(v)}</span>` },
-      { key: "unc", label: "Не покрыто", numeric: true, fmt: anM }, { key: "pot", label: "Перем.*", numeric: true, fmt: v => v > 0 ? anM(v) : "—" }],
-  });
-  const sites = m.stock.bySite.map(s => s.site);
-  const mv = sites.map(f => ({ from: "из " + anSite(f).split(" ")[0], ...Object.fromEntries(sites.map(t => [t, f === t ? null : (m.prov.moves[f + ">" + t] || 0)])),
-    total: sites.reduce((s, t) => s + (f === t ? 0 : (m.prov.moves[f + ">" + t] || 0)), 0) }));
-  byId("anMoves").innerHTML = `<div class="twrap"><table><thead><tr><th></th>${sites.map(t => `<th class="n">в ${esc(anSite(t).split(" ")[0])}</th>`).join("")}<th class="n">всего из</th></tr></thead><tbody>
-    ${mv.map(r => `<tr><td><b>${esc(r.from)}</b></td>${sites.map(t => `<td class="n">${r[t] == null ? '<span class="dim">—</span>' : r[t] > 0 ? `<b>${anM(r[t])}</b>` : "0"}</td>`).join("")}<td class="n">${anM(r.total)}</td></tr>`).join("")}
-    <tr><td class="dim">всего в</td>${sites.map(t => `<td class="n">${anM(sites.reduce((s, f) => s + (f === t ? 0 : (m.prov.moves[f + ">" + t] || 0)), 0))}</td>`).join("")}<td class="n"><b>${anM(m.prov.total.transferPotential)}</b></td></tr>
-    </tbody></table></div>
-    ${m.prov.moveTop.length ? `<p class="hint" style="margin-top:10px">Крупнейшие позиции: ${m.prov.moveTop.slice(0, 5).map(x => `${esc(x.name)} — ${anM(x.value)} млн ₽`).join("; ")}.</p>` : ""}`;
-  const mi = m.ktg.monthly.map((x, i) => i).filter(i => m.ktg.monthly[i].month >= "2024-01");
-  renderLineChart(byId("anKtg"), { months: mi.map(i => m.ktg.monthly[i].month), series: [
-    { label: "КТГ план", values: mi.map(i => m.ktg.monthly[i].plan), color: "var(--c6)" },
-    { label: "КТГ факт", values: mi.map(i => m.ktg.monthly[i].fact), color: "var(--c1)" }], yDomain: [0.6, 1] });
-  renderTable(byId("anKtgT"), {
-    rows: m.ktg.byUnit.map(r => ({ unit: anShort(r.unit), site: anSite(r.site).split(" ")[0], plan: r[cur].plan, fact: r[cur].fact,
-      d: r[cur].plan != null && r[cur].fact != null ? (Math.round((r[cur].fact - r[cur].plan) * 1000) / 1000 || 0) : null })),
-    sortKey: "d", sortDir: 1, limit: 12,
-    cols: [{ key: "unit", label: "Борт" }, { key: "site", label: "Площадка" }, { key: "plan", label: "План", numeric: true, fmt: pct },
-      { key: "fact", label: "Факт", numeric: true, fmt: pct },
-      { key: "d", label: "Δ, п.п.", numeric: true, fmt: v => v == null ? "—" : `<span class="badge ${v < -AnalyticsCore.T.ktgGap ? "bad" : v < 0 ? "warn" : "good"}">${v > 0 ? "+" : ""}${num(v * 100, 1)}</span>` }],
-  });
+    ${dkNav()}
+    ${body}`;
   qsa("[data-an-level]", host).forEach(b => { b.onclick = () => { AN_LEVEL = b.dataset.anLevel; renderTab(); }; });
   qsa("[data-an-group]", host).forEach(b => { b.onclick = () => { AN_GROUP = b.dataset.anGroup; renderTab(); }; });
   anMount(host);
   anWire(host);
+  dkWire(host);
 }
 function N0(o, k) { return o ? (o[k] || 0) : 0; }
 function siteOfUnit(name) {

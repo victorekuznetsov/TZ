@@ -107,7 +107,7 @@ const ROLES = {
 };
 const TAB_NEEDS = {
   sum: [],
-  analytics: ["control"],
+  analytics: ["control", "usoWk"],
   control: ["control", "orderText"],
   catalog: ["tree", "drawings"],
   // tree — не украшение: карточка узла читает D.tree.bookModel, чтобы
