@@ -463,3 +463,39 @@ tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--
 /* стадии исполнения: одна шкала акцентного цвета, подпись — текстом */
 .exec-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,600px),1fr));gap:16px;align-items:start}.exec-grid > div{min-width:0;background:var(--surface);border:var(--hair);border-radius:var(--radius-lg);padding:14px 16px}.exec-grid h3{margin:0 0 4px}.exec-stage{min-width:150px;max-width:230px;white-space:normal}
 .stage-bar{display:inline-block;width:70px;vertical-align:middle;margin-right:6px}.stage-bar > i{border-radius:99px}
+
+/* ---------- Аналитика и Контроль отделов (analytics.js) ---------- */
+.an-svg{display:block;overflow:visible}
+.an-svg text{font-family:inherit}
+.an-scheme .an-rule{outline:none}
+.an-scheme .an-rule:hover rect,.an-scheme .an-rule:focus rect{stroke:var(--accent);stroke-width:2}
+.an-pills{margin:4px 0 10px}
+.an-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr));gap:12px;margin-bottom:16px}
+.an-card{background:var(--surface);border:var(--hair);border-left:4px solid var(--line-2);border-radius:var(--radius-lg);
+  padding:12px 14px;display:flex;flex-direction:column;gap:6px;box-shadow:var(--shadow-sm);transition:box-shadow .3s}
+.an-card.bad{border-left-color:var(--bad)}
+.an-card.warn{border-left-color:var(--warn)}
+.an-card.info{border-left-color:var(--info)}
+.an-card.good{border-left-color:var(--good)}
+.an-card header{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:11px}
+.an-card h3{margin:0;font-size:13.5px;font-weight:600;line-height:1.35}
+.an-card p{margin:0;font-size:12px;line-height:1.5;color:var(--ink-2)}
+.an-card footer{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:auto;font-size:10.5px}
+.an-card footer .dim{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.an-card.flash{box-shadow:0 0 0 3px var(--accent)}
+.an-evs{display:flex;flex-wrap:wrap;gap:6px}
+.an-ev{display:inline-flex;gap:5px;align-items:baseline;padding:2px 8px;border-radius:99px;background:var(--surface-2);
+  border:var(--hair);font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.an-ev i{font-style:normal;font-weight:400;color:var(--ink-3)}
+.an-checks summary{cursor:pointer;display:flex;gap:8px;align-items:center;font-size:12.5px}
+.an-checks ul{margin:6px 0 0;padding:0;list-style:none;columns:2;column-gap:24px;font-size:11.5px}
+.an-checks li{padding:2px 0;break-inside:avoid}
+.an-checks li.ok{color:var(--ink-2)}
+.an-checks li.fail{color:var(--bad);font-weight:600}
+.dept-tabs .pill{font-size:12.5px;padding:7px 14px}
+@media(max-width:900px){.an-cards{grid-template-columns:1fr}.an-checks ul{columns:1}}
+.an-card footer .minibtn{white-space:nowrap;flex:0 0 auto}
+.an-chart{width:100%;min-width:0}
+.grid2>*{min-width:0}
+.an-card{min-width:0}
+.an-card header .dim{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

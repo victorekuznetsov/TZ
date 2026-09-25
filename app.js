@@ -95,12 +95,14 @@ let NAV_SEQ = 0;
 let CART_MEM = null;
 const ROLES = {
   all:     { label: "Все разделы", tabs: null },
-  supply:  { label: "Снабжение",   tabs: ["sum", "provision", "stock", "purchase", "codif", "inter", "cart"] },
-  toir:    { label: "ТОиР",        tabs: ["sum", "fleet", "repairs", "provision", "linkone", "kb", "catalog"] },
+  supply:  { label: "Снабжение",   tabs: ["sum", "analytics", "provision", "stock", "purchase", "codif", "inter", "cart"] },
+  toir:    { label: "ТОиР",        tabs: ["sum", "analytics", "control", "fleet", "repairs", "provision", "linkone", "kb", "catalog"] },
   catalog: { label: "Справочник",  tabs: ["catalog", "linkone", "kb", "inter", "fleet"] },
 };
 const TAB_NEEDS = {
   sum: [],
+  analytics: ["control"],
+  control: ["control"],
   catalog: ["tree", "drawings"],
   // tree — не украшение: карточка узла читает D.tree.bookModel, чтобы
   // подобрать документы по модели. Без этой зависимости первый заход
@@ -615,6 +617,7 @@ const FILES = {
   stock: "stock", quality: "quality", kb: "kb",
   drawings: "drawings", linkome: "linkome_catalog",
   linkomeDraw: "linkome_drawings", usoWk: "uso_wk",
+  control: "control",
 };
 const CORE_KEYS = ["catalog", "ekmtrWk", "fleetBooks", "fleet", "repairs", "provision", "stock", "quality"];
 
@@ -746,6 +749,8 @@ async function renderTab() {
   }
   switch (TAB) {
     case "sum": return renderSum(host);
+    case "analytics": return renderAnalytics(host);
+    case "control": return renderControl(host);
     case "catalog": return renderCatalog(host);
     case "linkone": return renderLinkone(host);
     case "kb": return renderKB(host);
@@ -3028,6 +3033,20 @@ function renderDoc(host) {
       </ul>
       <p class="hint">Открытая поставка с плановым месяцем раньше даты снимка считается просроченной: её старый срок ненадёжен, поэтому она не улучшает показатель «обеспечено к сроку». Чего расчёт сознательно не делает: прочая номенклатура (ГСМ, общий крепёж, общие МТР) в него не входит — витрины остатков по ней нет; срок прихода закупки известен только до месяца, внутри месяца приход считается успевающим.</p>
     </div>
+    <div class="card"><h3>Аналитика и контроль отделов: как считается</h3>
+      <p class="hint">Витрина <code>data/control.json</code> — заказ ТОРО WK × год выгрузки PM-06 (2024–2027): план и факт МТР и УСО из строк графика, стадия и статусы заказа из выгрузки статусов PM-06 TOPO (<code>build/build_control.py</code>). Расчёты — <code>lib/analytics_core.js</code>, одни и те же для графиков, автовыводов и тестов. Всё пересчитывается по сквозным фильтрам: площадка, модель, машина, заказ.</p>
+      <ul>
+        <li><b>План</b> = МТР Полюса + МТР подрядчика (УСО). Позиции графика ППР без заказа SAP в план не входят и показываются отдельно. У оригинала БЕ, перенесённого копией в «Развитие», неисполненный план не считается: план = min(план, факт).</li>
+        <li><b>Стадия</b> — по статусам: ЗАКР &gt; ТЗКР (ВСБЕ / ПРСЗ) &gt; ДЕБЛ (ФХСМ / в работе / пусто) &gt; ОТКР (СГГС / на согласовании). Статус — на дату годовой выгрузки PM-06.</li>
+        <li><b>Темп года</b> сравнивается с долей прошедшего года на дату данных; «план к дате» — заказы с базисным началом не позже текущего месяца.</li>
+        <li><b>Обеспеченность</b> — склад своей площадки и закупка к сроку; перемещение между площадками ограничено и показывается как возможность, а не покрытие.</li>
+      </ul>
+      <div class="twrap"><table><thead><tr><th>Группа</th><th>Правило</th><th>Когда срабатывает</th></tr></thead><tbody>
+        ${(typeof AnalyticsCore !== "undefined" ? AnalyticsCore.RULES : []).map(r => `<tr><td>${esc(r.group)}</td><td>${esc(r.title)}</td><td>${esc(r.test)}</td></tr>`).join("")}
+      </tbody></table></div>
+      <p class="hint" style="margin-top:10px"><b>Двойная проверка.</b> 1) В каждом контексте вкладка сверяет разрезы с итогами (стадии, площадки, МТР + УСО, сегменты обеспеченности, цепочка согласования, воронка, S-кривая) и итоги — с витринами отчёта; результат виден внизу вкладки. 2) <code>tests/verify_analytics.py</code> — вторая, независимая реализация на Python: собирает заказы из строк графика и статусов TOPO, обеспеченность — построчно; <code>tests/test_analytics.mjs</code> сверяет с ядром все показатели и уровни выводов для всего парка, каждой площадки, модели и борта. 3) Итоги по годам, площадкам и бортам совпадают с данными презентации (<code>build/build_wk_status_data.py</code>).</p>
+      <p class="hint">Пересборка ТОРО во вкладке «Обновление данных» не пересобирает <code>control.json</code> — после неё запустите <code>build/build_control.py</code>; до этого сверки внизу вкладки «Аналитика» покажут расхождение с витриной обеспеченности.</p>
+    </div>
   `;
 }
 
@@ -4021,7 +4040,7 @@ function renderKB(host) {
 }
 
 /* ---------- навигация / поиск / тема ---------- */
-const VALID_TABS = new Set(["sum", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
+const VALID_TABS = new Set(["sum", "analytics", "control", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
 let CMD_ROWS = [];
 function setRole(role) {
   ROLE = ROLES[role] ? role : "all";
