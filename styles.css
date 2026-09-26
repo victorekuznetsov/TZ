@@ -608,3 +608,7 @@ tbody tr.lo-pin td{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--
 @media(max-width:1000px){.dk-acts,.dk-lims{grid-template-columns:minmax(0,1fr)}.dk-chev{grid-template-columns:repeat(2,minmax(0,1fr))}}
 #lkOut .sup-pill{white-space:normal;max-width:100%}
 @media(max-width:520px){.dk-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.dk-tile .v{font-size:20px}}
+
+/* Структура БДО */
+.bdo-chain{margin:6px 0 10px;font-size:12.5px}.bdo-lvl{padding:2px 0}.bdo-l{display:inline-block;min-width:40px;color:var(--ink-3);font-size:11px}
+hr.soft{border:0;border-top:var(--hair);margin:14px 0}

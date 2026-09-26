@@ -117,7 +117,7 @@ const TAB_NEEDS = {
   // сразу в LinkOne (без каталога) валился на undefined.
   linkone: ["linkome", "linkomeDraw", "kb", "tree"],
   kb: ["kb", "tree", "linkome"],
-  fleet: [],
+  fleet: ["wkNodes"],
   repairs: ["usoWk", "control", "orderText"],
   provision: ["interchange", "usoWk", "control"],
   stock: [],
@@ -457,6 +457,7 @@ function toroHeader(number, orders, historical, uso, ctl, works) {
       ${chip("Сроки", start ? `${dmy(start)}${end && end !== start ? " – " + dmy(end) : ""}` : "")}
       ${chip("Статья", o.kind ? esc(o.kind) : "")}${chip("Способ", o.method ? esc(o.method) : u.method ? esc(u.method) : "")}
       ${chip("Год", [...new Set(ctl.map(r => r.y))].join(", "))}
+      ${(() => { const nd = D.wkNodes && D.wkNodes.orders && D.wkNodes.orders[number]; return nd ? chip("ЕО-узел", `${esc(nd[2])} · ЕО ${esc(nd[3])} · ТМ <span class="mono">${esc(nd[1])}</span>`, "warn") : ""; })()}
     </div>
     <div class="kpis toro-kpis">
       ${ctl.length ? kpi("План МТР + УСО", mrub(plan)) + kpi("Факт", mrub(fact) + (plan ? ` <small>${pct(fact / plan)}</small>` : ""), fact > plan * 1.1 && plan ? "warn" : "") : ""}
@@ -549,6 +550,7 @@ async function openToroCard(number, hint = {}) {
   try {
     await ensureData(["provision", "usoWk", "control"]);
     try { await ensureData(["orderText"]); } catch (e) { D.orderText = null; }   // тексты заказов — необязательная витрина
+    try { await ensureData(["wkNodes"]); } catch (e) { D.wkNodes = null; }       // заказ на ЕО-узле техместа машины
     let orders = [...(D.provision.orders || []), ...(D.provision.closedOrders || [])].filter(o =>
       String(o.order) === String(number) && (!hint.site || o.site === hint.site) && (!hint.unit || o.unit === hint.unit));
     let historical = [];
@@ -1975,6 +1977,47 @@ function loRenderMain() {
 /* ===================== ПАРК ===================== */
 const MODEL_COLOR = { "WK-20": "var(--c1)", "WK-35": "var(--c2)", "WK-20C": "var(--c3)" };
 
+/* Структура БДО по машинам WK: техместо (ТМ) и его предки, ЕО на ТМ машины (сама машина и ЕО-узлы: ковш,
+   рукоять, ЭД…), заказы на узлы. Источник — data/wk_nodes.json (БДО TOPO из всех заказов PM-06 2022–2027).
+   Имена промежуточных уровней в PM-06 не выгружаются: расшифровка кода — по мнемонике, сверять в SAP (IH06). */
+const BDO_MNEMO = { "03": "АО «Полюс Вернинское»", "04": "АО «Полюс Алдан»", "05": "АО «Полюс Магадан»", "06": "ООО «Полюс Сухой Лог»",
+  "11": "АО «Полюс Красноярск»", RUD: "рудник", KAR: "карьер", ATC: "автотранспортный цех", ZIF: "ЗИФ", VOST: "Восточный",
+  BLAG: "Благодатный", UGVS: "участок горных работ «Восточный»", UGBL: "участок горных работ «Благодатный»",
+  UOGR: "управление открытых горных работ", EKSK: "экскаваторный участок", OOBR: "основное оборудование", EXCV: "экскаваторы" };
+function bdoLevelName(code, name) {
+  if (name) return esc(name);
+  const m = BDO_MNEMO[code.split("-").pop()];
+  return m ? `<span class="dim" title="Расшифровка кода по мнемонике — в выгрузке PM-06 имени нет, сверять в SAP (IH06)">${esc(m)}*</span>` : '<span class="dim">—</span>';
+}
+function bdoFleetHtml(units) {
+  const W = D.wkNodes && D.wkNodes.machines;
+  if (!W) return "";
+  const names = new Set(units.map(u => u.name));
+  const ms = Object.entries(W).filter(([, m]) => names.has(m.unit));
+  if (!ms.length) return "";
+  const sum = (a, i) => a.reduce((x, o) => x + (o[i] || 0), 0);
+  const head = `<h3>Структура БДО: техместо машины и единицы оборудования на нём</h3>
+    <p class="hint">Техместо (ТМ) — «где стоит» (ГОК → производство → цех/карьер → участок → машина), ЕО — «что стоит» и монтируется на ТМ.
+      На ТМ экскаватора кроме самой машины стоят ЕО-узлы: ковш, рукоять, асинхронные ЭД, редукторы, бортовой компьютер. Заказы на узлы
+      (${num(ms.reduce((x, [, m]) => x + m.orders.length, 0))} в выбранном контексте) входят в отчёт по машине с отметкой «ЕО-узел». Источник — БДО из всех заказов PM-06 2022–2027.</p>`;
+  if (ms.length > 1 || !G.unit) {
+    const rows = ms.map(([tm, m]) => ({ tm, unit: m.unit, be: m.be, level: tm.split("-").length, eo: m.eo.length, nodes: m.eo.filter(e => !e[2]).length,
+      n: m.orders.length, plan: sum(m.orders, 5), fact: sum(m.orders, 6) }));
+    setTimeout(() => { const h = byId("bdoTable"); if (h) renderTable(h, { rows, sortKey: "plan", limit: 40,
+      onRowClick: r => { G.unit = r.unit; writeHash(false); renderGlobalFilters(); renderTab(); },
+      cols: [{ key: "unit", label: "Машина", cls: "wrap" }, { key: "be", label: "БЕ" }, { key: "tm", label: "Техместо", cls: "mono" },
+        { key: "level", label: "Уровень", numeric: true }, { key: "eo", label: "ЕО на ТМ", numeric: true }, { key: "nodes", label: "из них узлов", numeric: true },
+        { key: "n", label: "Заказов на узлы", numeric: true }, { key: "plan", label: "План узлов", numeric: true, fmt: mrub }, { key: "fact", label: "Факт узлов", numeric: true, fmt: mrub }] }); }, 0);
+    return head + '<div id="bdoTable"></div><p class="hint">Строка открывает машину: цепочка техмест, ЕО и заказы на узлы.</p>';
+  }
+  return head + ms.map(([tm, m]) => `
+    <div class="bdo-chain">${[...m.chain, [tm, m.tmName]].map(([c, n], i) => `<div class="bdo-lvl" style="margin-left:${i * 14}px"><span class="bdo-l">ур. ${i + 1}</span> <span class="mono">${esc(c)}</span> ${i === m.chain.length ? `<b>${esc(n)}</b>` : bdoLevelName(c, n)}</div>`).join("")}</div>
+    <div class="twrap"><table class="toro-lines"><thead><tr><th>ЕО</th><th>Наименование</th><th>Роль</th><th class="n">Заказов</th><th>Годы</th></tr></thead><tbody>
+      ${m.eo.map(e => `<tr><td class="mono">${esc(e[0])}</td><td class="toro-name">${esc(e[1])}</td><td>${e[2] ? '<span class="badge good">машина</span>' : '<span class="badge warn">ЕО-узел</span>'}</td><td class="n">${num(e[3])}</td><td>${esc(e[4].join(", "))}</td></tr>`).join("")}</tbody></table></div>
+    ${m.orders.length ? `<h3>Заказы на ЕО-узлы · ${num(m.orders.length)} · план ${mrub(sum(m.orders, 5))} · факт ${mrub(sum(m.orders, 6))}</h3>
+    <div class="twrap"><table class="toro-lines"><thead><tr><th>Заказ</th><th>Год</th><th>ЕО-узел</th><th>Вид</th><th>Текст заказа</th><th class="n">План МТР+УСО</th><th class="n">Факт</th></tr></thead><tbody>
+      ${m.orders.slice().sort((a, b) => b[1].localeCompare(a[1]) || b[5] - a[5]).map(o => `<tr><td>${entityLink("toro", o[0], { unit: m.unit })}</td><td>${esc(o[1])}</td><td class="toro-name">${esc(o[2])}</td><td>${esc(o[3])}</td><td class="toro-name">${esc(o[4])}</td><td class="n">${rub(o[5])}</td><td class="n">${rub(o[6])}</td></tr>`).join("")}</tbody></table></div>` : '<p class="hint">Заказов на ЕО-узлы этой машины нет.</p>'}`).join('<hr class="soft">');
+}
 function renderFleet(host) {
   const all = D.fleet.units;
   const rows = all.filter(u => (!G.site || u.site === G.site) && (!G.model || u.model === G.model) && (!G.unit || u.name === G.unit));
@@ -1995,6 +2038,7 @@ function renderFleet(host) {
       <p class="hint">${rows.length===1 ? "Один борт: две линии — план и факт." : "Среднее по выбранным бортам. Месяцы без значения исключены, нулями график не занижается."}</p>
       <div id="fleetChart"></div>
     </div>
+    <div class="card" id="fleetBdo">${bdoFleetHtml(rows)}</div>
     <div id="fleetTable"></div>
   `;
   renderTable(byId('fleetAgg'),{rows:agg,sortKey:'label',sortDir:1,onRowClick:r=>{if(level==='site')G.site=r.site;else if(level==='model')G.model=r.model;else G.unit=r.key;renderGlobalFilters();renderTab()},cols:[{key:'label',label:level==='site'?'Площадка':level==='model'?'Модель':'Единица',cls:'wrap'},{key:'n',label:'Единиц',numeric:true},{key:'book',label:'Книги',cls:'mono wrap'},{key:'ktg',label:'КТГ план',numeric:true,fmt:pct},{key:'kio',label:'КТГ факт',numeric:true,fmt:pct}]});
