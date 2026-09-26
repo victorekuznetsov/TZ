@@ -126,6 +126,7 @@ const TAB_NEEDS = {
   inter: ["interchange"],
   dq: [],
   doc: [],
+  sap: ["bdoSummary", "wkNodes", "sapStatus", "sapSources", "control"],
   upd: [],
   cart: [],
 };
@@ -768,7 +769,7 @@ const FILES = {
   repairs: "repairs", provision: "provision",
   stock: "stock", quality: "quality", kb: "kb",
   drawings: "drawings", linkome: "linkome_catalog",
-  linkomeDraw: "linkome_drawings", usoWk: "uso_wk", wkNodes: "wk_nodes",
+  linkomeDraw: "linkome_drawings", usoWk: "uso_wk", wkNodes: "wk_nodes", bdoSummary: "bdo_summary", sapStatus: "sap_status_catalog", sapSources: "sap_sources",
   control: "control", orderText: "order_text",
 };
 const CORE_KEYS = ["catalog", "ekmtrWk", "fleetBooks", "fleet", "repairs", "provision", "stock", "quality"];
@@ -939,6 +940,7 @@ async function renderTab() {
     case "inter": return renderInter(host);
     case "dq": return renderDQ(host);
     case "doc": return renderDoc(host);
+    case "sap": return renderSapMethod(host);
     case "upd": return renderUpdate(host);
     case "cart": return renderCart(host);
     default: TAB = "sum"; return renderSum(host);
@@ -4355,7 +4357,7 @@ function renderKB(host) {
 }
 
 /* ---------- навигация / поиск / тема ---------- */
-const VALID_TABS = new Set(["sum", "analytics", "control", "lookup", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "upd", "cart"]);
+const VALID_TABS = new Set(["sum", "analytics", "control", "lookup", "catalog", "linkone", "kb", "fleet", "repairs", "provision", "stock", "purchase", "codif", "inter", "dq", "doc", "sap", "upd", "cart"]);
 let CMD_ROWS = [];
 function setRole(role) {
   ROLE = ROLES[role] ? role : "all";
